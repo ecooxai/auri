@@ -43,6 +43,35 @@ export function previewMimeForPath(path, reportedMime = "") {
   return byExtension[ext] || (reportedMime && reportedMime !== "application/octet-stream" ? reportedMime : "application/octet-stream");
 }
 
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+export function mediaPageHtml({ mediaUrl, mime, title }) {
+  const safeUrl = escapeHtml(mediaUrl);
+  const safeMime = escapeHtml(mime);
+  const safeTitle = escapeHtml(title);
+  const tag = String(mime).startsWith("video/") ? "video" : "audio";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${safeTitle}</title>
+<style>
+html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f4f7fa;font:14px system-ui,sans-serif;color:#172033}.media{width:min(900px,calc(100% - 48px));display:grid;gap:18px;text-align:center}.media h1{font-size:16px;margin:0;overflow-wrap:anywhere}.media audio{width:min(560px,100%);justify-self:center}.media video{width:100%;max-height:calc(100vh - 110px);background:#111827;border-radius:16px}
+</style>
+</head>
+<body><main class="media"><h1>${safeTitle}</h1><${tag} controls preload="metadata"><source src="${safeUrl}" type="${safeMime}">This media format is not supported.</${tag}></main></body>
+</html>`;
+}
+
 function base64ToBytes(value) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
@@ -95,6 +124,7 @@ async function blobToBase64(blob) {
 export class Backend {
   constructor() {
     this.invoke = tauriInvoke();
+    this.fileViewResources = new Map();
   }
 
   get isNative() {
@@ -158,10 +188,7 @@ export class Backend {
 
   async inspectFile(path) {
     if (!this.invoke) return browserMetadata(path);
-    const metadata = await this.call("inspect_file", { path });
-    const convertFileSrc = window.__TAURI__?.core?.convertFileSrc || window.__TAURI_INTERNALS__?.convertFileSrc;
-    if (convertFileSrc) metadata.assetUrl = convertFileSrc(path);
-    return metadata;
+    return this.call("inspect_file", { path });
   }
 
 
@@ -173,12 +200,25 @@ export class Backend {
     }
     const file = await this.call("read_binary_file", { path });
     const mime = previewMimeForPath(path, file.mime);
-    const blob = new Blob([base64ToBytes(file.base64)], { type: mime });
-    return { url: URL.createObjectURL(blob), title: file.name, filePath: path, mime };
+    const mediaBlob = new Blob([base64ToBytes(file.base64)], { type: mime });
+    const resourceUrl = URL.createObjectURL(mediaBlob);
+    if (mime.startsWith("audio/") || mime.startsWith("video/")) {
+      const page = new Blob([mediaPageHtml({ mediaUrl: resourceUrl, mime, title: file.name })], { type: "text/html" });
+      const url = URL.createObjectURL(page);
+      this.fileViewResources.set(url, resourceUrl);
+      return { url, title: file.name, filePath: path, mime: "text/html", mediaMime: mime };
+    }
+    return { url: resourceUrl, title: file.name, filePath: path, mime };
   }
 
   releaseFileView(url) {
-    if (typeof url === "string" && url.startsWith("blob:")) URL.revokeObjectURL(url);
+    if (typeof url !== "string" || !url.startsWith("blob:")) return;
+    const resourceUrl = this.fileViewResources.get(url);
+    if (resourceUrl) {
+      URL.revokeObjectURL(resourceUrl);
+      this.fileViewResources.delete(url);
+    }
+    URL.revokeObjectURL(url);
   }
 
   async readFile(path) {
@@ -312,6 +352,11 @@ export class Backend {
     return this.call("save_media_file", { name, kind, base64 });
   }
 
+  async pasteClipboardItem(id) {
+    if (!this.invoke) throw new Error("Pasting into another application needs the native build.");
+    return this.call("paste_clipboard_entry", { id });
+  }
+
   async readClipboardHistory() {
     if (!this.invoke) {
       return [
@@ -319,7 +364,14 @@ export class Backend {
         { id: "clip-2", kind: "text", text: "Auri keeps commands testable and automatable.", createdAt: new Date().toISOString() }
       ];
     }
-    return this.call("read_clipboard_history");
+    const items = await this.call("read_clipboard_history");
+    const convertFileSrc = window.__TAURI__?.core?.convertFileSrc || window.__TAURI_INTERNALS__?.convertFileSrc;
+    if (convertFileSrc) {
+      for (const item of items) {
+        if (item.kind === "image" && item.path) item.assetUrl = convertFileSrc(item.path);
+      }
+    }
+    return items;
   }
 
   async saveSettings(settings) {

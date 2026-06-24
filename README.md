@@ -172,7 +172,7 @@ auri ai model add <name> <type> <model> <url> <key>                            A
 auri ai model select <id>                                                      Select the AI model for the terminal.
 auri ai model update <id> <url> <key>                                          Update a model endpoint and API key.
 auri clipboard list                                                            Open clipboard history.
-auri clipboard insert <id>                                                     Insert a clipboard item into the focused input.
+auri clipboard insert <id>                                                     Paste a clipboard item into the previously active application.
 auri clipboard copy <text>                                                     Copy text to the system clipboard.
 auri attachment add <path>                                                     Attach a local file to the next AI request.
 auri attachment remove <id>                                                    Remove a prompt attachment.

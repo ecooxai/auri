@@ -43,6 +43,8 @@ export class AppController {
     this.native = backend.isNative;
     this.fileViewUrl = null;
     this.nativeWebviewUrls = new Map();
+    this.clipboardPollTimer = null;
+    this.clipboardPolling = false;
   }
 
   context() {
@@ -66,6 +68,7 @@ export class AppController {
         openExternal: (path) => this.openExternal(path),
         openFileInWebview: (path, metadata) => this.openFileInWebview(path, metadata),
         copyText: (text) => navigator.clipboard.writeText(text),
+        pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
         showUserMessage: (text) => this.activeTerminalSession().printUser(text),
         showAssistantMessage: (name, text) => this.activeTerminalSession().printAssistant(name, text)
@@ -163,6 +166,7 @@ export class AppController {
         }
       });
       this.render();
+      this.startClipboardPolling();
     } catch (error) {
       this.reportError("Startup", error);
     }
@@ -594,8 +598,27 @@ export class AppController {
   }
 
   async insertClipboard(id) {
-    const result = await this.runInternal(`clipboard insert ${id}`);
-    await this.runInternal(`input insert ${quoteArg(result.insert || "")}`);
+    await this.runInternal(`clipboard insert ${id}`);
+  }
+
+  startClipboardPolling() {
+    if (!this.native || this.clipboardPollTimer) return;
+    const poll = () => this.pollClipboard().catch((error) => this.reportError("Clipboard", error));
+    poll();
+    this.clipboardPollTimer = setInterval(poll, 3000);
+  }
+
+  async pollClipboard() {
+    if (this.clipboardPolling) return;
+    this.clipboardPolling = true;
+    try {
+      const items = await this.backend.readClipboardHistory();
+      const current = this.state.clipboard.items;
+      const changed = items.length !== current.length || items.some((item, index) => item.id !== current[index]?.id);
+      if (changed) this.dispatch({ type: "CLIPBOARD_SET", payload: { items } });
+    } finally {
+      this.clipboardPolling = false;
+    }
   }
 
   async saveModel(id) {

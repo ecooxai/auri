@@ -236,7 +236,9 @@ export async function executeCommand(input, context) {
       if (action === "insert") {
         const item = getState().clipboard.items.find((entry) => entry.id === args[0]);
         if (!item) throw new Error("Clipboard item was not found.");
-        return { insert: item.text ?? item.path ?? "" };
+        if (!actions.pasteClipboardItem) throw new Error("System clipboard paste is unavailable.");
+        await actions.pasteClipboardItem(item.id);
+        return { pasted: item.id };
       }
       if (action === "copy") {
         const text = args.join(" ");

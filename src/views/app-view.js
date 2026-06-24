@@ -31,9 +31,9 @@ export class AppView {
     if (inputValue && this.root.querySelector("#terminal-input")) {
       this.root.querySelector("#terminal-input").value = inputValue;
     }
+    const folder = this.root.querySelector(".folder-list");
+    if (folder) folder.scrollTop = folderScrollTop;
     requestAnimationFrame(() => {
-      const folder = this.root.querySelector(".folder-list");
-      if (folder) folder.scrollTop = folderScrollTop;
       const history = this.root.querySelector("#terminal-history");
       if (history) history.scrollTop = history.scrollHeight;
     });

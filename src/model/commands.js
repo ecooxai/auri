@@ -16,7 +16,7 @@ export const COMMANDS = Object.freeze([
   ["ai model select <id>", "Select the AI model for the terminal."],
   ["ai model update <id> <url> <key>", "Update a model endpoint and API key."],
   ["clipboard list", "Open clipboard history."],
-  ["clipboard insert <id>", "Insert a clipboard item into the focused input."],
+  ["clipboard insert <id>", "Paste a clipboard item into the previously active application."],
   ["clipboard copy <text>", "Copy text to the system clipboard."],
   ["attachment add <path>", "Attach a local file to the next AI request."],
   ["attachment remove <id>", "Remove a prompt attachment."],

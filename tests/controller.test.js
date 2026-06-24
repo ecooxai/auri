@@ -132,3 +132,38 @@ test("each workspace owns a distinct terminal session", async () => {
   assert.equal(controller.terminalSessionFor(secondId), secondSession);
   assert.equal(created.length, 2);
 });
+
+test("clipboard insert delegates paste-back to the native action", async () => {
+  const h = harness();
+  h.dispatch({
+    type: "CLIPBOARD_SET",
+    payload: { items: [{ id: "clip-9", kind: "image", path: "/tmp/clip-9.png", createdAt: Date.now() }] }
+  });
+  let pasted = null;
+  h.actions = { pasteClipboardItem: async (id) => { pasted = id; } };
+  const result = await executeCommand("clipboard insert clip-9", h);
+  assert.equal(pasted, "clip-9");
+  assert.deepEqual(result, { pasted: "clip-9" });
+});
+
+test("clipboard polling updates state only when history changes", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let items = [{ id: "clip-1", kind: "text", text: "one", createdAt: 1 }];
+  let renders = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() { renders += 1; },
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = { isNative: true, readClipboardHistory: async () => items };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  await controller.pollClipboard();
+  const afterFirst = renders;
+  await controller.pollClipboard();
+  assert.equal(renders, afterFirst);
+  items = [{ id: "clip-2", kind: "image", path: "/tmp/two.png", createdAt: 2 }, ...items];
+  await controller.pollClipboard();
+  assert.equal(controller.state.clipboard.items[0].id, "clip-2");
+  assert.equal(renders, afterFirst + 1);
+});

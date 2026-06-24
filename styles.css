@@ -927,3 +927,5 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .model-chip.is-live-connected span {
   color: #8fd3ff;
 }
+.clipboard-card[data-action="clipboard-insert"] { cursor: pointer; }
+.clipboard-image { display: block; width: 100%; max-height: 220px; object-fit: contain; border-radius: 12px; background: #eef2f6; }

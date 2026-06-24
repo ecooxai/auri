@@ -75,6 +75,15 @@ fn read_clipboard_history() -> Result<Vec<clipboard::ClipboardEntry>, String> {
 }
 
 #[tauri::command]
+fn paste_clipboard_entry(id: String) -> Result<(), String> {
+    clipboard::prepare_paste(&id)?;
+    std::thread::spawn(|| {
+        let _ = clipboard::focus_previous_and_paste();
+    });
+    Ok(())
+}
+
+#[tauri::command]
 fn save_settings(settings: Value) -> Result<(), String> {
     workspace::save_configuration(&settings)
 }
@@ -170,6 +179,7 @@ pub fn run() {
             window_start_dragging,
             capture_screenshot,
             read_clipboard_history,
+            paste_clipboard_entry,
             save_settings,
             save_media_file,
             open_external,
