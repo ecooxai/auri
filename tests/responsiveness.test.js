@@ -58,3 +58,12 @@ test("terminal visuals use the app light palette", async () => {
   assert.match(source, /cursor:\s*"#7089f8"/);
   assert.doesNotMatch(source, /background:\s*"#121c2f"/);
 });
+
+test("every terminal control stays light in connected and input states", async () => {
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(css, /\.terminal-input-zone\s*\{[^}]*background:\s*#f8fbff/s);
+  assert.match(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#405a86/s);
+  assert.match(css, /\.terminal-emulator \.xterm \.composition-view\s*\{[^}]*background:\s*#f8fbff/s);
+  assert.doesNotMatch(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#e8f6ff/s);
+});

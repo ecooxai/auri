@@ -137,7 +137,8 @@ export function renderTerminal(state) {
         <div class="terminal-status"><span class="status-dot ${tab.terminal.running ? "is-busy" : ""}"></span>${tab.terminal.running ? "Working" : "Ready"}</div>
         ${button("⌫", "Clear terminal", "terminal-clear")}
       </div>
-      <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator"></div></div>\n      <div class="composer-wrap">
+      <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator"></div></div>\n      <div class="terminal-input-zone">
+      <div class="composer-wrap">
         ${state.media.attachments.length ? `<div class="attachment-row">${state.media.attachments.map((item) => `<span class="attachment-chip">${item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : "▷"} ${escapeHtml(item.name)}<button type="button" data-action="attachment-remove" data-id="${item.id}">×</button></span>`).join("")}</div>` : ""}
         <textarea id="terminal-input" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · ⌘/Ctrl + Enter runs"></textarea>
         <div class="composer-actions">
@@ -150,6 +151,7 @@ export function renderTerminal(state) {
             <button type="button" class="action-button primary" data-action="terminal-ask"><span>✦</span>Ask ${escapeHtml(model?.name || "AI")}</button>
           </div>
         </div>
+      </div>
       </div>
     </section>`;
 }
