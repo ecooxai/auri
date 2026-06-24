@@ -167,3 +167,29 @@ test("clipboard polling updates state only when history changes", async () => {
   assert.equal(controller.state.clipboard.items[0].id, "clip-2");
   assert.equal(renders, afterFirst + 1);
 });
+
+test("folder navigation runs cd without the terminal cwd probe", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const calls = [];
+  const session = {
+    initialize: async () => {},
+    run: async (...args) => { calls.push(args); }
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: true,
+    runCommand: async () => ({ code: 0, cwd: "/tmp/project", stdout: "", stderr: "" }),
+    listDirectory: async () => []
+  };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => session });
+
+  await controller.changeDirectory("/tmp/project", { echoInTerminal: true });
+
+  assert.deepEqual(calls, [["cd '/tmp/project'", { probeCwd: false }]]);
+  assert.equal(controller.state.tabs[0].terminal.cwd, "/tmp/project");
+});

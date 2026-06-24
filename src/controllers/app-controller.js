@@ -563,7 +563,7 @@ export class AppController {
     const command = `cd ${shellQuote(path)}`;
     const result = await this.backend.runCommand(command, workspace.terminal.cwd);
     if (result.code !== 0 || !result.cwd) throw new Error(result.stderr || `Could not open folder: ${path}`);
-    if (echoInTerminal && this.native) await this.activeTerminalSession().run(command);
+    if (echoInTerminal && this.native) await this.activeTerminalSession().run(command, { probeCwd: false });
     await this.syncDirectory(result.cwd);
   }
 
