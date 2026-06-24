@@ -1,0 +1,114 @@
+# Auri Claude Guide
+
+This file is the implementation contract for contributors and coding agents working on Auri.
+
+## Non-negotiable workflow
+
+1. Write the behavioral test first and run it to observe the expected failure.
+2. Implement underlying logic before GUI rendering or click handling.
+3. Every actionable GUI control must call a command from the central registry. Internal calls omit `auri`; public terminal calls include it.
+4. Keep MVC boundaries: models are pure, controllers coordinate, views render, services/native modules perform side effects.
+5. Route recoverable errors to the Info state and provide a visible local interaction response.
+6. Never fake a native capability. Expose a clear unsupported/fallback result instead.
+7. Run focused tests, then `npm run check` and `cargo check --manifest-path src-tauri/Cargo.toml`.
+
+## Command-first rule
+
+`src/model/commands.js` is the source of truth. Add a registry entry and tests before implementing a new GUI action. GUI handlers call `executeCommand()` through `runInternal()` rather than changing state or invoking hardware directly. OS ingress that cannot originate as text—such as a file picker returning a browser `File` object—may create an attachment object, but an equivalent path-based command must exist for automation.
+
+```text
+auri tab new [title]                                                           Create and focus a new main workspace tab.
+auri tab close [id]                                                            Close a main tab (the active tab by default).
+auri tab select <id>                                                           Focus a main tab.
+auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|info>  Create and focus a horizontal subtab.
+auri subtab close [id]                                                         Close a horizontal subtab.
+auri subtab select <id>                                                        Focus a horizontal subtab.
+auri folder cd <path>                                                          Change both folder and terminal working directory.
+auri folder list [path]                                                        List a directory.
+auri file inspect <path>                                                       Show file metadata; repeat to open it.
+auri file open <path>                                                          Open a file in the viewer.
+auri file external [path]                                                      Open a file with the operating system.
+auri terminal run <command...>                                                 Run a shell command in the active workspace.
+auri ai ask <prompt...>                                                        Ask the selected AI with the current screenshot.
+auri ai model add <name> <type> <model> <url> <key>                            Add an AI provider configuration.
+auri ai model select <id>                                                      Select the AI model for the terminal.
+auri ai model update <id> <url> <key>                                          Update a model endpoint and API key.
+auri clipboard list                                                            Open clipboard history.
+auri clipboard insert <id>                                                     Insert a clipboard item into the focused input.
+auri clipboard copy <text>                                                     Copy text to the system clipboard.
+auri attachment add <path>                                                     Attach a local file to the next AI request.
+auri attachment remove <id>                                                    Remove a prompt attachment.
+auri input insert <text>                                                       Insert text into the focused prompt input.
+auri web open <url>                                                            Navigate the active webview.
+auri web reload                                                                Reload the active webview.
+auri web back                                                                  Go back in the active webview.
+auri web forward                                                               Go forward in the active webview.
+auri web external                                                              Open the active web URL externally.
+auri record audio                                                              Open audio recording.
+auri record video                                                              Open video recording.
+auri record start <audio|video>                                                Start media capture.
+auri record stop                                                               Stop the active media capture.
+auri media attach <audio|video>                                                Attach the latest recording to the prompt.
+auri settings open                                                             Open Settings.
+auri settings set <key> <value>                                                Update an application setting.
+auri info show                                                                 Open the Info subtab.
+auri info clear                                                                Clear notifications and errors.
+auri help                                                                      Show all available commands.
+```
+
+When a command accepts paths, prompts, shell syntax, URLs, or secrets, test quoting, whitespace, empty optional values, and malformed input. Preserve raw shell and AI tails where their punctuation is semantically meaningful.
+
+## MVC boundaries
+
+- `src/model`: no DOM, network, filesystem, Tauri, or browser globals.
+- `src/controllers/command-controller.js`: command semantics and state transitions.
+- `src/controllers/app-controller.js`: DOM events and platform action adapters only.
+- `src/views`: render state and expose input/read helpers; no business rules.
+- `src/services`: side effects and capability detection.
+- `src-tauri/src/core`: small native modules grouped by responsibility.
+- `src-tauri/src/bin/auri.rs`: thin external CLI; it must send commands through the Unix socket rather than reproduce command behavior.
+
+Keep source files focused. Split a module when unrelated responsibilities begin to accumulate; do not create catch-all utility files.
+
+## Testing expectations
+
+Add tests at the lowest useful layer:
+
+- Parser/registry tests for command syntax.
+- Reducer tests for state behavior.
+- Controller tests proving GUI-equivalent commands use the same path.
+- Pure helper tests for formatting, truncation, transcript parsing, codecs, and filenames.
+- Rust core tests before dependency-light native utility changes.
+
+Do not test pixels or automate the GUI when the behavior can be proven in the model/controller layer. After logic tests pass, perform a browser render smoke test for layout and runtime errors.
+
+## Native implementation rules
+
+Prefer Rust's standard library. Add a crate only when it provides substantial correctness, security, or platform value that would be unreasonable to reproduce. Validate paths and sizes at native boundaries. Use atomic temporary-file writes for settings and saved media. Never silently swallow permission, codec, capture, or command failures.
+
+The external CLI socket must stay user-only, bounded, and line-break safe. Current incomplete native areas must remain honestly labeled: PTY sessions, OS-global wake shortcuts, realtime live API streaming, clipboard image monitoring, and guaranteed audio/video transcoding.
+
+## UI rules
+
+- Preserve the vertical workspace tabs and horizontal subtab model.
+- Every workspace retains its own folder, terminal cwd/history, viewer, and subtab selection.
+- Terminal remains the central panel.
+- Enter inserts a newline; Command/Ctrl+Enter runs.
+- Use Unicode icons only when system fonts reliably render them; retain accessible labels and tooltips.
+- Keep the aurora-light, modern, clean visual language and avoid boxes around every element.
+- Every click has hover, pressed, focus, busy, success, or error feedback as appropriate.
+- Long clipboard text renders the first 100 and last 100 characters only.
+- Unrenderable content and network errors also appear in Info.
+
+## Completion checklist
+
+- New test failed first for the intended reason.
+- Model/controller implementation passes the focused test.
+- GUI uses the command, not duplicated logic.
+- New command appears in the registry and all three command-reference documents.
+- Errors reach Info.
+- Keyboard and accessibility labels still work.
+- Browser preview degrades clearly.
+- `npm run check` passes.
+- `cargo check --manifest-path src-tauri/Cargo.toml` passes.
+- Browser render smoke test has no JavaScript runtime errors.
