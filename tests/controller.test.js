@@ -193,3 +193,38 @@ test("folder navigation runs cd without the terminal cwd probe", async () => {
   assert.deepEqual(calls, [["cd '/tmp/project'", { probeCwd: false }]]);
   assert.equal(controller.state.tabs[0].terminal.cwd, "/tmp/project");
 });
+
+test("typed terminal cd synchronizes the folder pane without a printf probe", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const terminalCalls = [];
+  const session = {
+    initialize: async () => {},
+    run: async (...args) => { terminalCalls.push(args); }
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: true,
+    runCommand: async (command, cwd) => {
+      assert.equal(command, "cd /tmp/project");
+      assert.equal(cwd, "~");
+      return { code: 0, cwd: "/tmp/project", stdout: "", stderr: "" };
+    },
+    listDirectory: async (path) => {
+      assert.equal(path, "/tmp/project");
+      return [{ name: "src", path: "/tmp/project/src", kind: "directory" }];
+    }
+  };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => session });
+
+  await controller.runNativeTerminalCommand("cd /tmp/project");
+
+  assert.deepEqual(terminalCalls, [["cd /tmp/project", { probeCwd: false }]]);
+  assert.equal(controller.state.tabs[0].terminal.cwd, "/tmp/project");
+  assert.equal(controller.state.tabs[0].folder.path, "/tmp/project");
+  assert.equal(controller.state.tabs[0].folder.entries[0].name, "src");
+});

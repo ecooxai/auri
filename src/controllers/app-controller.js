@@ -2,7 +2,7 @@ import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab } from "../model/state.js";
 import { classifyTerminalInput } from "../model/presentation.js";
 import { MediaCapture } from "../services/media-recorder.js";
-import { shellQuote } from "../model/path.js";
+import { isSimpleCdCommand, shellQuote } from "../model/path.js";
 
 function parentPath(path) {
   const value = String(path || "~").replace(/\/+$/, "");
@@ -543,7 +543,17 @@ export class AppController {
   }
 
   async runNativeTerminalCommand(command) {
-    await this.activeTerminalSession().run(command);
+    const workspace = activeWorkspace(this.state);
+    if (!isSimpleCdCommand(command)) {
+      await this.activeTerminalSession().run(command);
+      return;
+    }
+
+    const result = await this.backend.runCommand(command, workspace.terminal.cwd);
+    await this.activeTerminalSession().run(command, { probeCwd: false });
+    if (result.code === 0 && result.cwd && result.cwd !== workspace.terminal.cwd) {
+      await this.syncDirectory(result.cwd);
+    }
   }
 
   async handleTerminalCwdChange(workspaceId, path) {
