@@ -228,30 +228,3 @@ test("typed terminal cd synchronizes the folder pane without a printf probe", as
   assert.equal(controller.state.tabs[0].folder.path, "/tmp/project");
   assert.equal(controller.state.tabs[0].folder.entries[0].name, "src");
 });
-
-test("direct xterm cd submission synchronizes the folder pane", async () => {
-  const { AppController } = await import("../src/controllers/app-controller.js");
-  const session = { initialize: async () => {} };
-  const view = {
-    root: { querySelector: () => null },
-    render() {},
-    getTerminalInputValue: () => "",
-    showToast() {}
-  };
-  const backend = {
-    isNative: true,
-    runCommand: async (command, cwd) => {
-      assert.equal(command, "cd ../project");
-      assert.equal(cwd, "~");
-      return { code: 0, cwd: "/tmp/project", stdout: "", stderr: "" };
-    },
-    listDirectory: async () => []
-  };
-  const controller = new AppController({ view, backend, terminalSessionFactory: () => session });
-  controller.terminalSessionFor();
-
-  await session.onCommand("cd ../project");
-
-  assert.equal(controller.state.tabs[0].folder.path, "/tmp/project");
-  assert.equal(controller.state.tabs[0].terminal.cwd, "/tmp/project");
-});

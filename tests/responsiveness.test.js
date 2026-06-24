@@ -23,7 +23,8 @@ test("terminal input waits for the PTY instead of silently dropping keystrokes",
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.match(source, /async ensureStarted/);
   assert.match(source, /await this\.ensureStarted\(\)/);
-  assert.doesNotMatch(source, /if \(!this\.backend\.isNative \|\| !this\.started\) return;/);
+  const writeMethod = source.slice(source.indexOf("async write(data)"), source.indexOf("async stop()"));
+  assert.doesNotMatch(writeMethod, /!this\.started/);
 });
 
 test("terminal remounts are generation guarded and clicking restores xterm focus", async () => {
@@ -36,8 +37,8 @@ test("terminal remounts are generation guarded and clicking restores xterm focus
 test("submitted native commands do not inject a cwd printf probe", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.doesNotMatch(source, /auri-cwd=%s/);
-  assert.match(source, /onCommand/);
-  assert.match(source, /captureInput/);
+  assert.match(source, /getTerminalCwd/);
+  assert.match(source, /scheduleCwdRefresh/);
 });
 
 test("terminal cwd notifications synchronize the folder UI", async () => {
@@ -68,11 +69,12 @@ test("every terminal control stays light in connected and input states", async (
   assert.doesNotMatch(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#e8f6ff/s);
 });
 
-test("xterm-submitted cd commands are surfaced without a printf probe", async () => {
-  const source = await readFile("src/services/terminal-session.js", "utf8");
+test("xterm submissions refresh cwd from the native shell process", async () => {
+  const frontend = await readFile("src/services/terminal-session.js", "utf8");
+  const backend = await readFile("src-tauri/src/core/terminal.rs", "utf8");
 
-  assert.match(source, /this\.inputBuffer/);
-  assert.match(source, /this\.onCommand/);
-  assert.match(source, /captureInput\(data\)/);
-  assert.doesNotMatch(source, /printf '\\\\033\[2K/);
+  assert.match(frontend, /data\.includes\("\\r"\).*scheduleCwdRefresh/);
+  assert.match(frontend, /backend\.getTerminalCwd/);
+  assert.match(backend, /pub fn cwd\(session_id: &str\)/);
+  assert.match(backend, /process_id\(\)/);
 });

@@ -55,6 +55,11 @@ fn terminal_write(session_id: String, data: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn terminal_cwd(session_id: String) -> Result<String, String> {
+    terminal::cwd(&session_id)
+}
+
+#[tauri::command]
 fn terminal_resize(session_id: String, cols: u16, rows: u16) -> Result<(), String> {
     terminal::resize(&session_id, cols, rows)
 }
@@ -174,6 +179,7 @@ pub fn run() {
             run_command,
             terminal_start,
             terminal_write,
+            terminal_cwd,
             terminal_resize,
             terminal_stop,
             window_start_dragging,

@@ -3,6 +3,8 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
@@ -126,6 +128,50 @@ pub fn write(session_id: &str, data: &[u8]) -> Result<(), String> {
         .writer
         .flush()
         .map_err(|error| format!("Could not flush terminal input: {error}"))
+}
+
+
+pub fn cwd(session_id: &str) -> Result<String, String> {
+    let session = SESSIONS
+        .lock()
+        .map_err(|_| "Terminal session store is unavailable.".to_string())?
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "Terminal session is not running.".to_string())?;
+    let pid = session
+        .lock()
+        .map_err(|_| "Terminal session is unavailable.".to_string())?
+        .child
+        .process_id()
+        .ok_or_else(|| "Terminal process id is unavailable.".to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let path = std::fs::read_link(format!("/proc/{pid}/cwd"))
+            .map_err(|error| format!("Could not read terminal directory: {error}"))?;
+        return Ok(super::workspace::display_path(&path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("lsof")
+            .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+            .output()
+            .map_err(|error| format!("Could not inspect terminal directory: {error}"))?;
+        if !output.status.success() {
+            return Err("Could not inspect terminal directory.".to_string());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let value = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix('n'))
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Terminal directory was not reported.".to_string())?;
+        return Ok(super::workspace::display_path(&PathBuf::from(value)));
+    }
+
+    #[allow(unreachable_code)]
+    Err("Terminal directory lookup is unsupported on this platform.".to_string())
 }
 
 pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {

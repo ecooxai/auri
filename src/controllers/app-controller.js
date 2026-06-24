@@ -81,7 +81,6 @@ export class AppController {
     if (session) return session;
     session = this.terminalSessionFactory(this.backend);
     session.onCwdChange = (path) => this.handleTerminalCwdChange(workspaceId, path);
-    session.onCommand = (command) => this.handleTerminalCommand(workspaceId, command);
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
       this.reportError("Terminal", error);
       return false;
@@ -554,16 +553,6 @@ export class AppController {
     await this.activeTerminalSession().run(command);
     if (result.code === 0 && result.cwd && result.cwd !== workspace.terminal.cwd) {
       await this.syncDirectory(result.cwd);
-    }
-  }
-
-  async handleTerminalCommand(workspaceId, command) {
-    if (!isSimpleCdCommand(command)) return;
-    const workspace = this.state.tabs.find((tab) => tab.id === workspaceId);
-    if (!workspace) return;
-    const result = await this.backend.runCommand(command, workspace.terminal.cwd);
-    if (result.code === 0 && result.cwd && result.cwd !== workspace.terminal.cwd) {
-      await this.syncDirectory(result.cwd, workspaceId);
     }
   }
 

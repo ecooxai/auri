@@ -18,9 +18,8 @@ export class TerminalSession {
     this.startPromise = null;
     this.mountGeneration = 0;
     this.cwdMarkerBuffer = "";
-    this.inputBuffer = "";
+    this.cwdRefreshTimer = null;
     this.onCwdChange = null;
-    this.onCommand = null;
   }
 
   async initialize() {
@@ -129,7 +128,7 @@ export class TerminalSession {
     this.term.open(element);
     this.fitAddon.fit();
     this.term.onData((data) => {
-      this.captureInput(data);
+      if (data.includes("\r") || data.includes("\n")) this.scheduleCwdRefresh();
       this.write(data).catch((error) => {
         console.error("Could not write terminal input", error);
       });
@@ -149,24 +148,21 @@ export class TerminalSession {
   }
 
 
-  captureInput(data) {
-    for (const char of String(data)) {
-      if (char === "\r" || char === "\n") {
-        const command = this.inputBuffer.trim();
-        this.inputBuffer = "";
-        if (command) {
-          Promise.resolve(this.onCommand?.(command)).catch((error) => {
-            console.error("Could not synchronize terminal command", error);
-          });
-        }
-      } else if (char === "\u007f" || char === "\b") {
-        this.inputBuffer = this.inputBuffer.slice(0, -1);
-      } else if (char === "\u0003" || char === "\u0015") {
-        this.inputBuffer = "";
-      } else if (char >= " " && char !== "\u007f") {
-        this.inputBuffer += char;
-      }
-    }
+  scheduleCwdRefresh() {
+    clearTimeout(this.cwdRefreshTimer);
+    this.cwdRefreshTimer = setTimeout(() => {
+      this.refreshCwd().catch((error) => {
+        console.error("Could not synchronize terminal directory", error);
+      });
+    }, 120);
+  }
+
+  async refreshCwd() {
+    if (!this.backend.isNative || !this.started) return;
+    const cwd = await this.backend.getTerminalCwd(this.sessionId);
+    if (!cwd || cwd === this.cwd) return;
+    this.cwd = cwd;
+    await this.onCwdChange?.(cwd);
   }
 
   async ensureStarted(cwd = this.cwd, cols = this.term?.cols || 80, rows = this.term?.rows || 24) {
@@ -194,6 +190,7 @@ export class TerminalSession {
 
   async stop() {
     this.mountGeneration += 1;
+    clearTimeout(this.cwdRefreshTimer);
     this.term?.dispose();
     this.term = null;
     for (const off of this.unlisten.splice(0)) off?.();
@@ -203,6 +200,7 @@ export class TerminalSession {
 
   async run(command) {
     await this.write(`${command}\r`);
+    this.scheduleCwdRefresh();
     this.term?.focus();
   }
 
