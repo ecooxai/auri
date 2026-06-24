@@ -46,3 +46,15 @@ test("terminal cwd notifications synchronize the folder UI", async () => {
   assert.match(source, /handleTerminalCwdChange/);
   assert.match(source, /await this\.syncDirectory\(path, workspaceId\)/);
 });
+
+test("terminal visuals use the app light palette", async () => {
+  const css = await readFile("styles.css", "utf8");
+  const source = await readFile("src/services/terminal-session.js", "utf8");
+
+  assert.match(css, /\.terminal-panel\s*\{[^}]*background:\s*#f8fbff/s);
+  assert.match(css, /\.composer-wrap\s*\{[^}]*background:\s*rgba\(255, 255, 255, \.9\)/s);
+  assert.match(source, /background:\s*"#f8fbff"/);
+  assert.match(source, /foreground:\s*"#24324a"/);
+  assert.match(source, /cursor:\s*"#7089f8"/);
+  assert.doesNotMatch(source, /background:\s*"#121c2f"/);
+});

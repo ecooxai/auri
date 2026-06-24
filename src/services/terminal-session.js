@@ -100,10 +100,27 @@ export class TerminalSession {
       fontSize: 12,
       lineHeight: 1.25,
       theme: {
-        background: "#121c2f",
-        foreground: "#d9e2f0",
-        cursor: "#d9e2f0",
-        selectionBackground: "#53658a88"
+        background: "#f8fbff",
+        foreground: "#24324a",
+        cursor: "#7089f8",
+        cursorAccent: "#f8fbff",
+        selectionBackground: "#cfd9ff99",
+        black: "#24324a",
+        red: "#c65d6a",
+        green: "#3f9277",
+        yellow: "#a97726",
+        blue: "#546be1",
+        magenta: "#8b62c8",
+        cyan: "#318f96",
+        white: "#e7ecf3",
+        brightBlack: "#7a879b",
+        brightRed: "#d86b78",
+        brightGreen: "#5ebc99",
+        brightYellow: "#c49138",
+        brightBlue: "#7089f8",
+        brightMagenta: "#a87ce5",
+        brightCyan: "#58b9bd",
+        brightWhite: "#ffffff"
       }
     });
     this.term.loadAddon(this.fitAddon);
