@@ -33,11 +33,11 @@ test("terminal remounts are generation guarded and clicking restores xterm focus
   assert.match(source, /addEventListener\("mousedown", \(\) => this\.term\?\.focus\(\)\)/);
 });
 
-test("each submitted native command probes the PTY working directory", async () => {
+test("submitted native commands do not inject a cwd printf probe", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
-  assert.match(source, /auri-cwd=%s/);
-  assert.match(source, /onCwdChange/);
-  assert.match(source, /consumeTerminalData/);
+  assert.doesNotMatch(source, /auri-cwd=%s/);
+  assert.match(source, /onCommand/);
+  assert.match(source, /captureInput/);
 });
 
 test("terminal cwd notifications synchronize the folder UI", async () => {
@@ -66,4 +66,13 @@ test("every terminal control stays light in connected and input states", async (
   assert.match(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#405a86/s);
   assert.match(css, /\.terminal-emulator \.xterm \.composition-view\s*\{[^}]*background:\s*#f8fbff/s);
   assert.doesNotMatch(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#e8f6ff/s);
+});
+
+test("xterm-submitted cd commands are surfaced without a printf probe", async () => {
+  const source = await readFile("src/services/terminal-session.js", "utf8");
+
+  assert.match(source, /this\.inputBuffer/);
+  assert.match(source, /this\.onCommand/);
+  assert.match(source, /captureInput\(data\)/);
+  assert.doesNotMatch(source, /printf '\\\\033\[2K/);
 });

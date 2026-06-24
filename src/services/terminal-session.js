@@ -18,7 +18,9 @@ export class TerminalSession {
     this.startPromise = null;
     this.mountGeneration = 0;
     this.cwdMarkerBuffer = "";
+    this.inputBuffer = "";
     this.onCwdChange = null;
+    this.onCommand = null;
   }
 
   async initialize() {
@@ -127,6 +129,7 @@ export class TerminalSession {
     this.term.open(element);
     this.fitAddon.fit();
     this.term.onData((data) => {
+      this.captureInput(data);
       this.write(data).catch((error) => {
         console.error("Could not write terminal input", error);
       });
@@ -142,6 +145,27 @@ export class TerminalSession {
     } else {
       for (const chunk of this.output) this.term.write(chunk);
       if (!this.backend.isNative) this.term.writeln("Browser preview does not provide a native PTY.");
+    }
+  }
+
+
+  captureInput(data) {
+    for (const char of String(data)) {
+      if (char === "\r" || char === "\n") {
+        const command = this.inputBuffer.trim();
+        this.inputBuffer = "";
+        if (command) {
+          Promise.resolve(this.onCommand?.(command)).catch((error) => {
+            console.error("Could not synchronize terminal command", error);
+          });
+        }
+      } else if (char === "\u007f" || char === "\b") {
+        this.inputBuffer = this.inputBuffer.slice(0, -1);
+      } else if (char === "\u0003" || char === "\u0015") {
+        this.inputBuffer = "";
+      } else if (char >= " " && char !== "\u007f") {
+        this.inputBuffer += char;
+      }
     }
   }
 
@@ -177,11 +201,8 @@ export class TerminalSession {
     this.started = false;
   }
 
-  async run(command, { probeCwd = true } = {}) {
-    const probe = probeCwd
-      ? `printf '\\033[2K\\r\\033]777;auri-cwd=%s\\007' "$PWD"`
-      : "";
-    await this.write(`${command}\r${probe ? `${probe}\r` : ""}`);
+  async run(command) {
+    await this.write(`${command}\r`);
     this.term?.focus();
   }
 
