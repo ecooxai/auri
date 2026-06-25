@@ -28,7 +28,7 @@ export function createWorkspace(title = "Home") {
     id: id("tab"),
     title,
     activeSubtabId: terminal.id,
-    subtabs: [terminal, createSubtab("viewer"), createSubtab("info")],
+    subtabs: [terminal, createSubtab("clipboard"), createSubtab("info")],
     folder: { visible: true, path: "~", entries: [], selectedPath: null, selectedCount: 0, sortBy: "name" },
     terminal: { cwd: "~", history: [], draft: "", running: false },
     viewer: { path: null, metadata: null, mode: "empty" }
@@ -50,6 +50,7 @@ export function createInitialState() {
     settings: {
       theme: "aurora-light",
       fontSize: 20,
+      terminalMaxLines: 4000,
       wakeShortcut: "Alt+Space",
       wakeHoldSeconds: 2,
       liveDisconnectSeconds: 60,
@@ -155,9 +156,12 @@ export function reduceState(state, event) {
     case "INFO_READ":
       return { ...state, info: { ...state.info, unread: 0 } };
     case "SETTING_SET": {
-      const value = event.payload.key === "fontSize"
-        ? Math.min(30, Math.max(14, Number(event.payload.value) || 20))
-        : event.payload.value;
+      let value = event.payload.value;
+      if (event.payload.key === "fontSize") {
+        value = Math.min(30, Math.max(14, Number(value) || 20));
+      } else if (event.payload.key === "terminalMaxLines") {
+        value = Math.min(100000, Math.max(100, Number(value) || 4000));
+      }
       return { ...state, settings: { ...state.settings, [event.payload.key]: value } };
     }
     case "MODEL_ADD":

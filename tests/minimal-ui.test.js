@@ -188,3 +188,10 @@ test("folder More menu contains sorting, creation, and folder info actions", asy
   assert.match(css, /\.folder-more-wrap\s*\{[^}]*position:\s*relative/s);
   assert.match(css, /\.folder-menu\s*\{[^}]*position:\s*absolute/s);
 });
+
+test("settings expose a persisted terminal line retention control", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  assert.match(panels, /data-setting="terminalMaxLines"/);
+  assert.match(panels, /Terminal retained lines/);
+  assert.match(panels, /value="\$\{state\.settings\.terminalMaxLines\}"/);
+});

@@ -16,11 +16,39 @@ export function captureFolderScroll(root, nextPath) {
 export class AppView {
   constructor(root) {
     this.root = root;
+    this.terminalHosts = new Map();
+  }
+
+  stashTerminalHost() {
+    const host = this.root?.querySelector?.("#terminal-emulator");
+    const workspaceId = host?.dataset?.workspaceId;
+    if (!host || !workspaceId) return null;
+    this.terminalHosts.set(workspaceId, host);
+    host.remove();
+    return host;
+  }
+
+  restoreTerminalHost(workspaceId) {
+    const placeholder = this.root?.querySelector?.("#terminal-emulator");
+    if (!placeholder) return null;
+    const preserved = this.terminalHosts.get(workspaceId);
+    if (!preserved || preserved === placeholder) return placeholder;
+    placeholder.replaceWith(preserved);
+    return preserved;
+  }
+
+  pruneTerminalHosts(state) {
+    const workspaceIds = new Set(state.tabs.map((tab) => tab.id));
+    for (const workspaceId of this.terminalHosts.keys()) {
+      if (!workspaceIds.has(workspaceId)) this.terminalHosts.delete(workspaceId);
+    }
   }
 
   render(state, options = {}) {
     applyAppFontSize(this.root, state.settings.fontSize);
     const tab = activeWorkspace(state);
+    this.stashTerminalHost();
+    this.pruneTerminalHosts(state);
     const inputValue = options.preserveInput ? this.getTerminalInputValue() : tab.terminal.draft;
     const folderScrollTop = captureFolderScroll(this.root, tab.folder.path);
     this.root.innerHTML = `
@@ -35,6 +63,7 @@ export class AppView {
         </main>
       </div>
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
+    this.restoreTerminalHost(tab.id);
 
     if (inputValue && this.root.querySelector("#terminal-input")) {
       this.root.querySelector("#terminal-input").value = inputValue;

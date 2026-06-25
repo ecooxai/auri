@@ -87,3 +87,24 @@ test("folder sort defaults to name and can be changed per workspace", () => {
   state = reduceState(state, { type: "FOLDER_SORT_SET", payload: { sortBy: "type" } });
   assert.equal(state.tabs[0].folder.sortBy, "type");
 });
+
+test("new workspaces open only Terminal, Clipboard, and Info with Terminal active", () => {
+  const state = createInitialState();
+  const workspace = state.tabs[0];
+  assert.deepEqual(workspace.subtabs.map((item) => item.type), ["terminal", "clipboard", "info"]);
+  assert.equal(workspace.activeSubtabId, workspace.subtabs[0].id);
+});
+
+test("terminal line retention defaults to 4000 and rejects unsafe values", () => {
+  let state = createInitialState();
+  assert.equal(state.settings.terminalMaxLines, 4000);
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalMaxLines", value: 1250 } });
+  assert.equal(state.settings.terminalMaxLines, 1250);
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalMaxLines", value: -10 } });
+  assert.equal(state.settings.terminalMaxLines, 100);
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalMaxLines", value: "not-a-number" } });
+  assert.equal(state.settings.terminalMaxLines, 4000);
+});

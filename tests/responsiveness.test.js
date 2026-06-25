@@ -123,7 +123,8 @@ test("terminal uses the configured interface font size", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const controller = await readFile("src/controllers/app-controller.js", "utf8");
 
-  assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20\)/);
-  assert.match(terminal, /fontSize: Math\.round\(Math\.min\(30, Math\.max\(14[^\n]+\* 0\.6\)/);
-  assert.match(controller, /session\.mount\(terminalHost, workspace\.terminal\.cwd, this\.state\.settings\.fontSize\)/);
+  assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
+  assert.match(terminal, /const terminalFontSize = Math\.round/);
+  assert.match(terminal, /fontSize: terminalFontSize/);
+  assert.match(controller, /session\.mount\(terminalHost, workspace\.terminal\.cwd, this\.state\.settings\.fontSize, this\.state\.settings\.terminalMaxLines\)/);
 });

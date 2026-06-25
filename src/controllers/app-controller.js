@@ -158,7 +158,7 @@ export class AppController {
     if (terminalHost) {
       const workspace = activeWorkspace(this.state);
       const session = this.terminalSessionFor(workspace.id);
-      requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize).catch((error) => this.reportError("Terminal", error)));
+      requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines).catch((error) => this.reportError("Terminal", error)));
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
   }

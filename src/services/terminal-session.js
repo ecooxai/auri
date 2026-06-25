@@ -26,6 +26,7 @@ export class TerminalSession {
     this.sessionId = `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     this.term = null;
     this.fitAddon = null;
+    this.mountedElement = null;
     this.started = false;
     this.output = [];
     this.outputBytes = 0;
@@ -204,17 +205,32 @@ export class TerminalSession {
     await this.writeToTerminal("\r\n".repeat(rows), generation);
   }
 
-  async mount(element, cwd = "~", fontSize = 20) {
+  async mount(element, cwd = "~", fontSize = 20, maxLines = 4000) {
     if (!element) return;
-    const generation = ++this.mountGeneration;
     this.cwd = cwd || this.cwd;
+    const lineLimit = Math.min(100000, Math.max(100, Number(maxLines) || 4000));
+    const terminalFontSize = Math.round(Math.min(30, Math.max(14, Number(fontSize) || 20)) * 0.6);
+
+    if (this.term && this.mountedElement === element) {
+      this.term.options.scrollback = lineLimit;
+      this.term.options.fontSize = terminalFontSize;
+      this.fitAddon?.fit();
+      if (!this.started && this.backend.isNative) {
+        await this.ensureStarted(this.cwd, this.term.cols, this.term.rows);
+      } else if (this.started) {
+        this.backend.resizeTerminal(this.sessionId, this.term.cols, this.term.rows).catch(() => {});
+      }
+      return;
+    }
+
+    const generation = ++this.mountGeneration;
     this.term?.dispose();
     this.fitAddon = new FitAddon();
     this.term = new Terminal({
       cursorBlink: true,
-      scrollback: 5000,
+      scrollback: lineLimit,
       fontFamily: "SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      fontSize: Math.round(Math.min(30, Math.max(14, Number(fontSize) || 20)) * 0.6),
+      fontSize: terminalFontSize,
       lineHeight: 1.25,
       theme: {
         background: "#f8fbff",
@@ -242,6 +258,7 @@ export class TerminalSession {
     });
     this.term.loadAddon(this.fitAddon);
     this.term.open(element);
+    this.mountedElement = element;
     this.fitAddon.fit();
     this.renderQueue = Promise.resolve();
     for (const record of this.output) this.queueRender(record, generation);
@@ -310,6 +327,7 @@ export class TerminalSession {
     clearTimeout(this.cwdRefreshTimer);
     this.term?.dispose();
     this.term = null;
+    this.mountedElement = null;
     for (const off of this.unlisten.splice(0)) off?.();
     if (this.started && this.backend.isNative) await this.backend.stopTerminal(this.sessionId);
     this.started = false;
