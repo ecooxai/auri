@@ -74,3 +74,9 @@ test("new web subtabs open Google by default", () => {
   const web = state.tabs[0].subtabs.at(-1);
   assert.equal(web.url, "https://www.google.com/");
 });
+
+
+test("interface font size has a larger readable default", () => {
+  const state = createInitialState();
+  assert.equal(state.settings.fontSize, 20);
+});

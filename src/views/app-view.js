@@ -1,6 +1,13 @@
 import { activeWorkspace } from "../model/state.js";
 import { renderActivePanel, renderFolder, renderMainTabs, renderSubtabs } from "./panels.js";
 
+export function applyAppFontSize(root, value) {
+  const size = Math.min(30, Math.max(14, Number(value) || 20));
+  const documentElement = root?.ownerDocument?.documentElement || globalThis.document?.documentElement;
+  documentElement?.style?.setProperty("font-size", `${size}px`);
+  return size;
+}
+
 export function captureFolderScroll(root, nextPath) {
   const list = root?.querySelector?.(".folder-list");
   return list?.dataset?.folderPath === nextPath ? list.scrollTop : 0;
@@ -12,6 +19,7 @@ export class AppView {
   }
 
   render(state, options = {}) {
+    applyAppFontSize(this.root, state.settings.fontSize);
     const tab = activeWorkspace(state);
     const inputValue = options.preserveInput ? this.getTerminalInputValue() : tab.terminal.draft;
     const folderScrollTop = captureFolderScroll(this.root, tab.folder.path);

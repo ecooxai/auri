@@ -3,6 +3,23 @@ import { FitAddon } from "@xterm/addon-fit";
 
 const encoder = new TextEncoder();
 
+function mediaRows(kind) {
+  if (kind === "image") return 14;
+  if (kind === "video") return 16;
+  if (kind === "audio") return 5;
+  return 3;
+}
+
+function snapshotMedia(item) {
+  return {
+    name: item?.name || "Attachment",
+    kind: item?.kind || "file",
+    mime: item?.mime || "application/octet-stream",
+    url: item?.url || item?.assetUrl || null,
+    path: item?.path || null
+  };
+}
+
 export class TerminalSession {
   constructor(backend) {
     this.backend = backend;
@@ -20,6 +37,7 @@ export class TerminalSession {
     this.cwdMarkerBuffer = "";
     this.cwdRefreshTimer = null;
     this.onCwdChange = null;
+    this.renderQueue = Promise.resolve();
   }
 
   async initialize() {
@@ -29,8 +47,7 @@ export class TerminalSession {
       const bytes = new Uint8Array(payload.data || []);
       const visible = this.consumeTerminalData(bytes);
       if (!visible.byteLength) return;
-      this.remember(visible);
-      this.term?.write(visible);
+      this.appendRecord({ type: "bytes", bytes: visible });
     });
     const offExit = await this.backend.listen("terminal-exit", (payload) => {
       if (payload?.sessionId === this.sessionId) this.started = false;
@@ -80,15 +97,114 @@ export class TerminalSession {
     return encoder.encode(visible);
   }
 
-  remember(bytes) {
-    this.output.push(bytes);
-    this.outputBytes += bytes.byteLength;
+  recordByteLength(record) {
+    return record?.type === "bytes" ? record.bytes?.byteLength || 0 : 0;
+  }
+
+  remember(record) {
+    this.output.push(record);
+    this.outputBytes += this.recordByteLength(record);
     while (this.outputBytes > this.maxOutputBytes && this.output.length > 1) {
-      this.outputBytes -= this.output.shift().byteLength;
+      this.outputBytes -= this.recordByteLength(this.output.shift());
     }
   }
 
-  async mount(element, cwd = "~") {
+  appendRecord(record) {
+    this.remember(record);
+    if (this.term) this.queueRender(record, this.mountGeneration);
+  }
+
+  queueRender(record, generation) {
+    this.renderQueue = this.renderQueue
+      .then(() => {
+        if (!this.term || generation !== this.mountGeneration) return;
+        return this.renderRecord(record, generation);
+      })
+      .catch((error) => {
+        console.error("Could not render terminal output", error);
+      });
+    return this.renderQueue;
+  }
+
+  writeToTerminal(data, generation) {
+    return new Promise((resolve) => {
+      if (!this.term || generation !== this.mountGeneration) {
+        resolve();
+        return;
+      }
+      this.term.write(data, resolve);
+    });
+  }
+
+  async renderRecord(record, generation) {
+    if (record.type === "media") {
+      await this.renderInlineMedia(record.item, generation);
+      return;
+    }
+    await this.writeToTerminal(record.bytes, generation);
+  }
+
+  populateMediaElement(element, item) {
+    if (element.dataset.auriMediaReady === "true") return;
+    element.dataset.auriMediaReady = "true";
+    element.classList.add("terminal-inline-media", `is-${item.kind}`);
+    element.style.pointerEvents = "auto";
+
+    const document = element.ownerDocument;
+    const card = document.createElement("div");
+    card.className = "terminal-inline-media-card";
+
+    if (item.kind === "image" && item.url) {
+      const image = document.createElement("img");
+      image.src = item.url;
+      image.alt = item.name;
+      image.loading = "lazy";
+      card.append(image);
+    } else if (item.kind === "video" && item.url) {
+      const video = document.createElement("video");
+      video.src = item.url;
+      video.controls = true;
+      video.preload = "metadata";
+      card.append(video);
+    } else if (item.kind === "audio" && item.url) {
+      const audio = document.createElement("audio");
+      audio.src = item.url;
+      audio.controls = true;
+      audio.preload = "metadata";
+      card.append(audio);
+    }
+
+    const caption = document.createElement("div");
+    caption.className = "terminal-inline-media-caption";
+    const icon = item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : item.kind === "video" ? "▷" : "◇";
+    caption.textContent = `${icon} ${item.name}`;
+    card.append(caption);
+    element.replaceChildren(card);
+  }
+
+  async renderInlineMedia(rawItem, generation) {
+    if (!this.term || generation !== this.mountGeneration) return;
+    const item = snapshotMedia(rawItem);
+    const rows = mediaRows(item.kind);
+    const marker = this.term.registerMarker(0);
+    if (!marker) return;
+
+    const decoration = this.term.registerDecoration({
+      marker,
+      width: Math.max(1, this.term.cols),
+      height: rows,
+      layer: "top"
+    });
+    if (decoration) {
+      const render = (element) => this.populateMediaElement(element, item);
+      decoration.onRender(render);
+      if (decoration.element) render(decoration.element);
+    }
+
+    await this.writeToTerminal("\r\n".repeat(rows), generation);
+  }
+
+  async mount(element, cwd = "~", fontSize = 20) {
     if (!element) return;
     const generation = ++this.mountGeneration;
     this.cwd = cwd || this.cwd;
@@ -98,7 +214,7 @@ export class TerminalSession {
       cursorBlink: true,
       scrollback: 5000,
       fontFamily: "SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      fontSize: 12,
+      fontSize: Math.round(Math.min(30, Math.max(14, Number(fontSize) || 20)) * 0.6),
       lineHeight: 1.25,
       theme: {
         background: "#f8fbff",
@@ -127,6 +243,9 @@ export class TerminalSession {
     this.term.loadAddon(this.fitAddon);
     this.term.open(element);
     this.fitAddon.fit();
+    this.renderQueue = Promise.resolve();
+    for (const record of this.output) this.queueRender(record, generation);
+
     this.term.onData((data) => {
       if (data.includes("\r") || data.includes("\n")) this.scheduleCwdRefresh();
       this.write(data).catch((error) => {
@@ -141,12 +260,10 @@ export class TerminalSession {
     if (!this.started && this.backend.isNative) {
       await this.ensureStarted(this.cwd, this.term.cols, this.term.rows);
       if (generation !== this.mountGeneration) return;
-    } else {
-      for (const chunk of this.output) this.term.write(chunk);
-      if (!this.backend.isNative) this.term.writeln("Browser preview does not provide a native PTY.");
+    } else if (!this.backend.isNative && this.output.length === 0) {
+      this.term.writeln("Browser preview does not provide a native PTY.");
     }
   }
-
 
   scheduleCwdRefresh() {
     clearTimeout(this.cwdRefreshTimer);
@@ -198,48 +315,58 @@ export class TerminalSession {
     this.started = false;
   }
 
-  async run(command) {
-    await this.write(`${command}\r`);
-    this.scheduleCwdRefresh();
+  resize() {
+    if (!this.term || !this.fitAddon) return;
+    this.fitAddon.fit();
+    if (this.started) {
+      this.backend.resizeTerminal(this.sessionId, this.term.cols, this.term.rows).catch(() => {});
+    }
+  }
+
+  focus() {
     this.term?.focus();
   }
 
-  printUser(message) {
-    this.printMessage("You", message, "36");
+  async run(command) {
+    await this.write(`${command}\r`);
+    this.scheduleCwdRefresh();
+    this.focus();
   }
 
-  printAssistant(name, message) {
+  printMedia(items = []) {
+    for (const item of items) this.appendRecord({ type: "media", item: snapshotMedia(item) });
+  }
+
+  printUser(message, attachments = []) {
+    this.printMessage("You", message, "36");
+    this.printMedia(attachments);
+  }
+
+  printAssistant(name, message, audio = null) {
     this.printMessage(name || "Auri", message, "35");
+    if (audio) this.printMedia([{ ...audio, kind: "audio" }]);
   }
 
   beginAssistantStream(name) {
     const esc = String.fromCharCode(27);
     const output = `\r\n${esc}[1;35m${name || "Auri"}${esc}[0m\r\n`;
-    const bytes = encoder.encode(output);
-    this.remember(bytes);
-    this.term?.write(bytes);
+    this.appendRecord({ type: "bytes", bytes: encoder.encode(output) });
   }
 
   appendAssistantStream(text) {
     if (!text) return;
     const normalized = String(text).replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
-    const bytes = encoder.encode(normalized);
-    this.remember(bytes);
-    this.term?.write(bytes);
+    this.appendRecord({ type: "bytes", bytes: encoder.encode(normalized) });
   }
 
   endAssistantStream() {
-    const bytes = encoder.encode("\r\n");
-    this.remember(bytes);
-    this.term?.write(bytes);
+    this.appendRecord({ type: "bytes", bytes: encoder.encode("\r\n") });
   }
 
   printMessage(label, message, color) {
     const normalized = String(message ?? "").replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
     const esc = String.fromCharCode(27);
     const output = `\r\n${esc}[1;${color}m${label}${esc}[0m\r\n${normalized}\r\n`;
-    const bytes = encoder.encode(output);
-    this.remember(bytes);
-    this.term?.write(bytes);
+    this.appendRecord({ type: "bytes", bytes: encoder.encode(output) });
   }
 }

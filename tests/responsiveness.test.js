@@ -19,6 +19,27 @@ test("terminal composer disables expensive macOS text services", () => {
   assert.match(html, /autocomplete="off"/);
 });
 
+
+test("terminal media is rendered inline by xterm instead of a separate history pane", async () => {
+  const state = createInitialState();
+  state.tabs[0].terminal.history.push({ kind: "assistant", stdout: "response", audioUrl: "blob:audio" });
+
+  const html = renderTerminal(state);
+  const terminal = await readFile("src/services/terminal-session.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(html, /id="terminal-emulator"/);
+  assert.doesNotMatch(html, /terminal-message-feed/);
+  assert.doesNotMatch(html, /terminal-emulator-frame/);
+  assert.doesNotMatch(html, /<audio/);
+  assert.match(terminal, /registerMarker\(/);
+  assert.match(terminal, /registerDecoration\(/);
+  assert.match(terminal, /createElement\("audio"\)/);
+  assert.match(terminal, /createElement\("video"\)/);
+  assert.match(terminal, /createElement\("img"\)/);
+  assert.match(css, /\.terminal-inline-media/);
+});
+
 test("terminal input waits for the PTY instead of silently dropping keystrokes", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.match(source, /async ensureStarted/);
@@ -77,4 +98,32 @@ test("xterm submissions refresh cwd from the native shell process", async () => 
   assert.match(frontend, /backend\.getTerminalCwd/);
   assert.match(backend, /pub fn cwd\(session_id: &str\)/);
   assert.match(backend, /process_id\(\)/);
+});
+
+test("window resizing refits xterm and resizes the native PTY", async () => {
+  const terminal = await readFile("src/services/terminal-session.js", "utf8");
+  const controller = await readFile("src/controllers/app-controller.js", "utf8");
+  assert.match(terminal, /resize\(\)\s*\{[^}]*this\.fitAddon\.fit\(\)/s);
+  assert.match(terminal, /resizeTerminal\(this\.sessionId, this\.term\.cols, this\.term\.rows\)/);
+  assert.match(controller, /window\.addEventListener\("resize", \(\) => \{[^}]*activeTerminalSession\(\)\.resize/s);
+});
+
+test("desktop window launches compact at the top-left", async () => {
+  const config = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
+  const window = config.app.windows[0];
+  assert.equal(window.width, 800);
+  assert.equal(window.x, 0);
+  assert.equal(window.y, 0);
+  assert.equal(window.center, false);
+  assert.ok(window.minWidth <= window.width);
+});
+
+
+test("terminal uses the configured interface font size", async () => {
+  const terminal = await readFile("src/services/terminal-session.js", "utf8");
+  const controller = await readFile("src/controllers/app-controller.js", "utf8");
+
+  assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20\)/);
+  assert.match(terminal, /fontSize: Math\.round\(Math\.min\(30, Math\.max\(14[^\n]+\* 0\.6\)/);
+  assert.match(controller, /session\.mount\(terminalHost, workspace\.terminal\.cwd, this\.state\.settings\.fontSize\)/);
 });

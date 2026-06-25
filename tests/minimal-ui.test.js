@@ -139,3 +139,16 @@ test("empty topbar pointer down delegates to native window dragging", async () =
   assert.match(backend, /startWindowDragging\(\)/);
   assert.match(native, /fn window_start_dragging/);
 });
+
+
+test("settings expose a persisted interface font-size control", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const appView = await readFile("src/views/app-view.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(panels, /data-setting="fontSize"/);
+  assert.match(panels, /Interface font size/);
+  assert.match(appView, /applyAppFontSize/);
+  assert.match(panels, /max="30"/);
+  assert.match(css, /html \{[^}]*font-size:\s*20px/s);
+});

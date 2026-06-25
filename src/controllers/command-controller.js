@@ -30,6 +30,17 @@ function prepareAssistantAudio(audioBlob) {
   return url;
 }
 
+function snapshotAttachments(attachments = []) {
+  return attachments.map((item) => ({
+    id: item.id,
+    name: item.name || "Attachment",
+    kind: item.kind || "file",
+    mime: item.mime || "application/octet-stream",
+    url: item.url || item.assetUrl || null,
+    path: item.path || null
+  }));
+}
+
 function appendOutput(dispatch, output) {
   dispatch({
     type: "TERMINAL_OUTPUT_ADD",
@@ -161,17 +172,26 @@ export async function executeCommand(input, context) {
         const state = getState();
         const workspace = activeWorkspace(state);
         const model = state.models.find((item) => item.id === state.selectedModelId);
-        actions.showUserMessage?.(prompt);
+        const attachments = [...state.media.attachments];
+        const sentAttachments = snapshotAttachments(attachments);
+        actions.showUserMessage?.(prompt, sentAttachments);
         appendOutput(dispatch, {
           stdout: prompt,
           kind: "user",
           cwd: workspace.terminal.cwd,
-          modelName: model?.name
+          modelName: model?.name,
+          attachments: sentAttachments
         });
+        dispatch({ type: "ATTACHMENTS_CLEAR", payload: {} });
         dispatch({ type: "TERMINAL_RUNNING_SET", payload: { value: true } });
-        const result = await backend.askAi({ prompt, model, cwd: workspace.terminal.cwd, attachScreenshot: state.settings.alwaysAttachScreenshot, attachments: state.media.attachments });
+        const result = await backend.askAi({ prompt, model, cwd: workspace.terminal.cwd, attachScreenshot: state.settings.alwaysAttachScreenshot, attachments });
         const audioUrl = prepareAssistantAudio(result.audioBlob);
-        actions.showAssistantMessage?.(model?.name, result.text);
+        const assistantAudio = audioUrl ? {
+          name: `${model?.name || "Auri"} response`,
+          url: audioUrl,
+          mime: result.audioMime || "audio/wav"
+        } : null;
+        actions.showAssistantMessage?.(model?.name, result.text, assistantAudio);
         appendOutput(dispatch, {
           stdout: result.text,
           transcript: result.transcript,

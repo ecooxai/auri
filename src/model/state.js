@@ -49,6 +49,7 @@ export function createInitialState() {
     selectedModelId: "gemini-live-default",
     settings: {
       theme: "aurora-light",
+      fontSize: 20,
       wakeShortcut: "Alt+Space",
       wakeHoldSeconds: 2,
       liveDisconnectSeconds: 60,
@@ -151,8 +152,12 @@ export function reduceState(state, event) {
       return { ...state, info: { unread: 0, items: [] } };
     case "INFO_READ":
       return { ...state, info: { ...state.info, unread: 0 } };
-    case "SETTING_SET":
-      return { ...state, settings: { ...state.settings, [event.payload.key]: event.payload.value } };
+    case "SETTING_SET": {
+      const value = event.payload.key === "fontSize"
+        ? Math.min(30, Math.max(14, Number(event.payload.value) || 20))
+        : event.payload.value;
+      return { ...state, settings: { ...state.settings, [event.payload.key]: value } };
+    }
     case "MODEL_ADD":
       return { ...state, models: [...state.models, event.payload] };
     case "MODEL_UPDATE":
@@ -169,6 +174,8 @@ export function reduceState(state, event) {
       return { ...state, media: { ...state.media, attachments: [...state.media.attachments, event.payload] } };
     case "ATTACHMENT_REMOVE":
       return { ...state, media: { ...state.media, attachments: state.media.attachments.filter((item) => item.id !== event.payload.id) } };
+    case "ATTACHMENTS_CLEAR":
+      return { ...state, media: { ...state.media, attachments: [] } };
     case "SUBTAB_UPDATE":
       return updateActiveTab(state, (tab) => ({
         ...tab,

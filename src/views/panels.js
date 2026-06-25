@@ -1,4 +1,4 @@
-import { escapeHtml, parseAssistantReply } from "../model/assistant.js";
+import { escapeHtml } from "../model/assistant.js";
 import { formatBytes, iconForEntry } from "../model/presentation.js";
 import { previewClipboardText } from "../model/clipboard.js";
 import { activeSubtab, activeWorkspace } from "../model/state.js";
@@ -100,33 +100,6 @@ export function renderFolder(state) {
     </aside>`;
 }
 
-function renderHistoryItem(item) {
-  if (item.kind === "user") {
-    return `<article class="terminal-entry command-entry user-entry">
-      <div class="command-line"><span>${escapeHtml(item.cwd || "")}</span><b>›</b><code>${escapeHtml(item.stdout || "")}</code></div>
-    </article>`;
-  }
-  if (item.kind === "assistant") {
-    const parsed = parseAssistantReply(item.stdout || "");
-    const transcripts = [...(item.transcript ? [item.transcript] : []), ...parsed.transcripts];
-    return `<article class="terminal-entry command-entry assistant-command-entry">
-      <div class="command-line"><span>${escapeHtml(item.modelName || "Auri")}</span><b>›</b><code>reply</code></div>
-      ${transcripts.map((line) => `<div class="transcript-line"><button type="button" data-action="transcript-insert" data-value="${escapeHtml(line)}"><i>${escapeHtml(line)}</i></button>${button("⧉", "Copy transcript", "copy-text", `data-value="${escapeHtml(line)}"`)}</div>`).join("")}
-      <pre>${escapeHtml(parsed.text || item.stdout)}</pre>
-      ${item.audioUrl ? `<audio class="assistant-audio" controls src="${escapeHtml(item.audioUrl)}"></audio>` : ""}
-    </article>`;
-  }
-  if (item.kind === "help") {
-    return `<article class="terminal-entry"><pre class="help-output">${escapeHtml(item.stdout)}</pre></article>`;
-  }
-  return `<article class="terminal-entry command-entry">
-    ${item.command ? `<div class="command-line"><span>${escapeHtml(item.cwd || "")}</span><b>›</b><code>${escapeHtml(item.command)}</code></div>` : ""}
-    ${item.stdout ? `<pre>${escapeHtml(item.stdout)}</pre>` : ""}
-    ${item.stderr ? `<pre class="stderr">${escapeHtml(item.stderr)}</pre>` : ""}
-    ${item.code ? `<small class="exit-code">exit ${item.code}</small>` : ""}
-  </article>`;
-}
-
 export function renderTerminal(state) {
   const tab = activeWorkspace(state);
   const model = state.models.find((item) => item.id === state.selectedModelId);
@@ -137,7 +110,8 @@ export function renderTerminal(state) {
         <div class="terminal-status"><span class="status-dot ${tab.terminal.running ? "is-busy" : ""}"></span>${tab.terminal.running ? "Working" : "Ready"}</div>
         ${button("⌫", "Clear terminal", "terminal-clear")}
       </div>
-      <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator"></div></div>\n      <div class="terminal-input-zone">
+      <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator"></div></div>
+      <div class="terminal-input-zone">
       <div class="composer-wrap">
         ${state.media.attachments.length ? `<div class="attachment-row">${state.media.attachments.map((item) => `<span class="attachment-chip">${item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : "▷"} ${escapeHtml(item.name)}<button type="button" data-action="attachment-remove" data-id="${item.id}">×</button></span>`).join("")}</div>` : ""}
         <textarea id="terminal-input" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · ⌘/Ctrl + Enter runs"></textarea>
@@ -212,6 +186,7 @@ export function renderSettings(state) {
     <div class="settings-scroll">
       <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div class="model-cards">${state.models.map((model) => `<article class="model-card ${model.id === state.selectedModelId ? "is-selected" : ""}"><div class="model-card-title"><span>${model.type.includes("gemini") ? "✦" : "◌"}</span><div><strong>${escapeHtml(model.name)}</strong><small>${escapeHtml(model.type)} · ${escapeHtml(model.model)}</small></div><button type="button" data-action="model-select" data-id="${model.id}">${model.id === state.selectedModelId ? "Selected" : "Use"}</button></div><label>API key<input type="password" data-model-key="${model.id}" value="${escapeHtml(model.apiKey || "")}" placeholder="Paste key"></label><label>API URL<input type="url" data-model-url="${model.id}" value="${escapeHtml(model.url || "")}" placeholder="Default endpoint"></label><button class="save-row" type="button" data-action="model-save" data-id="${model.id}">Save model</button></article>`).join("")}</div>
       <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type"><option value="gemini">Gemini</option><option value="gemini-live">Gemini Live</option><option value="openai">OpenAI</option><option value="openai-live">OpenAI Live</option></select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" required></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></section>
+      <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Long press to open</small></span><input data-setting="wakeShortcut" value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>Disconnect live API<small>Seconds</small></span><input data-setting="liveDisconnectSeconds" type="number" min="10" max="600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>
     </div>

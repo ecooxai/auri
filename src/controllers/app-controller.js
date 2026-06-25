@@ -28,6 +28,15 @@ function attachmentKind(file) {
   return "file";
 }
 
+function attachmentPreviewUrl(file, kind) {
+  if (kind === "file" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return null;
+  }
+}
+
 export class AppController {
   constructor({ view, backend, terminalSessionFactory }) {
     this.view = view;
@@ -70,8 +79,8 @@ export class AppController {
         copyText: (text) => navigator.clipboard.writeText(text),
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
-        showUserMessage: (text) => this.activeTerminalSession().printUser(text),
-        showAssistantMessage: (name, text) => this.activeTerminalSession().printAssistant(name, text)
+        showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
+        showAssistantMessage: (name, text, audio) => this.activeTerminalSession().printAssistant(name, text, audio)
       }
     };
   }
@@ -124,7 +133,7 @@ export class AppController {
     if (terminalHost) {
       const workspace = activeWorkspace(this.state);
       const session = this.terminalSessionFor(workspace.id);
-      requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd).catch((error) => this.reportError("Terminal", error)));
+      requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize).catch((error) => this.reportError("Terminal", error)));
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
   }
@@ -180,7 +189,10 @@ export class AppController {
     this.view.root.addEventListener("submit", (event) => this.handleSubmit(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeydown(event));
     window.addEventListener("keyup", (event) => this.handleGlobalKeyup(event));
-    window.addEventListener("resize", () => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
+    window.addEventListener("resize", () => {
+      this.activeTerminalSession().resize?.();
+      this.syncNativeWebview().catch((error) => this.reportError("Webview", error));
+    });
   }
 
 
@@ -356,14 +368,16 @@ export class AppController {
     const input = event.target;
     if (input.id === "file-attachment") {
       for (const selected of [...input.files]) {
+        const kind = attachmentKind(selected);
         this.dispatch({
           type: "ATTACHMENT_ADD",
           payload: {
             id: `attachment-${Date.now()}-${Math.random()}`,
             name: selected.name,
-            kind: attachmentKind(selected),
+            kind,
             mime: selected.type,
-            file: selected
+            file: selected,
+            url: attachmentPreviewUrl(selected, kind)
           }
         }, { preserveInput: true });
       }
@@ -488,8 +502,17 @@ export class AppController {
       }
     }
 
-    if (this.wakeStreamStarted) this.activeTerminalSession().endAssistantStream();
-    else this.activeTerminalSession().printAssistant(model?.name || "Gemini Live", text);
+    const assistantAudio = audioUrl ? {
+      name: `${model?.name || "Gemini Live"} response`,
+      url: audioUrl,
+      mime: result?.audioMime || "audio/wav"
+    } : null;
+    if (this.wakeStreamStarted) {
+      this.activeTerminalSession().endAssistantStream();
+      if (assistantAudio) this.activeTerminalSession().printMedia([assistantAudio]);
+    } else {
+      this.activeTerminalSession().printAssistant(model?.name || "Gemini Live", text, assistantAudio);
+    }
     this.dispatch({
       type: "TERMINAL_OUTPUT_ADD",
       payload: {
@@ -566,6 +589,10 @@ export class AppController {
     const entries = await this.backend.listDirectory(path);
     this.dispatch({ type: "WORKDIR_SET", payload: { workspaceId, path } });
     this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
+    const workspace = activeWorkspace(this.state);
+    if (workspace.id === workspaceId && activeSubtab(this.state).type === "terminal") {
+      scheduleFrame(() => this.terminalSessionFor(workspaceId).focus?.());
+    }
   }
 
   async changeDirectory(path, { echoInTerminal = false } = {}) {
