@@ -248,11 +248,21 @@ export async function executeCommand(input, context) {
         return item;
       }
       if (action === "model" && args[0] === "update") {
-        const [id, url = "", apiKey = ""] = args.slice(1);
-        if (!id) throw new Error("Choose a model to update.");
-        dispatch({ type: "MODEL_UPDATE", payload: { id, patch: { url, apiKey } } });
+        const [id, name, type, model, url = "", apiKey = ""] = args.slice(1);
+        if (!id || !name || !type || !model) throw new Error("Model update needs id, name, type, and model.");
+        if (!getState().models.some((item) => item.id === id)) throw new Error("Model not found.");
+        const patch = { name, type, model, url, apiKey };
+        dispatch({ type: "MODEL_UPDATE", payload: { id, patch } });
         await persistConfiguration(backend, getState());
-        return { id, url };
+        return { id, ...patch };
+      }
+      if (action === "model" && args[0] === "delete") {
+        const id = args[1];
+        if (!id) throw new Error("Choose a model to delete.");
+        if (!getState().models.some((item) => item.id === id)) throw new Error("Model not found.");
+        dispatch({ type: "MODEL_DELETE", payload: { id } });
+        await persistConfiguration(backend, getState());
+        return { id };
       }
       throw new Error(`Unknown AI action: ${action}`);
     }

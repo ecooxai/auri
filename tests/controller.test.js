@@ -13,6 +13,63 @@ function harness() {
   };
 }
 
+test("model overflow Edit action reveals and closes the model editor", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const click = (action, id = "gemini-live-default") => controller.handleClick({
+    target: { closest: () => ({ dataset: { action, id } }) },
+    preventDefault() {}
+  });
+
+  await click("model-menu");
+  assert.equal(controller.state.ui.modelMenuId, "gemini-live-default");
+  await click("model-edit");
+  assert.equal(controller.state.ui.modelMenuId, null);
+  assert.equal(controller.state.ui.editingModelId, "gemini-live-default");
+  await click("model-edit-cancel");
+  assert.equal(controller.state.ui.editingModelId, null);
+});
+
+test("AI model update modifies every editable property through the command layer", async () => {
+  const h = harness();
+  h.backend.saveSettings = async () => {};
+
+  await executeCommand('ai model update gemini-live-default "Studio assistant" openai "gpt-custom" "https://example.test/v1" "secret"', h);
+
+  assert.deepEqual(h.state().models[0], {
+    id: "gemini-live-default",
+    name: "Studio assistant",
+    type: "openai",
+    model: "gpt-custom",
+    url: "https://example.test/v1",
+    apiKey: "secret",
+    enabled: true
+  });
+});
+
+test("AI model delete removes the provider and persists the fallback default", async () => {
+  const h = harness();
+  const saved = [];
+  h.backend.saveSettings = async (configuration) => { saved.push(configuration); };
+  await executeCommand('ai model add Backup openai gpt-test "" ""', h);
+
+  await executeCommand('ai model delete gemini-live-default', h);
+
+  assert.equal(h.state().models.some((model) => model.id === "gemini-live-default"), false);
+  assert.equal(h.state().selectedModelId, h.state().models[0].id);
+  assert.equal(saved.at(-1).selectedModelId, h.state().models[0].id);
+});
+
 test("GUI command creates a tab through the same command layer", async () => {
   const h = harness();
   await executeCommand("tab new Research", h);

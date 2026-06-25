@@ -36,7 +36,8 @@ auri terminal run <command...>                                                 R
 auri ai ask <prompt...>                                                        Ask the selected AI with the current screenshot.
 auri ai model add <name> <type> <model> <url> <key>                            Add an AI provider configuration.
 auri ai model select <id>                                                      Select the AI model for the terminal.
-auri ai model update <id> <url> <key>                                          Update a model endpoint and API key.
+auri ai model update <id> <name> <type> <model> <url> <key>                    Update an AI provider configuration.
+auri ai model delete <id>                                                      Delete an AI provider configuration.
 auri clipboard list                                                            Open clipboard history.
 auri clipboard insert <id>                                                     Paste a clipboard item into the previously active application.
 auri clipboard copy <text>                                                     Copy text to the system clipboard.

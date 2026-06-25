@@ -218,11 +218,70 @@ export function renderClipboard(state) {
   </section>`;
 }
 
+const MODEL_TYPES = [
+  ["gemini", "Gemini"],
+  ["gemini-live", "Gemini Live"],
+  ["openai", "OpenAI"],
+  ["openai-live", "OpenAI Live"]
+];
+
+function renderModelTypeOptions(selectedType) {
+  return MODEL_TYPES.map(([value, label]) =>
+    `<option value="${value}" ${value === selectedType ? "selected" : ""}>${label}</option>`
+  ).join("");
+}
+
+function modelTypeLabel(type) {
+  return MODEL_TYPES.find(([value]) => value === type)?.[1] || type;
+}
+
+function renderModelEditor(model) {
+  if (!model) return "";
+  return `<form id="model-edit-form" class="model-editor" data-id="${model.id}">
+    <div class="model-editor-heading"><div><strong>Edit ${escapeHtml(model.name)}</strong><small>Update the saved provider configuration.</small></div><button type="button" data-action="model-edit-cancel" aria-label="Close editor" title="Close editor">×</button></div>
+    <div class="form-grid">
+      <label>Display name<input name="name" required value="${escapeHtml(model.name)}"></label>
+      <label>API type<select name="type">${renderModelTypeOptions(model.type)}</select></label>
+      <label>Model name<input name="model" required value="${escapeHtml(model.model)}"></label>
+      <label>API URL<input name="url" type="url" value="${escapeHtml(model.url || "")}" placeholder="Optional"></label>
+      <label class="wide">API key<input name="apiKey" type="password" value="${escapeHtml(model.apiKey || "")}" placeholder="Optional"></label>
+    </div>
+    <div class="model-editor-actions"><button class="action-button secondary" type="button" data-action="model-edit-cancel">Cancel</button><button class="action-button primary" type="submit">Save changes</button></div>
+  </form>`;
+}
+
 export function renderSettings(state) {
-  return `<section class="settings-panel"><header class="panel-title"><div><span>⚙</span><div><small>PREFERENCES</small><h2>Settings</h2></div></div></header>
+  const editingModel = state.models.find((model) => model.id === state.ui.editingModelId);
+  const models = state.models.length
+    ? state.models.map((model) => {
+      const isDefault = model.id === state.selectedModelId;
+      const menuOpen = state.ui.modelMenuId === model.id;
+      const rowClass = ["model-row", isDefault ? "is-default" : "", menuOpen ? "is-menu-open" : ""].filter(Boolean).join(" ");
+      return `<article class="${rowClass}">
+        <div class="model-row-copy">
+          <div class="model-row-title">
+            <strong>${escapeHtml(model.name)}</strong>
+            ${isDefault ? `<span class="model-default-badge">Default</span>` : ""}
+          </div>
+          <small>${escapeHtml(modelTypeLabel(model.type))} · ${escapeHtml(model.model || "Model not set")}</small>
+        </div>
+        <div class="model-row-actions">
+          <button class="model-more" type="button" data-action="model-menu" data-id="${model.id}" aria-label="Model actions for ${escapeHtml(model.name)}" aria-haspopup="menu" aria-expanded="${menuOpen}" title="Model actions">⋯</button>
+          ${menuOpen ? `<div class="model-menu" role="menu" aria-label="Actions for ${escapeHtml(model.name)}">
+            <button type="button" role="menuitem" data-action="model-select" data-id="${model.id}" ${isDefault ? "disabled" : ""}>Set default</button>
+            <button type="button" role="menuitem" data-action="model-edit" data-id="${model.id}">Edit settings</button>
+            <span class="model-menu-separator" role="separator"></span>
+            <button type="button" role="menuitem" data-action="model-delete" data-id="${model.id}">Delete model</button>
+          </div>` : ""}
+        </div>
+      </article>`;
+    }).join("")
+    : `<div class="model-empty"><strong>No assistant models</strong><p>Add a model to start using Auri's assistant features.</p></div>`;
+
+  return `<section class="settings-panel"><header class="panel-title"><div><span>⚙</span><h2>Settings</h2></div></header>
     <div class="settings-scroll">
-      <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div class="model-cards">${state.models.map((model) => `<article class="model-card ${model.id === state.selectedModelId ? "is-selected" : ""}"><div class="model-card-title"><span>${model.type.includes("gemini") ? "✦" : "◌"}</span><div><strong>${escapeHtml(model.name)}</strong><small>${escapeHtml(model.type)} · ${escapeHtml(model.model)}</small></div><button type="button" data-action="model-select" data-id="${model.id}">${model.id === state.selectedModelId ? "Selected" : "Use"}</button></div><label>API key<input type="password" data-model-key="${model.id}" value="${escapeHtml(model.apiKey || "")}" placeholder="Paste key"></label><label>API URL<input type="url" data-model-url="${model.id}" value="${escapeHtml(model.url || "")}" placeholder="Default endpoint"></label><button class="save-row" type="button" data-action="model-save" data-id="${model.id}">Save model</button></article>`).join("")}</div>
-      <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type"><option value="gemini">Gemini</option><option value="gemini-live">Gemini Live</option><option value="openai">OpenAI</option><option value="openai-live">OpenAI Live</option></select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" required></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></section>
+      <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div><div class="model-list">${models}</div>${renderModelEditor(editingModel)}
+      <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type">${renderModelTypeOptions("gemini")}</select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" placeholder="Optional"></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label><label><span>Terminal retained lines<small>Oldest lines are discarded · 100–100,000</small></span><input data-setting="terminalMaxLines" type="number" min="100" max="100000" step="100" value="${state.settings.terminalMaxLines}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Long press to open</small></span><input data-setting="wakeShortcut" value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>Disconnect live API<small>Seconds</small></span><input data-setting="liveDisconnectSeconds" type="number" min="10" max="600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>

@@ -60,7 +60,7 @@ export function createInitialState() {
       audioBitrateKbps: 64
     },
     media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveStatus: "idle" }
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, modelMenuId: null, editingModelId: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveStatus: "idle" }
   };
 }
 
@@ -172,6 +172,23 @@ export function reduceState(state, event) {
       return state.models.some((model) => model.id === event.payload.id)
         ? { ...state, selectedModelId: event.payload.id }
         : state;
+    case "MODEL_DELETE": {
+      const models = state.models.filter((model) => model.id !== event.payload.id);
+      if (models.length === state.models.length) return state;
+      const selectedModelId = state.selectedModelId === event.payload.id
+        ? models[0]?.id || null
+        : state.selectedModelId;
+      return {
+        ...state,
+        models,
+        selectedModelId,
+        ui: {
+          ...state.ui,
+          modelMenuId: state.ui.modelMenuId === event.payload.id ? null : state.ui.modelMenuId,
+          editingModelId: state.ui.editingModelId === event.payload.id ? null : state.ui.editingModelId
+        }
+      };
+    }
     case "CLIPBOARD_SET":
       return { ...state, clipboard: { items: event.payload.items } };
     case "MEDIA_SET":

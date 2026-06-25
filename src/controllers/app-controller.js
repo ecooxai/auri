@@ -322,11 +322,26 @@ export class AppController {
         case "starter":
           this.view.setTerminalInput(target.dataset.value || "");
           break;
-        case "model-select":
-          await this.runInternal(`ai model select ${target.dataset.id}`);
+        case "model-menu":
+          this.dispatch({
+            type: "UI_SET",
+            payload: { modelMenuId: this.state.ui.modelMenuId === target.dataset.id ? null : target.dataset.id }
+          }, { preserveInput: true });
           break;
-        case "model-save":
-          await this.saveModel(target.dataset.id);
+        case "model-edit":
+          this.dispatch({ type: "UI_SET", payload: { modelMenuId: null, editingModelId: target.dataset.id } }, { preserveInput: true });
+          break;
+        case "model-edit-cancel":
+          this.dispatch({ type: "UI_SET", payload: { editingModelId: null } }, { preserveInput: true });
+          break;
+        case "model-delete":
+          await this.runInternal(`ai model delete ${quoteArg(target.dataset.id)}`);
+          this.view.showToast("Model deleted", "success");
+          break;
+        case "model-select":
+          this.dispatch({ type: "UI_SET", payload: { modelMenuId: null } }, { preserveInput: true });
+          await this.runInternal(`ai model select ${quoteArg(target.dataset.id)}`);
+          this.view.showToast("Default model updated", "success");
           break;
         case "info-open":
           await this.runInternal("info show");
@@ -526,10 +541,19 @@ export class AppController {
   }
 
   async handleSubmit(event) {
+    if (event.target.id === "model-edit-form") {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(event.target).entries());
+      const id = event.target.dataset.id;
+      await this.runInternal(`ai model update ${quoteArg(id)} ${quoteArg(values.name)} ${quoteArg(values.type)} ${quoteArg(values.model)} ${quoteArg(values.url || "")} ${quoteArg(values.apiKey || "")}`);
+      this.dispatch({ type: "UI_SET", payload: { editingModelId: null } }, { preserveInput: true });
+      this.view.showToast("Model saved", "success");
+      return;
+    }
     if (event.target.id !== "model-form") return;
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.target).entries());
-    await this.runInternal(`ai model add ${quoteArg(values.name)} ${quoteArg(values.type)} ${quoteArg(values.model)} ${quoteArg(values.url || "")} ${quoteArg(values.apiKey)}`);
+    await this.runInternal(`ai model add ${quoteArg(values.name)} ${quoteArg(values.type)} ${quoteArg(values.model)} ${quoteArg(values.url || "")} ${quoteArg(values.apiKey || "")}`);
     this.view.showToast("Model added", "success");
   }
 
@@ -790,12 +814,6 @@ export class AppController {
     } finally {
       this.clipboardPolling = false;
     }
-  }
-
-  async saveModel(id) {
-    const patch = this.view.getModelFields(id);
-    await this.runInternal(`ai model update ${quoteArg(id)} ${quoteArg(patch.url)} ${quoteArg(patch.apiKey)}`);
-    this.view.showToast("Model saved", "success");
   }
 
   async persistConfiguration() {
