@@ -1,5 +1,19 @@
 # Auri
 
+## Common commands
+
+Watch native development (starts a new independent Auri app process):
+
+```bash
+npm run native:watch
+```
+
+Build a release bundle:
+
+```bash
+npm run tauri:build
+```
+
 Auri is a terminal-centered assistant workspace for macOS and Linux, built with Rust and Tauri. Its interface combines browser-like workspaces, a synchronized folder pane, terminal and AI composer, file inspection and viewing, webviews, clipboard history, settings, and audio/video capture.
 
 The project follows a command-first MVC design: every meaningful GUI action maps to a text command. A user types the public form (`auri tab new`), while internal GUI code calls the same command without the `auri` prefix (`tab new`). This keeps behavior testable and makes automation predictable.
@@ -114,6 +128,8 @@ Native development:
 npm run tauri:dev
 ```
 
+For restart-on-change development, `npm run native:watch` launches an independent Auri process with its own frontend server, temporary build identity, and command socket. Starting it again does not stop or replace another running watcher or Auri window.
+
 Install the external CLI on your `PATH`:
 
 ```bash
@@ -121,7 +137,7 @@ npm run cli:install
 auri tab new Research
 ```
 
-The desktop app must be running. The CLI reconnects through `~/.config/auri/command.sock`, restores quoting for arguments containing spaces, focuses the main window, and sends the command through the same controller used by GUI clicks. Source builds install the CLI separately; release packaging should install or expose the `auri` binary on the user's `PATH`.
+The desktop app must be running. Each process owns a socket under `~/.config/auri/instances/`; the CLI selects the most recently started reachable instance, restores quoting for arguments containing spaces, focuses that window, and sends the command through the same controller used by GUI clicks. Set `AURI_COMMAND_SOCKET` to a specific socket path when several instances are running and you need an exact target. Source builds install the CLI separately; release packaging should install or expose the `auri` binary on the user's `PATH`.
 
 Production build:
 
@@ -129,7 +145,7 @@ Production build:
 npm run tauri:build
 ```
 
-Tauri places platform bundles under `src-tauri/target/release/bundle/`. Sign and notarize macOS builds, and package/test Linux bundles on each target distribution before release.
+Tauri places platform bundles under `src-tauri/target/release/bundle/`. The npm build wrapper assigns every packaged build an independent application identifier so opening one build does not activate or terminate another. Set `AURI_BUILD_ID` when a stable, repeatable identifier is required for a release channel. Sign and notarize macOS builds, and package/test Linux bundles on each target distribution before release.
 
 ## Data layout
 
@@ -145,7 +161,8 @@ Tauri places platform bundles under `src-tauri/target/release/bundle/`. Sign and
 
 ~/.config/auri/
   settings.json          Models, API keys, and preferences
-  command.sock           User-only external CLI socket while Auri runs
+  instances/
+    command-<pid>.sock   User-only external CLI socket for each Auri process
 ```
 
 API keys are stored locally in the settings file. They are not committed by this project, but the file is currently plain JSON; protect your user account and filesystem permissions. Supplying a key in a terminal command can also leave it in shell or terminal history, so the Settings UI is preferable for secrets.
@@ -163,6 +180,10 @@ auri subtab close [id]                                                         C
 auri subtab select <id>                                                        Focus a horizontal subtab.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
 auri folder list [path]                                                        List a directory.
+auri folder sort <name|date|type>                                             Sort the active folder listing.
+auri folder create-file <name>                                                Create an empty file in the active folder.
+auri folder create-folder <name>                                              Create a folder in the active folder.
+auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
 auri file open <path>                                                          Open a file in the viewer.
 auri file external [path]                                                      Open a file with the operating system.

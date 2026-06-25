@@ -4,7 +4,7 @@ use core::{capture, clipboard, files, ipc, lifecycle, shell, terminal, webview, 
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 #[cfg(desktop)]
-use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, ShortcutState};
 
 #[tauri::command]
 fn initialize_workspace() -> Result<workspace::InitResult, String> {
@@ -19,6 +19,23 @@ fn list_directory(path: String) -> Result<Vec<files::FileEntry>, String> {
 #[tauri::command]
 fn inspect_file(path: String) -> Result<files::FileInfo, String> {
     files::inspect_file(&path)
+}
+
+#[tauri::command]
+fn create_file(directory: String, name: String) -> Result<files::CreatedItem, String> {
+    files::create_file(&directory, &name)
+}
+
+#[tauri::command]
+fn create_folder(directory: String, name: String) -> Result<files::CreatedItem, String> {
+    files::create_folder(&directory, &name)
+}
+
+#[tauri::command]
+async fn folder_info(path: String) -> Result<files::FolderInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || files::folder_info(&path))
+        .await
+        .map_err(|error| format!("Folder info task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -136,31 +153,41 @@ fn webview_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            let command_server =
+                ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
+            app.manage(command_server);
+
             #[cfg(desktop)]
-            app.handle().plugin(
-                tauri_plugin_global_shortcut::Builder::new()
-                    .with_shortcuts(["alt+space"])?
-                    .with_handler(|app, shortcut, event| {
-                        if event.state == ShortcutState::Pressed
-                            && shortcut.matches(Modifiers::ALT, Code::Space)
-                        {
-                            let app = app.clone();
-                            std::thread::spawn(move || {
-                                let screenshot = capture::screenshot().ok();
-                                let _ = app.emit("auri-wake", &screenshot);
-                                std::thread::sleep(std::time::Duration::from_millis(500));
-                                let _ = lifecycle::reveal_main_window(&app);
-                            });
-                        }
-                    })
-                    .build(),
-            )?;
+            {
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_handler(|app, shortcut, event| {
+                            if event.state == ShortcutState::Pressed
+                                && shortcut.matches(Modifiers::ALT, Code::Space)
+                            {
+                                let app = app.clone();
+                                std::thread::spawn(move || {
+                                    let screenshot = capture::screenshot().ok();
+                                    let _ = app.emit("auri-wake", &screenshot);
+                                    std::thread::sleep(std::time::Duration::from_millis(500));
+                                    let _ = lifecycle::reveal_main_window(&app);
+                                });
+                            }
+                        })
+                        .build(),
+                )?;
+
+                if let Err(error) = app.global_shortcut().register("alt+space") {
+                    eprintln!(
+                        "Alt+Space is already owned by another application or Auri instance: {error}"
+                    );
+                }
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 window.set_visible_on_all_workspaces(true)?;
             }
 
-            ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -174,6 +201,9 @@ pub fn run() {
             initialize_workspace,
             list_directory,
             inspect_file,
+            create_file,
+            create_folder,
+            folder_info,
             read_text_file,
             read_binary_file,
             run_command,

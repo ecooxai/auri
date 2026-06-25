@@ -82,11 +82,11 @@ function base64ToBytes(value) {
 function browserEntries(path) {
   const base = String(path || "~").replace(/\/$/, "");
   return [
-    { name: "Projects", path: `${base}/Projects`, kind: "directory", size: 0 },
-    { name: "media", path: `${base}/media`, kind: "directory", size: 0 },
-    { name: "README.md", path: `${base}/README.md`, kind: "file", size: 8240 },
-    { name: "aurora.jpg", path: `${base}/aurora.jpg`, kind: "file", size: 1843200 },
-    { name: "notes.txt", path: `${base}/notes.txt`, kind: "file", size: 2940 }
+    { name: "Projects", path: `${base}/Projects`, kind: "directory", size: 0, modified: Date.now() - 400000 },
+    { name: "media", path: `${base}/media`, kind: "directory", size: 0, modified: Date.now() - 300000 },
+    { name: "README.md", path: `${base}/README.md`, kind: "file", size: 8240, modified: Date.now() - 200000 },
+    { name: "aurora.jpg", path: `${base}/aurora.jpg`, kind: "file", size: 1843200, modified: Date.now() - 100000 },
+    { name: "notes.txt", path: `${base}/notes.txt`, kind: "file", size: 2940, modified: Date.now() }
   ];
 }
 
@@ -190,6 +190,21 @@ export class Backend {
   async inspectFile(path) {
     if (!this.invoke) return browserMetadata(path);
     return this.call("inspect_file", { path });
+  }
+
+  async createFile(directory, name) {
+    if (!this.invoke) throw new Error("Creating files needs the native Tauri build.");
+    return this.call("create_file", { directory, name });
+  }
+
+  async createFolder(directory, name) {
+    if (!this.invoke) throw new Error("Creating folders needs the native Tauri build.");
+    return this.call("create_folder", { directory, name });
+  }
+
+  async folderInfo(path) {
+    if (!this.invoke) throw new Error("Folder ownership, permissions, and disk information need the native Tauri build.");
+    return this.call("folder_info", { path });
   }
 
 

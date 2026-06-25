@@ -1,5 +1,19 @@
 # Auri Agent Guide
 
+## Common commands
+
+Watch native development (starts a new independent Auri app process):
+
+```bash
+npm run native:watch
+```
+
+Build a release bundle:
+
+```bash
+npm run tauri:build
+```
+
 This file is the implementation contract for contributors and coding agents working on Auri.
 
 ## Non-negotiable workflow
@@ -25,6 +39,10 @@ auri subtab close [id]                                                         C
 auri subtab select <id>                                                        Focus a horizontal subtab.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
 auri folder list [path]                                                        List a directory.
+auri folder sort <name|date|type>                                             Sort the active folder listing.
+auri folder create-file <name>                                                Create an empty file in the active folder.
+auri folder create-folder <name>                                              Create a folder in the active folder.
+auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
 auri file open <path>                                                          Open a file in the viewer.
 auri file external [path]                                                      Open a file with the operating system.

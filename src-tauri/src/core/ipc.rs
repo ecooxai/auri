@@ -1,43 +1,78 @@
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use super::workspace::home_dir;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::fs;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::io::{Read, Write};
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::os::unix::net::{UnixListener, UnixStream};
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::path::PathBuf;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::thread;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use std::time::Duration;
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 use tauri::Emitter;
 
+#[cfg(not(test))]
 const MAX_COMMAND_BYTES: u64 = 64 * 1024;
+pub const FOCUS_REQUEST: &str = "__auri_focus__";
 
-#[cfg(unix)]
-pub fn socket_path() -> Result<PathBuf, String> {
-    Ok(home_dir()?
-        .join(".config")
-        .join("auri")
-        .join("command.sock"))
+#[derive(Debug, PartialEq, Eq)]
+pub enum IncomingRequest<'a> {
+    Focus,
+    Command(&'a str),
 }
 
-#[cfg(unix)]
-pub fn start_command_server(app: tauri::AppHandle) -> Result<(), String> {
-    let path = socket_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+pub fn parse_request(input: &str) -> Result<IncomingRequest<'_>, String> {
+    let request = input.trim();
+    if request.is_empty() {
+        return Err("Command is empty.".to_string());
     }
+    if request == FOCUS_REQUEST {
+        return Ok(IncomingRequest::Focus);
+    }
+    Ok(IncomingRequest::Command(request))
+}
 
+pub fn socket_file_name(pid: u32) -> String {
+    format!("command-{pid}.sock")
+}
+
+#[cfg(all(unix, not(test)))]
+pub fn socket_directory() -> Result<PathBuf, String> {
+    Ok(home_dir()?.join(".config").join("auri").join("instances"))
+}
+
+#[cfg(all(unix, not(test)))]
+pub fn socket_path() -> Result<PathBuf, String> {
+    Ok(socket_directory()?.join(socket_file_name(std::process::id())))
+}
+
+#[cfg(all(unix, not(test)))]
+pub struct CommandServer {
+    path: PathBuf,
+}
+
+#[cfg(all(unix, not(test)))]
+impl Drop for CommandServer {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(all(unix, not(test)))]
+pub fn start_command_server(app: tauri::AppHandle) -> Result<CommandServer, String> {
+    let directory = socket_directory()?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        .map_err(|error| error.to_string())?;
+
+    let path = socket_path()?;
     if path.exists() {
-        if UnixStream::connect(&path).is_ok() {
-            return Err("Another Auri command server is already running.".to_string());
-        }
         fs::remove_file(&path).map_err(|error| error.to_string())?;
     }
 
@@ -53,10 +88,11 @@ pub fn start_command_server(app: tauri::AppHandle) -> Result<(), String> {
             thread::spawn(move || handle_connection(stream, app));
         }
     });
-    Ok(())
+
+    Ok(CommandServer { path })
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(test)))]
 fn handle_connection(mut stream: UnixStream, app: tauri::AppHandle) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let mut command = String::new();
@@ -68,13 +104,14 @@ fn handle_connection(mut stream: UnixStream, app: tauri::AppHandle) {
             if command.len() as u64 > MAX_COMMAND_BYTES {
                 return Err("Command exceeds the 64 KB limit.".to_string());
             }
-            let command = command.trim();
-            if command.is_empty() {
-                return Err("Command is empty.".to_string());
+            match parse_request(&command)? {
+                IncomingRequest::Focus => super::lifecycle::reveal_main_window(&app),
+                IncomingRequest::Command(command) => {
+                    super::lifecycle::reveal_main_window(&app)?;
+                    app.emit("auri-command", command.to_string())
+                        .map_err(|error| error.to_string())
+                }
             }
-            let _ = super::lifecycle::reveal_main_window(&app);
-            app.emit("auri-command", command.to_string())
-                .map_err(|error| error.to_string())
         });
 
     let response = match result {
@@ -84,7 +121,10 @@ fn handle_connection(mut stream: UnixStream, app: tauri::AppHandle) {
     let _ = stream.write_all(response.as_bytes());
 }
 
-#[cfg(not(unix))]
-pub fn start_command_server(_app: tauri::AppHandle) -> Result<(), String> {
+#[cfg(all(not(unix), not(test)))]
+pub struct CommandServer;
+
+#[cfg(all(not(unix), not(test)))]
+pub fn start_command_server(_app: tauri::AppHandle) -> Result<CommandServer, String> {
     Err("The external Auri command bridge currently supports macOS and Linux.".to_string())
 }

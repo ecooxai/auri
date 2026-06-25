@@ -334,12 +334,47 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
   background: rgba(241, 247, 251, .68);
   border-right: 1px solid var(--line);
 }
-.pane-heading { padding: 0 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 7px; }
-.pane-heading > div:first-child { min-width: 0; display: grid; gap: 4px; }
-.pane-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; }
+.pane-heading {
+  min-width: 0;
+  padding: 0 8px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 6px;
+}
 .eyebrow { color: var(--faint); font-size: .58rem; font-weight: 800; letter-spacing: .13em; }
 .compact-actions { display: flex; gap: 2px; }
+.folder-toolbar {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+}
 .compact-actions .icon-button { width: 27px; height: 27px; flex-basis: 27px; border-radius: 9px; font-size: .72rem; }
+.folder-path-field { min-width: 0; display: block; }
+.folder-path-input {
+  width: 100%;
+  min-width: 0;
+  padding: 2px 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  outline: none;
+  color: #56647b;
+  cursor: text;
+  font: inherit;
+  font-size: .62rem;
+  line-height: 1.3;
+}
+.folder-path-input:hover { background: transparent; color: var(--ink); }
+.folder-path-input:focus { background: transparent; box-shadow: none; outline: none; color: var(--ink); }
+.folder-path-input:focus-visible { background: transparent; box-shadow: none; outline: none; color: var(--ink); }
+.folder-path-input.is-invalid { color: var(--danger); background: transparent; box-shadow: inset 0 -1px rgba(202, 75, 91, .45); }
 .folder-list { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 2px; }
 .folder-list::-webkit-scrollbar, .settings-scroll::-webkit-scrollbar, .terminal-history::-webkit-scrollbar, .info-list::-webkit-scrollbar { width: 7px; }
 .folder-list::-webkit-scrollbar-thumb, .settings-scroll::-webkit-scrollbar-thumb, .terminal-history::-webkit-scrollbar-thumb, .info-list::-webkit-scrollbar-thumb { background: rgba(99, 117, 149, .16); border-radius: 99px; }
@@ -944,3 +979,42 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .terminal-emulator .xterm-scrollable-element > .shadow.top-left-corner { box-shadow: none; }
 .clipboard-card[data-action="clipboard-insert"] { cursor: pointer; }
 .clipboard-image { display: block; width: 100%; max-height: 220px; object-fit: contain; border-radius: 12px; background: #eef2f6; }
+
+.folder-more-wrap { position: relative; display: flex; }
+.folder-menu {
+  position: absolute;
+  z-index: 40;
+  top: 32px;
+  left: 0;
+  width: 154px;
+  padding: 6px;
+  border: 1px solid rgba(78, 94, 119, .12);
+  border-radius: 11px;
+  display: grid;
+  gap: 2px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 16px 42px rgba(46, 62, 96, .2);
+}
+.folder-menu button {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  color: #536178;
+  background: transparent;
+  font-size: .66rem;
+  text-align: left;
+}
+.folder-menu button:hover { color: var(--blue-dark); background: #f0f4ff; }
+.folder-menu button[role="menuitemradio"] { display: grid; grid-template-columns: 13px 1fr; }
+.folder-menu button[role="menuitemradio"] > span { width: auto; text-align: left; }
+.folder-menu-label { padding: 4px 9px 2px; color: var(--faint); font-size: .52rem; font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+.folder-menu-separator { height: 1px; margin: 4px 5px; background: var(--line); }
+.info-details { margin: 10px 0 0; display: grid; gap: 5px; }
+.info-details > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 10px; }
+.info-details dt { color: var(--faint); font-size: .59rem; }
+.info-details dd { min-width: 0; margin: 0; color: #4f5d73; font-size: .65rem; overflow-wrap: anywhere; }

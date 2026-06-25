@@ -2,9 +2,11 @@ use super::util::{encode_base64, file_kind, mime_type};
 use super::workspace::{display_path, expand_path};
 use serde::Serialize;
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Read;
-use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
@@ -15,6 +17,37 @@ pub struct FileEntry {
     pub path: String,
     pub kind: &'static str,
     pub size: u64,
+    pub modified: Option<u64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedItem {
+    pub name: String,
+    pub path: String,
+    pub kind: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionInfo {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderInfo {
+    pub path: String,
+    pub name: String,
+    pub total_size: u64,
+    pub disk_total: Option<u64>,
+    pub disk_used: Option<u64>,
+    pub disk_available: Option<u64>,
+    pub owner: String,
+    pub mode: String,
+    pub permissions: PermissionInfo,
 }
 
 #[derive(Serialize)]
@@ -49,6 +82,11 @@ pub fn list_directory(path: &str) -> Result<Vec<FileEntry>, String> {
     {
         let item = item.map_err(|error| error.to_string())?;
         let metadata = item.metadata().map_err(|error| error.to_string())?;
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64);
         entries.push(FileEntry {
             name: item.file_name().to_string_lossy().into_owned(),
             path: display_path(&item.path()),
@@ -62,6 +100,7 @@ pub fn list_directory(path: &str) -> Result<Vec<FileEntry>, String> {
             } else {
                 0
             },
+            modified,
         });
     }
     entries.sort_by(|left, right| {
@@ -72,6 +111,163 @@ pub fn list_directory(path: &str) -> Result<Vec<FileEntry>, String> {
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+fn direct_child_path(directory: &str, name: &str) -> Result<(PathBuf, String), String> {
+    let clean_name = name.trim();
+    if clean_name.is_empty() {
+        return Err("The new item needs a name.".to_string());
+    }
+    if clean_name == "."
+        || clean_name == ".."
+        || clean_name.contains('/')
+        || clean_name.contains('\\')
+        || Path::new(clean_name).components().count() != 1
+    {
+        return Err(
+            "Create items directly in the current folder; path separators are not allowed."
+                .to_string(),
+        );
+    }
+    let parent = expand_path(directory)?;
+    let metadata = fs::metadata(&parent).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() {
+        return Err("The current path is not a folder.".to_string());
+    }
+    Ok((parent.join(clean_name), clean_name.to_string()))
+}
+
+pub fn create_file(directory: &str, name: &str) -> Result<CreatedItem, String> {
+    let (destination, clean_name) = direct_child_path(directory, name)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .map_err(|error| format!("Could not create {clean_name}: {error}"))?;
+    Ok(CreatedItem {
+        name: clean_name,
+        path: display_path(&destination),
+        kind: "file",
+    })
+}
+
+pub fn create_folder(directory: &str, name: &str) -> Result<CreatedItem, String> {
+    let (destination, clean_name) = direct_child_path(directory, name)?;
+    fs::create_dir(&destination)
+        .map_err(|error| format!("Could not create {clean_name}: {error}"))?;
+    Ok(CreatedItem {
+        name: clean_name,
+        path: display_path(&destination),
+        kind: "directory",
+    })
+}
+
+fn recursive_size(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.file_type().is_symlink() {
+        return 0;
+    }
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| recursive_size(&entry.path()))
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn disk_usage(path: &Path) -> (Option<u64>, Option<u64>, Option<u64>) {
+    let Ok(output) = Command::new("df").arg("-Pk").arg(path).output() else {
+        return (None, None, None);
+    };
+    if !output.status.success() {
+        return (None, None, None);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Some(line) = text.lines().filter(|line| !line.trim().is_empty()).last() else {
+        return (None, None, None);
+    };
+    let values: Vec<u64> = line
+        .split_whitespace()
+        .filter_map(|value| value.parse::<u64>().ok())
+        .take(3)
+        .collect();
+    if values.len() < 3 {
+        return (None, None, None);
+    }
+    (
+        Some(values[0].saturating_mul(1024)),
+        Some(values[1].saturating_mul(1024)),
+        Some(values[2].saturating_mul(1024)),
+    )
+}
+
+#[cfg(unix)]
+fn owner_and_permissions(metadata: &fs::Metadata) -> (String, String, PermissionInfo) {
+    let uid = metadata.uid();
+    let owner = Command::new("id")
+        .args(["-nu", &uid.to_string()])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| uid.to_string());
+    let mode = metadata.permissions().mode() & 0o7777;
+    (
+        owner,
+        format!("{mode:04o}"),
+        PermissionInfo {
+            read: mode & 0o400 != 0,
+            write: mode & 0o200 != 0,
+            execute: mode & 0o100 != 0,
+        },
+    )
+}
+
+#[cfg(not(unix))]
+fn owner_and_permissions(metadata: &fs::Metadata) -> (String, String, PermissionInfo) {
+    let writable = !metadata.permissions().readonly();
+    (
+        std::env::var("USERNAME").unwrap_or_else(|_| "Unknown".to_string()),
+        if writable { "writable" } else { "read-only" }.to_string(),
+        PermissionInfo {
+            read: true,
+            write: writable,
+            execute: false,
+        },
+    )
+}
+
+pub fn folder_info(path: &str) -> Result<FolderInfo, String> {
+    let resolved = expand_path(path)?;
+    let metadata = fs::metadata(&resolved).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() {
+        return Err("The selected path is not a folder.".to_string());
+    }
+    let (disk_total, disk_used, disk_available) = disk_usage(&resolved);
+    let (owner, mode, permissions) = owner_and_permissions(&metadata);
+    Ok(FolderInfo {
+        path: display_path(&resolved),
+        name: resolved
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("/")
+            .to_string(),
+        total_size: recursive_size(&resolved),
+        disk_total,
+        disk_used,
+        disk_available,
+        owner,
+        mode,
+        permissions,
+    })
 }
 
 pub fn inspect_file(path: &str) -> Result<FileInfo, String> {
@@ -316,4 +512,45 @@ pub fn save_media_file(name: &str, kind: &str, base64: &str) -> Result<SavedMedi
         mime: mime_type(&path).to_string(),
         size: bytes.len() as u64,
     })
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_directory() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("auri-folder-test-{}-{suffix}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn creates_direct_children_without_overwriting() {
+        let directory = test_directory();
+        let directory_text = directory.to_string_lossy();
+        let file = create_file(&directory_text, "note.txt").unwrap();
+        let folder = create_folder(&directory_text, "Work").unwrap();
+        assert_eq!(file.kind, "file");
+        assert_eq!(folder.kind, "directory");
+        assert!(create_file(&directory_text, "note.txt").is_err());
+        assert!(create_folder(&directory_text, "nested/path").is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn folder_info_reports_size_and_access() {
+        let directory = test_directory();
+        fs::write(directory.join("data.bin"), [1_u8, 2, 3, 4]).unwrap();
+        let info = folder_info(&directory.to_string_lossy()).unwrap();
+        assert_eq!(info.total_size, 4);
+        assert!(info.permissions.read);
+        assert!(!info.owner.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

@@ -1,0 +1,35 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { sortFolderEntries } from "../src/model/folder.js";
+
+const entries = [
+  { name: "zeta.txt", kind: "text", size: 2, modified: 100 },
+  { name: "alpha.png", kind: "image", size: 3, modified: 300 },
+  { name: "Beta.md", kind: "text", size: 1, modified: 200 },
+  { name: "Folder", kind: "directory", size: 0, modified: 50 }
+];
+
+test("folder entries sort by name, newest date, or type without mutating source", () => {
+  assert.deepEqual(sortFolderEntries(entries, "name").map((item) => item.name), ["Folder", "alpha.png", "Beta.md", "zeta.txt"]);
+  assert.deepEqual(sortFolderEntries(entries, "date").map((item) => item.name), ["Folder", "alpha.png", "Beta.md", "zeta.txt"]);
+  assert.deepEqual(sortFolderEntries(entries, "type").map((item) => item.name), ["Folder", "alpha.png", "Beta.md", "zeta.txt"]);
+  assert.deepEqual(entries.map((item) => item.name), ["zeta.txt", "alpha.png", "Beta.md", "Folder"]);
+});
+
+test("native folder bridge exposes creation, metadata, modification dates, and registered commands", async () => {
+  const backend = await readFile("src/services/backend.js", "utf8");
+  const files = await readFile("src-tauri/src/core/files.rs", "utf8");
+  const lib = await readFile("src-tauri/src/lib.rs", "utf8");
+
+  assert.match(backend, /async createFile\(directory, name\)/);
+  assert.match(backend, /async createFolder\(directory, name\)/);
+  assert.match(backend, /async folderInfo\(path\)/);
+  assert.match(files, /pub modified: Option<u64>/);
+  assert.match(files, /pub fn create_file/);
+  assert.match(files, /pub fn create_folder/);
+  assert.match(files, /pub fn folder_info/);
+  assert.match(lib, /create_file,/);
+  assert.match(lib, /create_folder,/);
+  assert.match(lib, /folder_info,/);
+});

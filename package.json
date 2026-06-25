@@ -10,7 +10,7 @@
     "build": "node scripts/build.mjs",
     "check": "npm test && npm run test:rust && npm run build",
     "tauri:dev": "cargo tauri dev",
-    "tauri:build": "cargo tauri build",
+    "tauri:build": "node scripts/tauri-build.mjs",
     "cli:build": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin auri",
     "cli:install": "cargo install --path src-tauri --bin auri --force",
     "native:watch": "bash scripts/native-watch.sh"

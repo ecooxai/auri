@@ -29,7 +29,7 @@ export function createWorkspace(title = "Home") {
     title,
     activeSubtabId: terminal.id,
     subtabs: [terminal, createSubtab("viewer"), createSubtab("info")],
-    folder: { visible: true, path: "~", entries: [], selectedPath: null, selectedCount: 0 },
+    folder: { visible: true, path: "~", entries: [], selectedPath: null, selectedCount: 0, sortBy: "name" },
     terminal: { cwd: "~", history: [], draft: "", running: false },
     viewer: { path: null, metadata: null, mode: "empty" }
   };
@@ -59,7 +59,7 @@ export function createInitialState() {
       audioBitrateKbps: 64
     },
     media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveStatus: "idle" }
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveStatus: "idle" }
   };
 }
 
@@ -122,6 +122,8 @@ export function reduceState(state, event) {
       }));
     case "FOLDER_ENTRIES_SET":
       return updateTab(state, event.payload.workspaceId, (tab) => ({ ...tab, folder: { ...tab.folder, entries: event.payload.entries } }));
+    case "FOLDER_SORT_SET":
+      return updateTab(state, event.payload.workspaceId, (tab) => ({ ...tab, folder: { ...tab.folder, sortBy: event.payload.sortBy } }));
     case "FILE_SELECT":
       return updateActiveTab(state, (tab) => ({
         ...tab,

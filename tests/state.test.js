@@ -80,3 +80,10 @@ test("interface font size has a larger readable default", () => {
   const state = createInitialState();
   assert.equal(state.settings.fontSize, 20);
 });
+
+test("folder sort defaults to name and can be changed per workspace", () => {
+  let state = createInitialState();
+  assert.equal(state.tabs[0].folder.sortBy, "name");
+  state = reduceState(state, { type: "FOLDER_SORT_SET", payload: { sortBy: "type" } });
+  assert.equal(state.tabs[0].folder.sortBy, "type");
+});

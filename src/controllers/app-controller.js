@@ -21,6 +21,29 @@ function scheduleFrame(callback) {
   else callback();
 }
 
+function isMacNavigationText(value) {
+  return [...String(value ?? "")].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint >= 0xf700 && codePoint <= 0xf703;
+  });
+}
+
+function stripMacNavigationText(value) {
+  return [...String(value ?? "")].filter((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint < 0xf700 || codePoint > 0xf703;
+  }).join("");
+}
+
+function folderPathArrowDirection(key) {
+  if (key === "ArrowLeft") return -1;
+  if (key === "ArrowRight") return 1;
+  const codePoint = String(key ?? "").codePointAt(0);
+  if (codePoint === 0xf702) return -1;
+  if (codePoint === 0xf703) return 1;
+  return 0;
+}
+
 function attachmentKind(file) {
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("audio/")) return "audio";
@@ -54,6 +77,8 @@ export class AppController {
     this.nativeWebviewUrls = new Map();
     this.clipboardPollTimer = null;
     this.clipboardPolling = false;
+    this.folderPathTimer = null;
+    this.folderPathRequest = 0;
   }
 
   context() {
@@ -185,6 +210,8 @@ export class AppController {
     this.view.root.addEventListener("click", (event) => this.handleClick(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
+    this.view.root.addEventListener("beforeinput", (event) => this.handleBeforeInput(event));
+    this.view.root.addEventListener("input", (event) => this.handleInput(event));
     this.view.root.addEventListener("change", (event) => this.handleChange(event));
     this.view.root.addEventListener("submit", (event) => this.handleSubmit(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeydown(event));
@@ -239,15 +266,48 @@ export class AppController {
           await this.runInternal(`subtab new ${target.dataset.type}`);
           break;
         case "folder-home":
+          this.cancelFolderPathNavigation();
           await this.changeDirectory("~", { echoInTerminal: true });
           break;
         case "folder-up":
+          this.cancelFolderPathNavigation();
           await this.changeDirectory(parentPath(activeWorkspace(this.state).folder.path), { echoInTerminal: true });
           break;
         case "folder-refresh":
+          this.cancelFolderPathNavigation();
           await this.refreshFolder();
           break;
+        case "folder-more":
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: !this.state.ui.folderMenuOpen } }, { preserveInput: true });
+          break;
+        case "folder-sort":
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
+          await this.runInternal(`folder sort ${target.dataset.sort}`);
+          break;
+        case "folder-new-file": {
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
+          const name = this.view.requestText?.("New file name", "untitled.txt")?.trim();
+          if (name) {
+            await this.runInternal(`folder create-file ${quoteArg(name)}`);
+            this.view.showToast(`Created ${name}`, "success");
+          }
+          break;
+        }
+        case "folder-new-folder": {
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
+          const name = this.view.requestText?.("New folder name", "New Folder")?.trim();
+          if (name) {
+            await this.runInternal(`folder create-folder ${quoteArg(name)}`);
+            this.view.showToast(`Created ${name}`, "success");
+          }
+          break;
+        }
+        case "folder-info":
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
+          await this.runInternal("folder info");
+          break;
         case "file-entry":
+          this.cancelFolderPathNavigation();
           await this.openFolderEntry(target.dataset.path, target.dataset.kind);
           break;
         case "terminal-run":
@@ -340,6 +400,24 @@ export class AppController {
   }
 
   async handleKeydown(event) {
+    const plainFolderArrow = event.target.id === "folder-path-input"
+      && event.altKey !== true && event.ctrlKey !== true
+      && event.metaKey !== true && event.shiftKey !== true;
+    if (plainFolderArrow) {
+      const direction = folderPathArrowDirection(event.key);
+      if (direction) {
+        event.preventDefault();
+        const input = event.target;
+        const valueLength = String(input.value ?? "").length;
+        const selectionStart = Number.isInteger(input.selectionStart) ? input.selectionStart : valueLength;
+        const selectionEnd = Number.isInteger(input.selectionEnd) ? input.selectionEnd : selectionStart;
+        const nextPosition = direction < 0
+          ? (selectionStart === selectionEnd ? Math.max(0, selectionStart - 1) : selectionStart)
+          : (selectionStart === selectionEnd ? Math.min(valueLength, selectionEnd + 1) : selectionEnd);
+        input.setSelectionRange?.(nextPosition, nextPosition);
+        return;
+      }
+    }
     if (event.target.id === "terminal-input" && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
       await this.submitTerminal("run");
@@ -361,6 +439,62 @@ export class AppController {
     }
     if (event.key === "Escape" && this.state.ui.commandPaletteOpen) {
       this.dispatch({ type: "UI_SET", payload: { commandPaletteOpen: false } });
+    }
+  }
+
+  handleBeforeInput(event) {
+    if (event.target.id !== "folder-path-input") return;
+    if (event.inputType === "insertText" && isMacNavigationText(event.data)) event.preventDefault();
+  }
+
+  handleInput(event) {
+    const input = event.target;
+    if (input.id !== "folder-path-input") return;
+    const originalValue = String(input.value ?? "");
+    const cleanValue = stripMacNavigationText(originalValue);
+    if (cleanValue !== originalValue) {
+      const selectionStart = Number.isInteger(input.selectionStart) ? input.selectionStart : originalValue.length;
+      const selectionEnd = Number.isInteger(input.selectionEnd) ? input.selectionEnd : selectionStart;
+      const cleanSelectionStart = stripMacNavigationText(originalValue.slice(0, selectionStart)).length;
+      const cleanSelectionEnd = stripMacNavigationText(originalValue.slice(0, selectionEnd)).length;
+      input.value = cleanValue;
+      input.setSelectionRange?.(cleanSelectionStart, cleanSelectionEnd);
+    }
+    this.scheduleFolderPathNavigation(input);
+  }
+
+  cancelFolderPathNavigation() {
+    if (this.folderPathTimer) clearTimeout(this.folderPathTimer);
+    this.folderPathTimer = null;
+    this.folderPathRequest += 1;
+  }
+
+  scheduleFolderPathNavigation(input) {
+    this.cancelFolderPathNavigation();
+    input.removeAttribute?.("aria-invalid");
+    input.classList?.remove?.("is-invalid");
+    const path = String(input.value ?? "").trim();
+    if (!path) return;
+    const request = this.folderPathRequest;
+    const workspaceId = this.state.activeTabId;
+    this.folderPathTimer = setTimeout(() => {
+      this.folderPathTimer = null;
+      if (request !== this.folderPathRequest || workspaceId !== this.state.activeTabId) return;
+      this.navigateTypedFolderPath(path, input).catch((error) => {
+        this.view.showToast(error?.message || String(error), "error");
+      });
+    }, 2000);
+  }
+
+  async navigateTypedFolderPath(value, input) {
+    const path = String(value ?? "").trim();
+    if (!path || path === activeWorkspace(this.state).folder.path) return;
+    try {
+      await this.changeDirectory(path, { echoInTerminal: true });
+    } catch (error) {
+      input?.setAttribute?.("aria-invalid", "true");
+      input?.classList?.add?.("is-invalid");
+      this.view.showToast(error?.message || String(error), "error");
     }
   }
 

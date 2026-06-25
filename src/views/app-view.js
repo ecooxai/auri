@@ -81,6 +81,11 @@ export class AppView {
     return true;
   }
 
+  requestText(message, defaultValue = "") {
+    const host = this.root?.ownerDocument?.defaultView || globalThis;
+    return typeof host.prompt === "function" ? host.prompt(message, defaultValue) : null;
+  }
+
   getWebUrl() {
     return this.root.querySelector("#web-url")?.value?.trim() || "";
   }

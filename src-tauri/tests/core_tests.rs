@@ -1,3 +1,6 @@
+#[path = "../src/core/ipc.rs"]
+mod ipc;
+
 #[path = "../src/core/lifecycle.rs"]
 mod lifecycle;
 
@@ -81,4 +84,23 @@ fn external_cli_requotes_arguments_containing_spaces() {
 fn closing_the_main_window_exits_the_desktop_process() {
     assert!(lifecycle::should_exit_on_close("main"));
     assert!(!lifecycle::should_exit_on_close("preview"));
+}
+
+#[test]
+fn command_socket_names_are_process_scoped() {
+    assert_ne!(ipc::socket_file_name(101), ipc::socket_file_name(202));
+    assert_eq!(ipc::socket_file_name(101), "command-101.sock");
+}
+
+#[test]
+fn focus_only_ipc_requests_are_not_dispatched_as_commands() {
+    assert_eq!(
+        ipc::parse_request(ipc::FOCUS_REQUEST).unwrap(),
+        ipc::IncomingRequest::Focus
+    );
+    assert_eq!(
+        ipc::parse_request("tab new Work").unwrap(),
+        ipc::IncomingRequest::Command("tab new Work")
+    );
+    assert!(ipc::parse_request("   ").is_err());
 }

@@ -5,7 +5,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const dist = path.join(root, "dist");
+const dist = process.env.AURI_DIST_DIR
+  ? path.resolve(process.env.AURI_DIST_DIR)
+  : path.join(root, "dist");
+const port = Number.parseInt(process.env.AURI_DEV_PORT || "4173", 10);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error(`Invalid AURI_DEV_PORT: ${process.env.AURI_DEV_PORT}`);
+}
 
 async function copyStatic() {
   await mkdir(dist, { recursive: true });
@@ -62,8 +68,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(4173, "127.0.0.1", () => {
-  console.log("Auri dev server: http://127.0.0.1:4173");
+server.listen(port, "127.0.0.1", () => {
+  console.log(`Auri dev server: http://127.0.0.1:${port}`);
 });
 
 async function shutdown() {

@@ -1,9 +1,11 @@
+#[cfg(not(test))]
 use tauri::Manager;
 
 /// Reveal the main Auri window from a background/global-shortcut callback.
 ///
 /// The workspace flag is applied every time so a window created or restored by
 /// the OS remains reachable from the currently active virtual desktop.
+#[cfg(not(test))]
 #[allow(dead_code)]
 pub fn reveal_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     let window = app

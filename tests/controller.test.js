@@ -373,3 +373,192 @@ test("inactive workspace cwd synchronization does not steal terminal focus", asy
   await controller.syncDirectory("/tmp/background", activeId);
   assert.equal(focusCalls, 0);
 });
+
+test("folder path typing waits two seconds and navigates only the latest value", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const navigated = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = { isNative: true };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.changeDirectory = async (path, options) => { navigated.push([path, options]); };
+
+  controller.handleInput({ target: { id: "folder-path-input", value: "/tmp/first", removeAttribute() {}, classList: { remove() {} } } });
+  t.mock.timers.tick(1500);
+  controller.handleInput({ target: { id: "folder-path-input", value: " /tmp/latest ", removeAttribute() {}, classList: { remove() {} } } });
+  t.mock.timers.tick(1999);
+  assert.deepEqual(navigated, []);
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+
+  assert.deepEqual(navigated, [["/tmp/latest", { echoInTerminal: true }]]);
+});
+
+test("invalid typed folder paths keep the current folder and mark the input invalid", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const toasts = [];
+  const attributes = new Map();
+  const classes = new Set();
+  const input = {
+    id: "folder-path-input",
+    value: "/does/not/exist",
+    setAttribute(name, value) { attributes.set(name, value); },
+    removeAttribute(name) { attributes.delete(name); },
+    classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name) }
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast: (...args) => { toasts.push(args); }
+  };
+  const backend = { isNative: true };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.changeDirectory = async () => { throw new Error("Folder not found"); };
+  const originalPath = controller.state.tabs[0].folder.path;
+
+  await controller.navigateTypedFolderPath(input.value, input);
+
+  assert.equal(controller.state.tabs[0].folder.path, originalPath);
+  assert.equal(attributes.get("aria-invalid"), "true");
+  assert.ok(classes.has("is-invalid"));
+  assert.deepEqual(toasts, [["Folder not found", "error"]]);
+});
+
+test("folder path blocks macOS arrow characters while preserving the caret", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const leftArrowText = String.fromCodePoint(0xf702);
+  const rightArrowText = String.fromCodePoint(0xf703);
+  let prevented = 0;
+
+  controller.handleBeforeInput({
+    target: { id: "folder-path-input" },
+    inputType: "insertText",
+    data: leftArrowText,
+    preventDefault() { prevented += 1; }
+  });
+  controller.handleBeforeInput({
+    target: { id: "folder-path-input" },
+    inputType: "insertText",
+    data: "/",
+    preventDefault() { prevented += 1; }
+  });
+
+  assert.equal(prevented, 1);
+
+  const cleanPath = "/Users/ecoo/auri";
+  let keyPrevented = 0;
+  let keySelection = null;
+  const keyInput = {
+    id: "folder-path-input",
+    value: cleanPath,
+    selectionStart: cleanPath.length,
+    selectionEnd: cleanPath.length,
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+      keySelection = [start, end];
+    }
+  };
+  await controller.handleKeydown({
+    target: keyInput,
+    key: "ArrowLeft",
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    preventDefault() { keyPrevented += 1; }
+  });
+  assert.deepEqual(keySelection, [cleanPath.length - 1, cleanPath.length - 1]);
+  await controller.handleKeydown({
+    target: keyInput,
+    key: rightArrowText,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    preventDefault() { keyPrevented += 1; }
+  });
+  assert.deepEqual(keySelection, [cleanPath.length, cleanPath.length]);
+  assert.equal(keyPrevented, 2);
+
+  const dirtyPath = `${cleanPath}${leftArrowText}${rightArrowText}`;
+  let selection = null;
+  let scheduledValue = null;
+  const input = {
+    id: "folder-path-input",
+    value: dirtyPath,
+    selectionStart: dirtyPath.length,
+    selectionEnd: dirtyPath.length,
+    setSelectionRange(start, end) { selection = [start, end]; },
+    removeAttribute() {},
+    classList: { remove() {} }
+  };
+  controller.scheduleFolderPathNavigation = (target) => { scheduledValue = target.value; };
+
+  controller.handleInput({ target: input });
+
+  assert.equal(input.value, cleanPath);
+  assert.deepEqual(selection, [cleanPath.length, cleanPath.length]);
+  assert.equal(scheduledValue, cleanPath);
+});
+
+test("folder sort command stores the selected order", async () => {
+  const h = harness();
+  await executeCommand("folder sort date", h);
+  assert.equal(h.state().tabs[0].folder.sortBy, "date");
+  await assert.rejects(() => executeCommand("folder sort size", h), /name, date, or type/);
+});
+
+test("folder create commands use the current directory and refresh entries", async () => {
+  const h = harness();
+  const calls = [];
+  h.backend.createFile = async (...args) => { calls.push(["file", ...args]); return { name: args[1] }; };
+  h.backend.createFolder = async (...args) => { calls.push(["folder", ...args]); return { name: args[1] }; };
+  h.backend.listDirectory = async () => [{ name: "created.txt", path: "~/created.txt", kind: "text", size: 0, modified: 1 }];
+
+  await executeCommand('folder create-file "created.txt"', h);
+  await executeCommand('folder create-folder "New Folder"', h);
+
+  assert.deepEqual(calls, [["file", "~", "created.txt"], ["folder", "~", "New Folder"]]);
+  assert.equal(h.state().tabs[0].folder.entries[0].name, "created.txt");
+});
+
+test("folder info opens Info with structured disk, ownership, and permission details", async () => {
+  const h = harness();
+  h.backend.folderInfo = async (path) => ({
+    path,
+    name: "project",
+    totalSize: 1024,
+    diskTotal: 10000,
+    diskUsed: 6000,
+    diskAvailable: 4000,
+    owner: "ecoo",
+    mode: "0755",
+    permissions: { read: true, write: true, execute: true }
+  });
+
+  await executeCommand("folder info", h);
+
+  const active = h.state().tabs[0].subtabs.find((item) => item.id === h.state().tabs[0].activeSubtabId);
+  assert.equal(active.type, "info");
+  assert.equal(h.state().info.items[0].title, "Folder info · project");
+  assert.equal(h.state().info.items[0].details.owner, "ecoo");
+  assert.equal(h.state().info.items[0].details.permissions.execute, true);
+});

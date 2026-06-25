@@ -2,6 +2,7 @@ import { escapeHtml } from "../model/assistant.js";
 import { formatBytes, iconForEntry } from "../model/presentation.js";
 import { previewClipboardText } from "../model/clipboard.js";
 import { activeSubtab, activeWorkspace } from "../model/state.js";
+import { sortFolderEntries } from "../model/folder.js";
 
 const subtabIcons = {
   terminal: "⌘",
@@ -74,16 +75,23 @@ function renderSubtabMenu() {
 
 export function renderFolder(state) {
   const tab = activeWorkspace(state);
-  const entries = tab.folder.entries || [];
+  const entries = sortFolderEntries(tab.folder.entries || [], tab.folder.sortBy);
   return `
     <aside class="folder-pane">
       <div class="pane-heading">
-        <div><span class="eyebrow">LOCATION</span><strong>${escapeHtml(tab.folder.path)}</strong></div>
-        <div class="compact-actions">
+        <div class="compact-actions folder-toolbar" aria-label="Folder navigation">
           ${button("⌂", "Home", "folder-home")}
           ${button("↑", "Parent folder", "folder-up")}
           ${button("↻", "Refresh", "folder-refresh")}
+          <div class="folder-more-wrap">
+            ${button("⋯", "More folder actions", "folder-more", `aria-haspopup="menu" aria-expanded="${state.ui.folderMenuOpen}"`)}
+            ${state.ui.folderMenuOpen ? renderFolderMenu(tab.folder.sortBy) : ""}
+          </div>
         </div>
+        <label class="folder-path-field" for="folder-path-input">
+          <input id="folder-path-input" class="folder-path-input" type="text" value="${escapeHtml(tab.folder.path)}"
+            aria-label="Folder path" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+        </label>
       </div>
       <div class="folder-list" role="list" data-folder-path="${escapeHtml(tab.folder.path)}">
         ${entries.length ? entries.map((entry) => {
@@ -98,6 +106,19 @@ export function renderFolder(state) {
       </div>
       <div class="folder-footer"><span>${entries.length} items</span><span>Synced with terminal</span></div>
     </aside>`;
+}
+
+function renderFolderMenu(sortBy) {
+  return `<div class="folder-menu" role="menu" aria-label="More folder actions">
+    <div class="folder-menu-label">Sort</div>
+    <button type="button" role="menuitemradio" aria-checked="${sortBy === "name"}" data-action="folder-sort" data-sort="name">${sortBy === "name" ? "✓" : ""}<span>Name</span></button>
+    <button type="button" role="menuitemradio" aria-checked="${sortBy === "date"}" data-action="folder-sort" data-sort="date">${sortBy === "date" ? "✓" : ""}<span>Date</span></button>
+    <button type="button" role="menuitemradio" aria-checked="${sortBy === "type"}" data-action="folder-sort" data-sort="type">${sortBy === "type" ? "✓" : ""}<span>Type</span></button>
+    <div class="folder-menu-separator"></div>
+    <button type="button" data-action="folder-new-file">New File</button>
+    <button type="button" data-action="folder-new-folder">New Folder</button>
+    <button type="button" data-action="folder-info">Info</button>
+  </div>`;
 }
 
 export function renderTerminal(state) {
@@ -169,9 +190,25 @@ export function renderWebview(state) {
   </section>`;
 }
 
+function renderInfoDetails(details) {
+  if (!details) return "";
+  const permissions = details.permissions || {};
+  const access = [permissions.read ? "Read" : null, permissions.write ? "Write" : null, permissions.execute ? "Execute" : null].filter(Boolean).join(" · ") || "None";
+  const rows = [
+    ["Folder size", Number.isFinite(details.totalSize) ? formatBytes(details.totalSize) : null],
+    ["Disk used", Number.isFinite(details.diskUsed) ? formatBytes(details.diskUsed) : null],
+    ["Disk available", Number.isFinite(details.diskAvailable) ? formatBytes(details.diskAvailable) : null],
+    ["Disk capacity", Number.isFinite(details.diskTotal) ? formatBytes(details.diskTotal) : null],
+    ["Owner", details.owner],
+    ["Permissions", details.mode],
+    ["Owner access", access]
+  ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+  return `<dl class="info-details">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+}
+
 export function renderInfo(state) {
   return `<section class="info-panel"><header class="panel-title"><div><span>ⓘ</span><div><small>ACTIVITY</small><h2>Info</h2></div></div>${button("⌫", "Clear messages", "info-clear")}</header>
-    <div class="info-list">${state.info.items.length ? state.info.items.map((item) => `<article class="info-item ${item.level || "info"}"><span>${item.level === "error" ? "!" : item.level === "success" ? "✓" : "i"}</span><div><div><strong>${escapeHtml(item.title || "Auri")}</strong><time>${new Date(item.at).toLocaleString()}</time></div><p>${escapeHtml(item.message)}</p></div></article>`).join("") : `<div class="empty-state"><span>✓</span><h2>All clear</h2><p>Errors, network notices, and rendering fallbacks appear here.</p></div>`}</div>
+    <div class="info-list">${state.info.items.length ? state.info.items.map((item) => `<article class="info-item ${item.level || "info"}"><span>${item.level === "error" ? "!" : item.level === "success" ? "✓" : "i"}</span><div><div><strong>${escapeHtml(item.title || "Auri")}</strong><time>${new Date(item.at).toLocaleString()}</time></div><p>${escapeHtml(item.message)}</p>${renderInfoDetails(item.details)}</div></article>`).join("") : `<div class="empty-state"><span>✓</span><h2>All clear</h2><p>Errors, network notices, and rendering fallbacks appear here.</p></div>`}</div>
   </section>`;
 }
 

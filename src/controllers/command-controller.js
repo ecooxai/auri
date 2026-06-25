@@ -108,6 +108,38 @@ export async function executeCommand(input, context) {
 
     if (domain === "folder") {
       const workspace = activeWorkspace(getState());
+      if (action === "sort") {
+        const sortBy = args[0];
+        if (!["name", "date", "type"].includes(sortBy)) throw new Error("Folder sort must be name, date, or type.");
+        dispatch({ type: "FOLDER_SORT_SET", payload: { sortBy } });
+        return { sortBy };
+      }
+      if (action === "create-file" || action === "create-folder") {
+        const name = args.join(" ").trim();
+        if (!name) throw new Error(`Enter a name for the new ${action === "create-file" ? "file" : "folder"}.`);
+        const created = action === "create-file"
+          ? await backend.createFile(workspace.folder.path, name)
+          : await backend.createFolder(workspace.folder.path, name);
+        const entries = await backend.listDirectory(workspace.folder.path);
+        dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } });
+        return created;
+      }
+      if (action === "info") {
+        const path = args.join(" ") || workspace.folder.path;
+        const details = await backend.folderInfo(path);
+        dispatch({
+          type: "INFO_ADD",
+          payload: {
+            level: "info",
+            title: `Folder info · ${details.name || path}`,
+            message: details.path || path,
+            details
+          }
+        });
+        openSubtab("info", context);
+        dispatch({ type: "INFO_READ", payload: {} });
+        return details;
+      }
       const path = args.join(" ") || workspace.folder.path;
       if (action === "cd") dispatch({ type: "WORKDIR_SET", payload: { path } });
       if (action !== "cd" && action !== "list") throw new Error(`Unknown folder action: ${action}`);

@@ -152,3 +152,39 @@ test("settings expose a persisted interface font-size control", async () => {
   assert.match(panels, /max="30"/);
   assert.match(css, /html \{[^}]*font-size:\s*20px/s);
 });
+
+test("folder navigation controls sit above an editable compact path field", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+  const start = panels.indexOf("export function renderFolder");
+  const end = panels.indexOf("export function renderTerminal");
+  const folder = panels.slice(start, end);
+
+  assert.match(folder, /class="[^"]*folder-toolbar[^"]*"/);
+  assert.match(folder, /id="folder-path-input"/);
+  assert.match(folder, /button\("⌂", "Home", "folder-home"\)[\s\S]*button\("↑", "Parent folder", "folder-up"\)[\s\S]*button\("↻", "Refresh", "folder-refresh"\)/);
+  assert.ok(folder.indexOf('folder-toolbar') < folder.indexOf('id="folder-path-input"'));
+  assert.doesNotMatch(folder, />LOCATION</);
+  assert.match(css, /\.pane-heading\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*grid-template-rows:\s*auto auto/s);
+  assert.match(css, /\.folder-toolbar\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*row[^}]*flex-wrap:\s*nowrap[^}]*width:\s*max-content/s);
+  assert.match(css, /\.folder-path-input\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none[^}]*font-size:\s*\.6[0-9]*rem/s);
+  assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s);
+});
+
+test("folder More menu contains sorting, creation, and folder info actions", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+  const start = panels.indexOf("export function renderFolder");
+  const end = panels.indexOf("export function renderTerminal");
+  const folder = panels.slice(start, end);
+
+  assert.match(folder, /button\("⋯", "More folder actions", "folder-more"/);
+  assert.match(folder, /data-action="folder-sort" data-sort="name"/);
+  assert.match(folder, /data-action="folder-sort" data-sort="date"/);
+  assert.match(folder, /data-action="folder-sort" data-sort="type"/);
+  assert.match(folder, /data-action="folder-new-file"/);
+  assert.match(folder, /data-action="folder-new-folder"/);
+  assert.match(folder, /data-action="folder-info"/);
+  assert.match(css, /\.folder-more-wrap\s*\{[^}]*position:\s*relative/s);
+  assert.match(css, /\.folder-menu\s*\{[^}]*position:\s*absolute/s);
+});

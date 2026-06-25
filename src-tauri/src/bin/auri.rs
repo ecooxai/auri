@@ -5,22 +5,82 @@ mod util;
 #[cfg(unix)]
 use std::env;
 #[cfg(unix)]
+use std::fs;
+#[cfg(unix)]
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::net::Shutdown;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 #[cfg(unix)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 #[cfg(unix)]
-fn command_socket() -> Result<PathBuf, String> {
+fn config_directory() -> Result<PathBuf, String> {
     let home = env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| "HOME is not available.".to_string())?;
-    Ok(home.join(".config").join("auri").join("command.sock"))
+    Ok(home.join(".config").join("auri"))
+}
+
+#[cfg(unix)]
+fn modified_time(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+#[cfg(unix)]
+fn command_socket_candidates() -> Result<Vec<PathBuf>, String> {
+    if let Some(path) = env::var_os("AURI_COMMAND_SOCKET").filter(|value| !value.is_empty()) {
+        return Ok(vec![PathBuf::from(path)]);
+    }
+
+    let config = config_directory()?;
+    let instances = config.join("instances");
+    let mut candidates = Vec::new();
+    if let Ok(entries) = fs::read_dir(&instances) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if name.starts_with("command-") && name.ends_with(".sock") {
+                candidates.push(path);
+            }
+        }
+    }
+    candidates.sort_by_key(|path| std::cmp::Reverse(modified_time(path)));
+
+    let legacy = config.join("command.sock");
+    if legacy.exists() {
+        candidates.push(legacy);
+    }
+    Ok(candidates)
+}
+
+#[cfg(unix)]
+fn connect_to_running_instance() -> Result<(UnixStream, PathBuf), String> {
+    let candidates = command_socket_candidates()?;
+    if candidates.is_empty() {
+        return Err("No running Auri instances were found.".to_string());
+    }
+
+    let mut failures = Vec::new();
+    for path in candidates {
+        match UnixStream::connect(&path) {
+            Ok(stream) => return Ok((stream, path)),
+            Err(error) => failures.push(format!("{}: {error}", path.display())),
+        }
+    }
+
+    Err(format!(
+        "Could not connect to any running Auri instance: {}",
+        failures.join("; ")
+    ))
 }
 
 #[cfg(unix)]
@@ -30,23 +90,22 @@ fn run() -> Result<(), String> {
         .first()
         .is_some_and(|value| value == "--help" || value == "-h")
     {
-        println!("Usage: auri <command> [arguments...]\nExample: auri tab new Research");
+        println!(
+            "Usage: auri <command> [arguments...]\nExample: auri tab new Research\n\nSet AURI_COMMAND_SOCKET to target a specific running Auri instance."
+        );
         return Ok(());
     }
     let command = util::normalize_cli_command(&arguments)?;
-    let path = command_socket()?;
-    let mut stream = UnixStream::connect(&path).map_err(|error| {
-        format!(
-            "Could not connect to the running Auri app at {}: {error}",
-            path.display()
-        )
-    })?;
+    let (mut stream, path) = connect_to_running_instance()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| error.to_string())?;
     stream
-        .write_all(command.as_bytes())
+        .set_write_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| error.to_string())?;
+    stream
+        .write_all(command.as_bytes())
+        .map_err(|error| format!("Could not write to {}: {error}", path.display()))?;
     stream
         .shutdown(Shutdown::Write)
         .map_err(|error| error.to_string())?;
