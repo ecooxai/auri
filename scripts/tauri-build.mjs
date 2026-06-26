@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import {
   bundleIdentifierForBuild,
-  createTauriLaunchOverride,
+  createTauriBuildOverride,
   createUniqueBuildId
 } from "./launch-config.mjs";
 
 const buildId = process.env.AURI_BUILD_ID || createUniqueBuildId("package");
-const config = createTauriLaunchOverride(buildId);
+const config = createTauriBuildOverride(buildId);
 const identifier = bundleIdentifierForBuild(buildId);
 
 console.log(`Building Auri as independent application ${identifier}`);

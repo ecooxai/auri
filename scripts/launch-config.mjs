@@ -11,17 +11,33 @@ function normalizeBuildId(value) {
   return `${readable || "instance"}-${digest}`;
 }
 
+export const RELEASE_ICON_PATHS = Object.freeze([
+  "icons/release/32x32.png",
+  "icons/release/128x128.png",
+  "icons/release/128x128@2x.png",
+  "icons/release/icon.icns",
+  "icons/release/icon.ico"
+]);
+
 export function bundleIdentifierForBuild(buildId) {
   return `app.auri.desktop.build.${normalizeBuildId(buildId)}`;
 }
 
-export function createTauriLaunchOverride(buildId, devUrl) {
+export function createTauriLaunchOverride(buildId, devUrl, productName) {
   const override = {
     identifier: bundleIdentifierForBuild(buildId),
     app: { enableGTKAppId: true }
   };
+  if (productName) override.productName = productName;
   if (devUrl) override.build = { devUrl };
   return override;
+}
+
+export function createTauriBuildOverride(buildId) {
+  return {
+    ...createTauriLaunchOverride(buildId),
+    bundle: { icon: [...RELEASE_ICON_PATHS] }
+  };
 }
 
 export function createUniqueBuildId(prefix = "build") {
@@ -30,10 +46,10 @@ export function createUniqueBuildId(prefix = "build") {
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
-  const [, , buildId, devUrl] = process.argv;
+  const [, , buildId, devUrl, productName] = process.argv;
   if (!buildId) {
-    console.error("Usage: node scripts/launch-config.mjs <build-id> [dev-url]");
+    console.error("Usage: node scripts/launch-config.mjs <build-id> [dev-url] [product-name]");
     process.exit(2);
   }
-  console.log(JSON.stringify(createTauriLaunchOverride(buildId, devUrl)));
+  console.log(JSON.stringify(createTauriLaunchOverride(buildId, devUrl, productName)));
 }

@@ -49,7 +49,7 @@ fi
 export AURI_DEV_PORT
 export AURI_DIST_DIR="$RUN_DIR/dist"
 DEV_URL="http://127.0.0.1:${AURI_DEV_PORT}/?auri-instance=${INSTANCE_ID}"
-export TAURI_CONFIG="$(node scripts/launch-config.mjs "$INSTANCE_ID" "$DEV_URL")"
+export TAURI_CONFIG="$(node scripts/launch-config.mjs "$INSTANCE_ID" "$DEV_URL" "auri-dev")"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 
 npm run dev > "$FRONTEND_LOG" 2>&1 &
@@ -77,6 +77,6 @@ cargo watch \
   --watch ../index.html \
   --watch ../styles.css \
   --ignore 'target/**' \
-  --shell 'cargo run --bin auri-desktop' &
+  --shell 'cargo run --bin auri-dev' &
 WATCH_PID=$!
 wait "$WATCH_PID"
