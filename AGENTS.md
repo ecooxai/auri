@@ -54,15 +54,29 @@ auri ai model update <id> <name> <type> <model> <url> <key>                    U
 auri ai model delete <id>                                                      Delete an AI provider configuration.
 auri clipboard list                                                            Open clipboard history.
 auri clipboard insert <id>                                                     Paste a clipboard item into the previously active application.
+auri clipboard pin <id>                                                       Pin a clipboard item.
+auri clipboard unpin <id>                                                     Unpin a clipboard item.
+auri clipboard remove <id>                                                    Remove a clipboard item.
 auri clipboard copy <text>                                                     Copy text to the system clipboard.
 auri attachment add <path>                                                     Attach a local file to the next AI request.
 auri attachment remove <id>                                                    Remove a prompt attachment.
 auri input insert <text>                                                       Insert text into the focused prompt input.
+auri transcript dismiss                                                        Close the completed voice-input text popup.
 auri web open <url>                                                            Navigate the active webview.
 auri web reload                                                                Reload the active webview.
 auri web back                                                                  Go back in the active webview.
 auri web forward                                                               Go forward in the active webview.
 auri web external                                                              Open the active web URL externally.
+auri web download                                                                Download the active page.
+auri web zoom-in                                                                 Increase the active page zoom.
+auri web zoom-out                                                                Decrease the active page zoom.
+auri web zoom-reset                                                              Reset the active page zoom to 100%.
+auri web bookmark [add [name] [url]|remove <id>]                                 Open the add-bookmark dialog or manage bookmarks.
+auri web bookmarks                                                               Show saved bookmarks.
+auri web history [clear]                                                         Show or clear browser history.
+auri web devtools                                                                Open developer tools for the active page.
+auri live record start                                                        Start push-to-talk microphone input for the selected Live model.
+auri live record stop                                                         Stop microphone input and send the captured turn to the Live API.
 auri record audio                                                              Open audio recording.
 auri record video                                                              Open video recording.
 auri record start <audio|video>                                                Start media capture.
@@ -116,8 +130,9 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - Use Unicode icons only when system fonts reliably render them; retain accessible labels and tooltips.
 - Keep the aurora-light, modern, clean visual language and avoid boxes around every element.
 - Every click has hover, pressed, focus, busy, success, or error feedback as appropriate.
-- Long clipboard text renders the first 100 and last 100 characters only.
+- Clipboard text longer than 150 characters renders the first 100 and last 50 characters only.
 - Unrenderable content and network errors also appear in Info.
+- Assistant reply actions recognize only the two allowlisted command and input-ready markers. Escape every extracted value and never render arbitrary assistant HTML.
 
 ## Completion checklist
 
@@ -131,3 +146,4 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - `npm run check` passes.
 - `cargo check --manifest-path src-tauri/Cargo.toml` passes.
 - Browser render smoke test has no JavaScript runtime errors.
+auri live record toggle                                                       Connect and record, or disconnect the active Live chat.

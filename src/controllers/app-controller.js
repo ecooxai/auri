@@ -1,8 +1,10 @@
 import { executeCommand } from "./command-controller.js";
-import { createInitialState, reduceState, activeWorkspace, activeSubtab } from "../model/state.js";
+import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
 import { classifyTerminalInput } from "../model/presentation.js";
 import { MediaCapture } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
+import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
+import { AssistantStreamParser, parseAssistantReply } from "../model/assistant.js";
 
 function parentPath(path) {
   const value = String(path || "~").replace(/\/+$/, "");
@@ -51,6 +53,12 @@ function attachmentKind(file) {
   return "file";
 }
 
+function hasAssistantActionPopup(state) {
+  return Boolean(state?.ui?.assistantActions?.length || state?.ui?.assistantTranscripts?.length);
+}
+
+const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "WORKDIR_SET"]);
+
 function attachmentPreviewUrl(file, kind) {
   if (kind === "file" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
   try {
@@ -72,6 +80,12 @@ export class AppController {
     this.wakeLiveSession = null;
     this.wakeStreamText = "";
     this.wakeStreamStarted = false;
+    this.wakeStreamParser = null;
+    this.liveRecordPointerId = null;
+    this.liveRecordStartPromise = null;
+    this.liveRecordHoldTimer = null;
+    this.liveRecordLongPress = false;
+    this.liveRecordSuppressClick = false;
     this.native = backend.isNative;
     this.fileViewUrl = null;
     this.nativeWebviewUrls = new Map();
@@ -79,6 +93,7 @@ export class AppController {
     this.clipboardPolling = false;
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
+    this.configurationReady = false;
   }
 
   context() {
@@ -89,23 +104,27 @@ export class AppController {
       actions: {
         startRecording: (kind) => this.startRecording(kind),
         stopRecording: () => this.capture.stop(),
+        startLiveRecording: () => this.activateWakeSession(),
+        stopLiveRecording: () => this.stopWakeLiveRecording(),
+        toggleLiveRecording: () => this.toggleLiveRecording(),
         attachMedia: (kind) => this.attachRecordedMedia(kind),
         webReload: () => this.runWebviewAction("reload"),
         webBack: () => this.runWebviewAction("back"),
         webForward: () => this.runWebviewAction("forward"),
-        webExternal: () => {
-          const subtab = activeSubtab(this.state);
-          return subtab.filePath
-            ? this.openExternal(subtab.filePath)
-            : window.open(this.view.getWebUrl(), "_blank", "noopener,noreferrer");
-        },
+        webZoomIn: () => this.runWebviewZoom("in"),
+        webZoomOut: () => this.runWebviewZoom("out"),
+        webZoomReset: () => this.runWebviewZoom("reset"),
+        webDownload: () => this.runWebviewAction("download"),
+        webDevtools: () => this.runWebviewAction("devtools"),
+        webExternal: () => this.openWebExternal(),
+        openWebDialog: (dialog) => this.openWebDialog(dialog),
         openExternal: (path) => this.openExternal(path),
         openFileInWebview: (path, metadata) => this.openFileInWebview(path, metadata),
         copyText: (text) => navigator.clipboard.writeText(text),
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
-        showAssistantMessage: (name, text, audio) => this.activeTerminalSession().printAssistant(name, text, audio)
+        showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio)
       }
     };
   }
@@ -113,7 +132,25 @@ export class AppController {
   terminalSessionFor(workspaceId = this.state.activeTabId) {
     let session = this.terminalSessions.get(workspaceId);
     if (session) return session;
-    session = this.terminalSessionFactory(this.backend);
+    session = this.terminalSessionFactory(this.backend, {
+      insertText: async (text) => {
+        try {
+          await this.runInternal(`input insert ${quoteArg(text)}`);
+        } catch (error) {
+          this.view.showToast(error?.message || String(error), "error");
+          throw error;
+        }
+      },
+      copyText: async (text) => {
+        try {
+          await this.runInternal(`clipboard copy ${quoteArg(text)}`);
+          this.view.showToast("Copied", "success");
+        } catch (error) {
+          this.view.showToast(error?.message || String(error), "error");
+          throw error;
+        }
+      }
+    });
     session.onCwdChange = (path) => this.handleTerminalCwdChange(workspaceId, path);
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
       this.reportError("Terminal", error);
@@ -125,6 +162,24 @@ export class AppController {
 
   activeTerminalSession() {
     return this.terminalSessionFor(this.state.activeTabId);
+  }
+
+  showAssistantActions(reply) {
+    const parsed = parseAssistantReply(reply);
+    this.dispatch({
+      type: "UI_SET",
+      payload: { assistantActions: parsed.actions, assistantTranscripts: parsed.transcripts }
+    }, { preserveInput: true });
+    return parsed.actions;
+  }
+
+  showAssistantTranscripts(reply) {
+    return this.showAssistantActions(reply);
+  }
+
+  showCompletedAssistantMessage(name, text, audio = null) {
+    this.activeTerminalSession().printAssistant(name, text, audio);
+    this.showAssistantActions(text);
   }
 
   dispatch(event, options = {}) {
@@ -150,6 +205,9 @@ export class AppController {
       }
     }
     this.render(changesWorkspace ? { ...options, preserveInput: false } : options);
+    if (this.configurationReady && WORKSPACE_PERSIST_EVENTS.has(event.type)) {
+      this.persistConfiguration().catch((error) => this.reportError("Workspace save", error));
+    }
   }
 
   render(options = {}) {
@@ -165,13 +223,14 @@ export class AppController {
 
   async initialize() {
     this.bindEvents();
-    await this.activeTerminalSession().initializePromise;
-    this.render();
     try {
       this.externalUnlisten = await this.backend.listenForCommands?.((command) => this.handleExternalCommand(command));
       this.wakeUnlisten = await this.backend.listen?.("auri-wake", (payload) => this.activateWakeSession(payload));
+      this.webNavigationUnlisten = await this.backend.listen?.("auri-web-navigation", (payload) => this.handleWebNavigation(payload));
+      this.browserOverlayUnlisten = await this.backend.listen?.("auri-browser-overlay-action", (payload) => this.handleBrowserOverlayAction(payload));
       const initialized = await this.backend.initialize();
       const saved = this.native ? initialized?.configuration : localStorage.getItem("auri-settings");
+      let restoredWorkspaces = false;
       if (saved) {
         try {
           const parsed = typeof saved === "string" ? JSON.parse(saved) : saved;
@@ -181,13 +240,29 @@ export class AppController {
           }
           if (Array.isArray(parsed.models)) this.state = { ...this.state, models: parsed.models };
           if (parsed.selectedModelId) this.state = { ...this.state, selectedModelId: parsed.selectedModelId };
+          if (parsed.browser) this.state = reduceState(this.state, { type: "BROWSER_RESTORE", payload: parsed.browser });
+          if (Array.isArray(parsed.workspaceSession?.items) && parsed.workspaceSession.items.length) {
+            this.state = reduceState(this.state, { type: "WORKSPACES_RESTORE", payload: parsed.workspaceSession });
+            restoredWorkspaces = true;
+          }
         } catch {
           // Ignore malformed preferences and keep safe defaults.
         }
       }
       const root = initialized?.root || "~";
-      this.state = reduceState(this.state, { type: "WORKDIR_SET", payload: { path: root } });
-      const entries = await this.backend.listDirectory(root);
+      if (!restoredWorkspaces) {
+        this.state = reduceState(this.state, { type: "WORKDIR_SET", payload: { path: root } });
+      }
+      let startupPath = activeWorkspace(this.state).folder.path || root;
+      let entries;
+      try {
+        entries = await this.backend.listDirectory(startupPath);
+      } catch (error) {
+        if (!restoredWorkspaces || startupPath === root) throw error;
+        startupPath = root;
+        this.state = reduceState(this.state, { type: "WORKDIR_SET", payload: { path: root } });
+        entries = await this.backend.listDirectory(root);
+      }
       this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { entries } });
       this.state = reduceState(this.state, {
         type: "INFO_ADD",
@@ -195,10 +270,12 @@ export class AppController {
           level: "success",
           title: "Auri ready",
           message: this.native
-            ? `Workspace initialized at ${root}.`
+            ? `Workspace initialized at ${startupPath}.`
             : "Browser preview is active. Native shell, global shortcuts, filesystem capture, and system audio require the Tauri build."
         }
       });
+      this.configurationReady = true;
+      await this.activeTerminalSession().initializePromise;
       this.render();
       this.startClipboardPolling();
     } catch (error) {
@@ -208,6 +285,7 @@ export class AppController {
 
   bindEvents() {
     this.view.root.addEventListener("click", (event) => this.handleClick(event));
+    this.view.root.addEventListener("pointerdown", (event) => this.handleLiveRecordPointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
     this.view.root.addEventListener("beforeinput", (event) => this.handleBeforeInput(event));
@@ -216,12 +294,64 @@ export class AppController {
     this.view.root.addEventListener("submit", (event) => this.handleSubmit(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeydown(event));
     window.addEventListener("keyup", (event) => this.handleGlobalKeyup(event));
+    window.addEventListener("pointerup", (event) => this.handleLiveRecordPointerEnd(event));
+    window.addEventListener("pointercancel", (event) => this.handleLiveRecordPointerEnd(event));
     window.addEventListener("resize", () => {
       this.activeTerminalSession().resize?.();
       this.syncNativeWebview().catch((error) => this.reportError("Webview", error));
     });
   }
 
+
+  async handleLiveRecordPointerDown(event) {
+    const target = event.target?.closest?.('[data-action="live-record"]');
+    if (!target || event.button !== 0 || this.liveRecordPointerId !== null) return false;
+    event.preventDefault?.();
+    this.liveRecordPointerId = event.pointerId;
+    this.liveRecordLongPress = false;
+    this.liveRecordStartPromise = null;
+    clearTimeout(this.liveRecordHoldTimer);
+    target.setPointerCapture?.(event.pointerId);
+    this.liveRecordHoldTimer = setTimeout(() => {
+      if (this.liveRecordPointerId !== event.pointerId) return;
+      this.liveRecordLongPress = true;
+      this.liveRecordStartPromise = Promise.resolve(this.runInternal("live record start"))
+        .then(() => true)
+        .catch((error) => {
+          this.view.showToast(error?.message || String(error), "error");
+          return false;
+        });
+    }, 1000);
+    return true;
+  }
+
+  async handleLiveRecordPointerEnd(event) {
+    if (this.liveRecordPointerId === null || event.pointerId !== this.liveRecordPointerId) return false;
+    event.preventDefault?.();
+    clearTimeout(this.liveRecordHoldTimer);
+    this.liveRecordHoldTimer = null;
+    const wasLongPress = this.liveRecordLongPress;
+    const startPromise = this.liveRecordStartPromise;
+    this.liveRecordPointerId = null;
+    this.liveRecordLongPress = false;
+    this.liveRecordSuppressClick = event.type !== "pointercancel";
+
+    try {
+      if (wasLongPress) {
+        const started = await startPromise;
+        if (started !== false) await this.runInternal("live record stop");
+        return true;
+      }
+      if (event.type === "pointercancel") return false;
+      await this.runInternal("live record toggle");
+      return true;
+    } catch (error) {
+      this.view.showToast(error?.message || String(error), "error");
+      return false;
+    } finally {
+      this.liveRecordStartPromise = null;
+    }
+  }
 
   handleTopbarPointerDown(event) {
     if (event.button !== 0 || !this.native) return;
@@ -233,19 +363,31 @@ export class AppController {
   }
 
   async handleClick(event) {
-    const target = event.target.closest("[data-action]");
+    const insideAssistantPopup = event.target?.closest?.(".assistant-action-popup");
+    const target = event.target?.closest?.("[data-action]");
+    if (hasAssistantActionPopup(this.state) && !insideAssistantPopup) {
+      await this.runInternal("transcript dismiss");
+    }
     if (!target) return;
     const action = target.dataset.action;
     event.preventDefault();
 
     try {
       switch (action) {
+        case "live-record":
+          if (this.liveRecordSuppressClick) {
+            this.liveRecordSuppressClick = false;
+            break;
+          }
+          await this.runInternal("live record toggle");
+          break;
         case "tab-new":
           await this.runInternal("tab new");
           await this.refreshFolder();
           break;
         case "tab-select":
           await this.runInternal(`tab select ${target.dataset.id}`);
+          await this.refreshFolder();
           break;
         case "tab-close":
           await this.runInternal(`tab close ${target.dataset.id || ""}`.trim());
@@ -259,7 +401,7 @@ export class AppController {
           await this.runInternal(`subtab close ${target.dataset.id}`);
           break;
         case "subtab-menu":
-          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen } });
+          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, webMenuOpen: false, webDialog: null } });
           break;
         case "subtab-new":
           this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } });
@@ -284,24 +426,17 @@ export class AppController {
           this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
           await this.runInternal(`folder sort ${target.dataset.sort}`);
           break;
-        case "folder-new-file": {
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
-          const name = this.view.requestText?.("New file name", "untitled.txt")?.trim();
-          if (name) {
-            await this.runInternal(`folder create-file ${quoteArg(name)}`);
-            this.view.showToast(`Created ${name}`, "success");
-          }
+        case "folder-new-file":
+          this.cancelFolderPathNavigation();
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false, folderCreateKind: "file" } }, { preserveInput: true });
           break;
-        }
-        case "folder-new-folder": {
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
-          const name = this.view.requestText?.("New folder name", "New Folder")?.trim();
-          if (name) {
-            await this.runInternal(`folder create-folder ${quoteArg(name)}`);
-            this.view.showToast(`Created ${name}`, "success");
-          }
+        case "folder-new-folder":
+          this.cancelFolderPathNavigation();
+          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false, folderCreateKind: "folder" } }, { preserveInput: true });
           break;
-        }
+        case "folder-create-confirm":
+          await this.submitFolderCreate();
+          break;
         case "folder-info":
           this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
           await this.runInternal("folder info");
@@ -352,8 +487,32 @@ export class AppController {
         case "info-clear":
           await this.runInternal("info clear");
           break;
+        case "clipboard-filter-pinned":
+          this.dispatch({
+            type: "UI_SET",
+            payload: { clipboardPinnedOnly: !this.state.ui.clipboardPinnedOnly, clipboardMenuId: null }
+          }, { preserveInput: true });
+          break;
         case "clipboard-refresh":
+          this.dispatch({ type: "UI_SET", payload: { clipboardMenuId: null } }, { preserveInput: true });
           await this.runInternal("clipboard list");
+          break;
+        case "clipboard-menu":
+          this.dispatch({
+            type: "UI_SET",
+            payload: { clipboardMenuId: this.state.ui.clipboardMenuId === target.dataset.id ? null : target.dataset.id }
+          }, { preserveInput: true });
+          break;
+        case "clipboard-pin":
+        case "clipboard-unpin":
+          this.dispatch({ type: "UI_SET", payload: { clipboardMenuId: null } }, { preserveInput: true });
+          await this.runInternal(`clipboard ${action === "clipboard-pin" ? "pin" : "unpin"} ${target.dataset.id}`);
+          this.view.showToast(action === "clipboard-pin" ? "Clipboard item pinned" : "Clipboard item unpinned", "success");
+          break;
+        case "clipboard-remove":
+          this.dispatch({ type: "UI_SET", payload: { clipboardMenuId: null } }, { preserveInput: true });
+          await this.runInternal(`clipboard remove ${target.dataset.id}`);
+          this.view.showToast("Clipboard item removed", "success");
           break;
         case "clipboard-insert":
           await this.insertClipboard(target.dataset.id);
@@ -363,13 +522,28 @@ export class AppController {
           this.view.showToast("Copied", "success");
           break;
         case "transcript-insert":
+        case "assistant-insert":
           await this.runInternal(`input insert ${quoteArg(target.dataset.value || "")}`);
+          break;
+        case "assistant-run": {
+          const command = target.dataset.value || "";
+          if (command) await this.runInternal(`terminal run ${command}`);
+          break;
+        }
+        case "transcript-dismiss":
+          await this.runInternal("transcript dismiss");
           break;
         case "attachment-remove":
           await this.runInternal(`attachment remove ${target.dataset.id}`);
           break;
         case "web-go":
-          await this.runInternal(`web open ${this.view.getWebUrl()}`);
+          await this.runInternal(`web open ${quoteArg(this.view.getWebUrl())}`);
+          break;
+        case "web-menu":
+          this.dispatch({ type: "UI_SET", payload: { webMenuOpen: !this.state.ui.webMenuOpen, webDialog: null, addSubtabMenuOpen: false } }, { preserveInput: true });
+          break;
+        case "web-menu-close":
+          this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
           break;
         case "web-reload":
           await this.runInternal("web reload");
@@ -381,7 +555,51 @@ export class AppController {
           await this.runInternal("web forward");
           break;
         case "web-external":
+          this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
           await this.runInternal("web external");
+          break;
+        case "web-download":
+          this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
+          await this.runInternal("web download");
+          this.view.showToast("Download started", "success");
+          break;
+        case "web-devtools":
+          this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
+          await this.runInternal("web devtools");
+          break;
+        case "web-zoom-in":
+          await this.runInternal("web zoom-in");
+          break;
+        case "web-zoom-out":
+          await this.runInternal("web zoom-out");
+          break;
+        case "web-zoom-reset":
+          await this.runInternal("web zoom-reset");
+          break;
+        case "web-add-bookmark":
+          await this.runInternal("web bookmark");
+          break;
+        case "web-bookmarks":
+          await this.runInternal("web bookmarks");
+          break;
+        case "web-history":
+          await this.runInternal("web history");
+          break;
+        case "web-dialog-close":
+          this.dispatch({ type: "UI_SET", payload: { webDialog: null, webMenuOpen: false, bookmarkDraft: null } }, { preserveInput: true });
+          break;
+        case "web-bookmark-open":
+        case "web-history-open":
+          this.dispatch({ type: "UI_SET", payload: { webDialog: null, webMenuOpen: false } }, { preserveInput: true });
+          await this.runInternal(`web open ${quoteArg(target.dataset.url)}`);
+          break;
+        case "web-bookmark-remove":
+          await this.runInternal(`web bookmark remove ${quoteArg(target.dataset.id)}`);
+          this.view.showToast("Bookmark removed", "success");
+          break;
+        case "web-history-clear":
+          await this.runInternal("web history clear");
+          this.view.showToast("History cleared", "success");
           break;
         case "file-external":
           await this.runInternal(`file external ${quoteArg(activeWorkspace(this.state).viewer.path || "")}`);
@@ -414,7 +632,38 @@ export class AppController {
     }
   }
 
+  async submitFolderCreate() {
+    const kind = this.state.ui.folderCreateKind;
+    if (kind !== "file" && kind !== "folder") return false;
+    const name = String(this.view.getFolderCreateName?.() || "").trim();
+    if (!name) {
+      this.view.showToast(`Enter a ${kind} name.`, "error");
+      return false;
+    }
+    try {
+      await this.runInternal(`folder create-${kind} ${quoteArg(name)}`);
+      this.dispatch({ type: "UI_SET", payload: { folderCreateKind: null } }, { preserveInput: true });
+      this.view.showToast(`Created ${name}`, "success");
+      return true;
+    } catch (error) {
+      this.view.showToast(error?.message || String(error), "error");
+      return false;
+    }
+  }
+
   async handleKeydown(event) {
+    if (event.target.id === "folder-create-input") {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        await this.submitFolderCreate();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.dispatch({ type: "UI_SET", payload: { folderCreateKind: null } }, { preserveInput: true });
+        return;
+      }
+    }
     const plainFolderArrow = event.target.id === "folder-path-input"
       && event.altKey !== true && event.ctrlKey !== true
       && event.metaKey !== true && event.shiftKey !== true;
@@ -440,7 +689,7 @@ export class AppController {
     }
     if (event.target.id === "web-url" && event.key === "Enter") {
       event.preventDefault();
-      this.navigateWeb(event.target.value);
+      await this.runInternal(`web open ${quoteArg(event.target.value)}`);
       return;
     }
     if (event.target.id === "palette-input" && event.key === "Enter") {
@@ -450,6 +699,14 @@ export class AppController {
         this.dispatch({ type: "UI_SET", payload: { commandPaletteOpen: false } });
         await this.runInternal(value);
       }
+      return;
+    }
+    if (event.key === "Escape" && this.state.ui.webDialog) {
+      this.dispatch({ type: "UI_SET", payload: { webDialog: null, webMenuOpen: false, bookmarkDraft: null } }, { preserveInput: true });
+      return;
+    }
+    if (event.key === "Escape" && this.state.ui.webMenuOpen) {
+      this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
       return;
     }
     if (event.key === "Escape" && this.state.ui.commandPaletteOpen) {
@@ -515,6 +772,10 @@ export class AppController {
 
   async handleChange(event) {
     const input = event.target;
+    if (input.id === "terminal-model-select") {
+      await this.runInternal(`ai model select ${quoteArg(input.value)}`);
+      return;
+    }
     if (input.id === "file-attachment") {
       for (const selected of [...input.files]) {
         const kind = attachmentKind(selected);
@@ -541,6 +802,19 @@ export class AppController {
   }
 
   async handleSubmit(event) {
+    if (event.target.id === "folder-create-form") {
+      event.preventDefault();
+      await this.submitFolderCreate();
+      return;
+    }
+    if (event.target.id === "web-bookmark-form") {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(event.target).entries());
+      await this.runInternal(`web bookmark add ${quoteArg(values.name)} ${quoteArg(values.url)}`);
+      this.dispatch({ type: "UI_SET", payload: { webDialog: "bookmarks", webMenuOpen: false, bookmarkDraft: null } }, { preserveInput: true });
+      this.view.showToast("Bookmark saved", "success");
+      return;
+    }
     if (event.target.id === "model-edit-form") {
       event.preventDefault();
       const values = Object.fromEntries(new FormData(event.target).entries());
@@ -557,7 +831,12 @@ export class AppController {
     this.view.showToast("Model added", "success");
   }
 
-  handleGlobalKeydown(event) {
+  async handleGlobalKeydown(event) {
+    if (event.key === "Escape" && hasAssistantActionPopup(this.state)) {
+      event.preventDefault();
+      await this.runInternal("transcript dismiss");
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (!this.state.ui.commandPaletteOpen) {
@@ -582,18 +861,32 @@ export class AppController {
     }
   }
 
+  async toggleLiveRecording() {
+    if (this.wakeLiveSession || this.state.ui.liveConnected || this.state.ui.liveRecording) {
+      const session = this.wakeLiveSession;
+      this.wakeLiveSession = null;
+      if (session) await session.cancel("manual");
+      else this.handleWakeStatus("disconnected");
+      return false;
+    }
+    await this.activateWakeSession();
+    return true;
+  }
+
   async activateWakeSession(screenshot = null) {
     try {
       if (this.wakeLiveSession) await this.wakeLiveSession.cancel();
 
       const model = this.state.models.find((item) => item.id === this.state.selectedModelId);
       if (!model || model.type !== "gemini-live") {
-        throw new Error("Select a Gemini Live model in Settings before using Alt+Space.");
+        throw new Error("Select a Gemini Live model in Settings before using voice input.");
       }
 
       this.openSingletonSubtab("terminal");
+      this.dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } }, { preserveInput: true });
       this.wakeStreamText = "";
       this.wakeStreamStarted = false;
+      this.wakeStreamParser = null;
       this.activeTerminalSession().printMessage("Voice", "Listening…", "33");
       this.view.showToast("Listening…", "info");
 
@@ -608,47 +901,82 @@ export class AppController {
       });
     } catch (error) {
       this.wakeLiveSession = null;
-      this.reportError("Wake shortcut", error);
+      this.dispatch({ type: "UI_SET", payload: { liveConnected: false, liveRecording: false, liveStatus: "error" } }, { preserveInput: true });
+      this.reportError("Live microphone", error);
     }
+  }
+
+  renderWakeStreamEvents(events = []) {
+    const session = this.activeTerminalSession();
+    for (const event of events) session.appendAssistantStream(event.text);
   }
 
   handleWakeStreamText(text, model) {
     const next = String(text || "");
     if (!next || next === this.wakeStreamText) return;
+    if (this.wakeStreamText && this.wakeStreamText.startsWith(next)) return;
+
+    const previous = this.wakeStreamText;
+    const delta = next.startsWith(previous) ? next.slice(previous.length) : next;
+    this.wakeStreamText = next;
+
     if (!this.wakeStreamStarted) {
       this.wakeStreamStarted = true;
+      this.wakeStreamParser = new AssistantStreamParser();
       this.activeTerminalSession().beginAssistantStream(model?.name || "Gemini Live");
     }
 
-    const delta = next.startsWith(this.wakeStreamText)
-      ? next.slice(this.wakeStreamText.length)
-      : next;
-    this.wakeStreamText = next;
-    this.activeTerminalSession().appendAssistantStream(delta);
+    this.renderWakeStreamEvents(this.wakeStreamParser.push(delta));
+  }
+
+  finalizeWakeStream() {
+    if (this.wakeStreamStarted && this.wakeStreamParser) {
+      this.renderWakeStreamEvents(this.wakeStreamParser.finish());
+      this.activeTerminalSession().endAssistantStream();
+    }
+    this.wakeStreamText = "";
+    this.wakeStreamStarted = false;
+    this.wakeStreamParser = null;
   }
 
   handleWakeStatus(status) {
     const disconnected = status.startsWith("disconnected");
     const liveConnected = status === "connected" || (this.state.ui.liveConnected && !disconnected);
-    this.dispatch({ type: "UI_SET", payload: { liveConnected, liveStatus: status } }, { preserveInput: true });
+    let liveRecording = this.state.ui.liveRecording;
+    if (status === "recording" || status === "connecting") liveRecording = true;
+    if (status === "connected" && this.wakeLiveSession?.stopped) liveRecording = false;
+    if (status === "processing" || status === "error" || disconnected) liveRecording = false;
+    this.dispatch({ type: "UI_SET", payload: { liveConnected, liveRecording, liveStatus: status } }, { preserveInput: true });
 
     const messages = {
       recording: "Listening…",
       connecting: "Listening while Gemini Live connects…",
-      connected: "Gemini Live connected — listening…",
+      connected: "Live chat connected — listening…",
       processing: "Gemini is responding…",
-      disconnecting: "Disconnecting Gemini Live after inactivity…",
-      "disconnected-idle": "Gemini Live disconnected after inactivity.",
-      disconnected: "Gemini Live disconnected."
+      disconnecting: "Disconnecting Live chat after no reply…",
+      "disconnected-idle": "Live chat disconnected after inactivity.",
+      "disconnected-timeout": "Live chat disconnected — no reply before the configured timeout.",
+      disconnected: "Live chat disconnected."
     };
     const message = messages[status];
     if (!message) return;
-    if (disconnected) this.wakeLiveSession = null;
+    if (disconnected) {
+      this.wakeLiveSession = null;
+      this.finalizeWakeStream();
+    }
     this.view.showToast(message, status === "connected" ? "success" : "info");
   }
 
+  async stopWakeLiveRecording() {
+    const session = this.wakeLiveSession;
+    this.dispatch({ type: "UI_SET", payload: { liveRecording: false } }, { preserveInput: true });
+    if (!session) return false;
+    await session.stop();
+    return true;
+  }
+
   finishWakeLiveResult(result, model) {
-    const text = result?.text || "Gemini Live returned no response.";
+    const text = result?.text || this.wakeStreamText || "Gemini Live returned no response.";
     let audioUrl = null;
     if (result?.audioBlob) {
       audioUrl = URL.createObjectURL(result.audioBlob);
@@ -665,12 +993,18 @@ export class AppController {
       url: audioUrl,
       mime: result?.audioMime || "audio/wav"
     } : null;
-    if (this.wakeStreamStarted) {
-      this.activeTerminalSession().endAssistantStream();
-      if (assistantAudio) this.activeTerminalSession().printMedia([assistantAudio]);
+    const session = this.activeTerminalSession();
+    if (this.wakeStreamStarted && this.wakeStreamParser) {
+      if (text.startsWith(this.wakeStreamText) && text.length > this.wakeStreamText.length) {
+        this.handleWakeStreamText(text, model);
+      }
+      this.renderWakeStreamEvents(this.wakeStreamParser.finish());
+      session.endAssistantStream();
+      if (assistantAudio) session.printMedia([assistantAudio]);
     } else {
-      this.activeTerminalSession().printAssistant(model?.name || "Gemini Live", text, assistantAudio);
+      session.printAssistant(model?.name || "Gemini Live", text, assistantAudio);
     }
+    this.showAssistantActions(text);
     this.dispatch({
       type: "TERMINAL_OUTPUT_ADD",
       payload: {
@@ -687,14 +1021,13 @@ export class AppController {
     }, { preserveInput: true });
     this.wakeStreamText = "";
     this.wakeStreamStarted = false;
+    this.wakeStreamParser = null;
   }
 
   failWakeLiveSession(error) {
     this.wakeLiveSession = null;
-    if (this.wakeStreamStarted) this.activeTerminalSession().endAssistantStream();
-    this.wakeStreamText = "";
-    this.wakeStreamStarted = false;
-    this.dispatch({ type: "UI_SET", payload: { liveConnected: false, liveStatus: "error" } }, { preserveInput: true });
+    this.finalizeWakeStream();
+    this.dispatch({ type: "UI_SET", payload: { liveConnected: false, liveRecording: false, liveStatus: "error" } }, { preserveInput: true });
     this.reportError("Gemini Live", error);
   }
 
@@ -755,7 +1088,7 @@ export class AppController {
 
   async changeDirectory(path, { echoInTerminal = false } = {}) {
     const workspace = activeWorkspace(this.state);
-    const command = `cd ${shellQuote(path)}`;
+    const command = path === "~" ? "cd ~" : `cd ${shellQuote(path)}`;
     const result = await this.backend.runCommand(command, workspace.terminal.cwd);
     if (result.code !== 0 || !result.cwd) throw new Error(result.stderr || `Could not open folder: ${path}`);
     if (echoInTerminal && this.native) await this.activeTerminalSession().run(command);
@@ -816,19 +1149,166 @@ export class AppController {
     }
   }
 
+
   async persistConfiguration() {
+    if (!this.backend.saveSettings) return;
     await this.backend.saveSettings({
       settings: this.state.settings,
       models: this.state.models,
-      selectedModelId: this.state.selectedModelId
+      selectedModelId: this.state.selectedModelId,
+      browser: this.state.browser,
+      workspaceSession: serializeWorkspaceSession(this.state)
     });
   }
 
-  navigateWeb(rawUrl) {
-    let url = rawUrl.trim();
-    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  openWebDialog(dialog) {
     const subtab = activeSubtab(this.state);
-    this.dispatch({ type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { url } } });
+    let currentUrl = subtab.url || "";
+    try {
+      currentUrl = normalizeWebUrl(currentUrl);
+    } catch {}
+    const bookmarkDraft = dialog === "add-bookmark"
+      ? { name: defaultBookmarkName(currentUrl), url: currentUrl }
+      : null;
+    this.dispatch({ type: "UI_SET", payload: { webDialog: dialog, webMenuOpen: false, bookmarkDraft } }, { preserveInput: true });
+  }
+
+  async handleBrowserOverlayAction(payload) {
+    const action = String(payload?.action || "");
+    if (!action) return;
+    if (action === "web-dialog-close" || action === "web-menu-close") {
+      this.dispatch({ type: "UI_SET", payload: { webDialog: null, webMenuOpen: false, bookmarkDraft: null } }, { preserveInput: true });
+      return;
+    }
+    if (action === "subtab-new") {
+      const type = String(payload?.type || "");
+      if (!type) return;
+      this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } }, { preserveInput: true });
+      await this.runInternal(`subtab new ${type}`);
+      return;
+    }
+    if (action === "web-bookmark-save") {
+      await this.runInternal(`web bookmark add ${quoteArg(payload?.name || "")} ${quoteArg(payload?.url || "")}`);
+      this.dispatch({ type: "UI_SET", payload: { webDialog: "bookmarks", webMenuOpen: false, bookmarkDraft: null } }, { preserveInput: true });
+      this.view.showToast("Bookmark saved", "success");
+      return;
+    }
+    if (action === "web-bookmark-open" || action === "web-history-open") {
+      this.dispatch({ type: "UI_SET", payload: { webDialog: null, webMenuOpen: false } }, { preserveInput: true });
+      await this.runInternal(`web open ${quoteArg(payload?.url || "")}`);
+      return;
+    }
+    if (action === "web-bookmark-remove") {
+      await this.runInternal(`web bookmark remove ${quoteArg(payload?.id || "")}`);
+      this.view.showToast("Bookmark removed", "success");
+      return;
+    }
+    if (action === "web-history-clear") {
+      await this.runInternal("web history clear");
+      this.view.showToast("History cleared", "success");
+      return;
+    }
+    if (["web-external", "web-download", "web-devtools"].includes(action)) {
+      this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
+    }
+    const commands = {
+      "web-external": "web external",
+      "web-download": "web download",
+      "web-devtools": "web devtools",
+      "web-zoom-in": "web zoom-in",
+      "web-zoom-out": "web zoom-out",
+      "web-zoom-reset": "web zoom-reset",
+      "web-add-bookmark": "web bookmark",
+      "web-bookmarks": "web bookmarks",
+      "web-history": "web history"
+    };
+    if (commands[action]) await this.runInternal(commands[action]);
+  }
+
+  async handleWebNavigation(payload) {
+    const id = String(payload?.id || "");
+    const url = String(payload?.url || "");
+    if (!id || !/^https?:\/\//i.test(url)) return;
+    const exists = this.state.tabs.some((tab) => tab.subtabs.some((item) => item.id === id && item.type === "webview"));
+    if (!exists) return;
+    const title = titleForWebUrl(url);
+    this.nativeWebviewUrls.set(id, url);
+    const active = activeSubtab(this.state);
+    if (active.id === id) {
+      this.dispatch({ type: "SUBTAB_UPDATE", payload: { id, patch: { url, title } } }, { preserveInput: true });
+    }
+    this.dispatch({ type: "BROWSER_HISTORY_ADD", payload: { url, title, at: new Date().toISOString() } }, { preserveInput: true });
+    await this.persistConfiguration();
+  }
+
+  browserOverlayPayload(subtab) {
+    if (this.state.ui.addSubtabMenuOpen) {
+      return { mode: "new-tab" };
+    }
+    if (this.state.ui.webMenuOpen) {
+      return { mode: "menu", zoom: `${Math.round((Number(subtab.zoom) || 1) * 100)}%` };
+    }
+    const mode = this.state.ui.webDialog;
+    if (!mode) return null;
+    return {
+      mode,
+      bookmarkDraft: this.state.ui.bookmarkDraft,
+      bookmarks: this.state.browser.bookmarks,
+      history: this.state.browser.history
+    };
+  }
+
+  browserOverlayBounds(hostRect) {
+    const viewportWidth = typeof window !== "undefined" && Number(window.innerWidth)
+      ? Number(window.innerWidth)
+      : hostRect.left + hostRect.width;
+    const viewportHeight = typeof window !== "undefined" && Number(window.innerHeight)
+      ? Number(window.innerHeight)
+      : hostRect.top + hostRect.height;
+    if (this.state.ui.addSubtabMenuOpen) {
+      const button = this.view.root.querySelector?.('[data-action="subtab-menu"]');
+      const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 56, bottom: 56 };
+      const width = 220;
+      const height = 300;
+      return {
+        x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
+        y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || 56) + 6)),
+        width,
+        height
+      };
+    }
+    if (this.state.ui.webMenuOpen) {
+      const button = this.view.root.querySelector?.('[data-action="web-menu"]');
+      const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 8, bottom: hostRect.top };
+      const width = 260;
+      const height = 300;
+      return {
+        x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
+        y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || hostRect.top) + 6)),
+        width,
+        height
+      };
+    }
+    const mode = this.state.ui.webDialog;
+    const width = mode === "add-bookmark" ? 430 : 520;
+    const itemCount = mode === "bookmarks" ? this.state.browser.bookmarks.length : this.state.browser.history.length;
+    const height = mode === "add-bookmark" ? 260 : Math.min(560, Math.max(260, 126 + itemCount * 54));
+    return {
+      x: Math.max(8, Math.round((viewportWidth - width) / 2)),
+      y: Math.max(8, Math.round((viewportHeight - height) / 2)),
+      width: Math.min(width, Math.max(240, viewportWidth - 16)),
+      height: Math.min(height, Math.max(220, viewportHeight - 16))
+    };
+  }
+
+  async syncBrowserOverlay(subtab, hostRect) {
+    const payload = this.browserOverlayPayload(subtab);
+    if (!payload) {
+      await this.backend.hideBrowserOverlay?.();
+      return;
+    }
+    if (!this.backend.showBrowserOverlay) return;
+    await this.backend.showBrowserOverlay(payload, this.browserOverlayBounds(hostRect));
   }
 
   async syncNativeWebview() {
@@ -836,28 +1316,54 @@ export class AppController {
     const subtab = activeSubtab(this.state);
     const host = this.view.root.querySelector?.("#native-webview-host");
     if (subtab.type !== "webview" || subtab.filePath || !host) {
+      await this.backend.hideBrowserOverlay?.();
       await this.backend.hideWebviews?.();
       return;
     }
     const rect = host.getBoundingClientRect();
     const url = subtab.url || "https://www.google.com/";
     const navigate = this.nativeWebviewUrls.get(subtab.id) !== url;
-    if (!this.backend.showWebview) return;
-    await this.backend.showWebview(subtab.id, url, {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
-      height: rect.height
-    }, navigate);
-    this.nativeWebviewUrls.set(subtab.id, url);
+    if (this.backend.showWebview) {
+      await this.backend.showWebview(subtab.id, url, {
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height
+      }, navigate);
+      this.nativeWebviewUrls.set(subtab.id, url);
+    }
+    await this.syncBrowserOverlay(subtab, rect);
   }
 
-  async runWebviewAction(action) {
+  async runWebviewAction(action, value = null) {
     const subtab = activeSubtab(this.state);
     if (subtab.type !== "webview" || subtab.filePath) throw new Error("Open a website tab first.");
-    await this.backend.webviewAction(subtab.id, action);
+    await this.backend.webviewAction(subtab.id, action, value);
   }
 
+  async runWebviewZoom(direction) {
+    const subtab = activeSubtab(this.state);
+    if (subtab.type !== "webview" || subtab.filePath) throw new Error("Open a website tab first.");
+    const zoom = nextWebZoom(subtab.zoom, direction);
+    await this.runWebviewAction("zoom", zoom);
+    const event = { type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { zoom } } };
+    if (this.native && this.state.ui.webMenuOpen) {
+      this.state = reduceState(this.state, event);
+      await this.backend.updateBrowserOverlayZoom?.(`${Math.round(zoom * 100)}%`);
+      return;
+    }
+    this.dispatch(event, { preserveInput: true });
+  }
+
+  async openWebExternal() {
+    const subtab = activeSubtab(this.state);
+    if (subtab.filePath) return this.openExternal(subtab.filePath);
+    const url = subtab.url || this.view.getWebUrl();
+    if (!url) throw new Error("Open a website first.");
+    if (this.backend.isNative && this.backend.openExternalUrl) return this.backend.openExternalUrl(url);
+    if (typeof window !== "undefined") return window.open(url, "_blank", "noopener,noreferrer");
+    throw new Error("External browser opening is unavailable.");
+  }
 
   async openFileInWebview(path, metadata) {
     if (this.fileViewUrl) this.backend.releaseFileView?.(this.fileViewUrl);

@@ -317,25 +317,25 @@ export class GeminiWakeSession {
     this.silenceNode = null;
     this.accumulator = createLiveAccumulator();
     this.player = new PcmStreamPlayer(24000);
-    this.inactivityMs = Math.max(10, Number(inactivitySeconds) || 60) * 1000;
-    this.inactivityTimer = null;
+    this.responseTimeoutMs = Math.max(10, Number(inactivitySeconds) || 60) * 1000;
+    this.responseTimer = null;
     this.stopped = false;
     this.completed = false;
   }
 
-  touchActivity() {
-    clearTimeout(this.inactivityTimer);
-    if (this.completed) return;
-    this.inactivityTimer = setTimeout(() => {
+  armResponseTimeout() {
+    clearTimeout(this.responseTimer);
+    if (this.completed || !this.stopped) return;
+    this.responseTimer = setTimeout(() => {
       this.onStatus?.("disconnecting");
-      this.cancel("idle").catch(() => {});
-    }, this.inactivityMs);
+      this.cancel("timeout").catch(() => {});
+    }, this.responseTimeoutMs);
   }
 
   async start() {
     if (!this.model?.apiKey) throw new Error("Add a Gemini API key in Settings.");
     this.onStatus?.("recording");
-    this.touchActivity();
+    await this.player.ensureContext();
     await this.startMicrophone();
     this.connect().catch((error) => this.fail(error));
     return this;
@@ -357,7 +357,6 @@ export class GeminiWakeSession {
       const floatSamples = event.inputBuffer.getChannelData(0);
       let energy = 0;
       for (let index = 0; index < floatSamples.length; index += 1) energy += floatSamples[index] * floatSamples[index];
-      if (Math.sqrt(energy / floatSamples.length) > 0.012) this.touchActivity();
       const pcmBytes = floatToPcm16(floatSamples, this.audioContext.sampleRate, 16000);
       const chunk = { data: bytesToBase64(pcmBytes), mimeType: "audio/pcm;rate=16000" };
       if (this.session) this.session.sendRealtimeInput({ audio: chunk });
@@ -377,11 +376,10 @@ export class GeminiWakeSession {
       config: liveConfig(this.systemPrompt),
       callbacks: {
         onopen: () => {
-          this.touchActivity();
-          this.onStatus?.("connected");
+          this.onStatus?.(this.stopped ? "processing" : "connected");
         },
         onmessage: (message) => {
-          this.touchActivity();
+          this.armResponseTimeout();
           this.accumulator.accept(message);
           const partial = this.accumulator.finish();
           if (partial.text) this.onText?.(partial.text);
@@ -420,17 +418,18 @@ export class GeminiWakeSession {
     await this.stopMicrophone();
     this.endAudioInput();
     this.onStatus?.("processing");
+    this.armResponseTimeout();
   }
 
   async cancel(reason = "cancelled") {
     if (this.completed) return;
     this.stopped = true;
     this.completed = true;
-    clearTimeout(this.inactivityTimer);
+    clearTimeout(this.responseTimer);
     await this.stopMicrophone();
     await this.player.close();
     try { this.session?.close(); } catch {}
-    this.onStatus?.(reason === "idle" ? "disconnected-idle" : "disconnected");
+    this.onStatus?.(reason === "timeout" ? "disconnected-timeout" : reason === "idle" ? "disconnected-idle" : "disconnected");
   }
 
   async stopMicrophone() {
@@ -451,14 +450,14 @@ export class GeminiWakeSession {
     const result = resultFromAccumulator(this.accumulator, modelName);
     this.accumulator = createLiveAccumulator();
     this.onResult?.({ ...result, streamedAudio: true });
-    this.touchActivity();
+    this.armResponseTimeout();
   }
 
   async fail(error) {
     if (this.completed) return;
     this.completed = true;
     this.stopped = true;
-    clearTimeout(this.inactivityTimer);
+    clearTimeout(this.responseTimer);
     await this.stopMicrophone();
     await this.player.close();
     this.onError?.(error instanceof Error ? error : new Error(String(error)));

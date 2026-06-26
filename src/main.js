@@ -6,6 +6,6 @@ import { TerminalSession } from "./services/terminal-session.js";
 const root = document.querySelector("#app");
 const view = new AppView(root);
 const backend = new Backend();
-const controller = new AppController({ view, backend, terminalSessionFactory: (value) => new TerminalSession(value) });
+const controller = new AppController({ view, backend, terminalSessionFactory: (value, actions) => new TerminalSession(value, actions) });
 
 controller.initialize();

@@ -19,5 +19,8 @@ const index = (await readFile("index.html", "utf8"))
 await writeFile("dist/index.html", index);
 await cp("styles.css", "dist/styles.css");
 await cp("favicon.png", "dist/favicon.png");
+await cp("browser-overlay.html", "dist/browser-overlay.html");
+await cp("browser-overlay.css", "dist/browser-overlay.css");
+await cp("browser-overlay.js", "dist/browser-overlay.js");
 
 console.log("Built bundled Auri frontend in dist/");

@@ -1,7 +1,16 @@
 import { GeminiWakeSession, runGeminiLiveTurn } from "./gemini-live.js";
 
-const SYSTEM_PROMPT = `You are Auri, a desktop assistant inside a terminal-centered workspace.
-Be concise and practical. When the user asks you to input, type, or transcribe what they spoke, first repeat the exact recognized words inside <i></i> tags on their own line, then continue with the answer. Never place other content inside <i></i> tags.`;
+export const SYSTEM_PROMPT = `You are Auri, a desktop assistant inside a terminal-centered workspace.
+Be concise, practical, and direct.
+
+Use these two response tags only when they add an actionable item to Auri's floating action panel:
+- Wrap every complete executable shell command in <cmd>...</cmd>. Put only the command text inside the tag, with no Markdown fence or explanation. Put one complete item in each tag.
+- Wrap standalone important or input-ready text in <i>...</i>. Use this for a key point, sentence, path, value, or exact text the user may want to insert or copy. Put one complete item in each tag.
+
+Keep ordinary explanation outside the tags. Do not nest tags. Do not use arbitrary HTML. Never put a shell command in <i>; use <cmd> for shell commands.`;
+
+export const LIVE_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
+For voice turns, answer the user's request directly. Only repeat the user's spoken words if the user explicitly asks for dictation, to dictate text, or for voice input. When they do, put only the exact words they want entered inside a separate <i>...</i> tag. Otherwise, do not quote, paraphrase, transcribe, or repeat what the user said. Put any complete executable shell command in a separate <cmd>...</cmd> tag.`;
 
 function tauriInvoke() {
   if (typeof window === "undefined") return null;
@@ -125,6 +134,10 @@ export class Backend {
   constructor() {
     this.invoke = tauriInvoke();
     this.fileViewResources = new Map();
+    this.browserClipboardHistory = [
+      { id: "clip-1", kind: "text", text: "auri tab new Research", createdAt: new Date().toISOString(), pinned: false },
+      { id: "clip-2", kind: "text", text: "Auri keeps commands testable and automatable.", createdAt: new Date().toISOString(), pinned: false }
+    ];
   }
 
   get isNative() {
@@ -167,9 +180,32 @@ export class Backend {
     return this.call("webview_hide_all");
   }
 
-  async webviewAction(id, action) {
+  async showBrowserOverlay(payload, bounds) {
+    if (!this.invoke) return;
+    return this.call("webview_overlay_show", { payload: JSON.stringify(payload), ...bounds });
+  }
+
+  async hideBrowserOverlay() {
+    if (!this.invoke) return;
+    return this.call("webview_overlay_hide");
+  }
+
+  async updateBrowserOverlayZoom(value) {
+    if (!this.invoke) return;
+    return this.call("webview_overlay_update_zoom", { value });
+  }
+
+  async webviewAction(id, action, value = null) {
     if (!this.invoke) throw new Error("Website navigation needs the native Tauri build.");
-    return this.call("webview_action", { id, action });
+    return this.call("webview_action", { id, action, value });
+  }
+
+  async openExternalUrl(url) {
+    if (!this.invoke) {
+      if (typeof window !== "undefined") return window.open(url, "_blank", "noopener,noreferrer");
+      throw new Error("External browser opening is unavailable.");
+    }
+    return this.call("open_external_url", { url });
   }
 
   async closeWebview(id) {
@@ -286,14 +322,14 @@ export class Backend {
 
     const inlineAttachments = await this.prepareAttachments(attachments);
     if (model.type === "openai" || model.type === "openai-live") {
-      return this.askOpenAi({ prompt, model, screenshot, attachments: inlineAttachments });
+      return this.askOpenAi({ prompt, model, screenshot, attachments: inlineAttachments, systemPrompt: model.type === "openai-live" ? LIVE_SYSTEM_PROMPT : SYSTEM_PROMPT });
     }
     if (model.type === "gemini-live") {
       const media = [...inlineAttachments];
       if (screenshot?.base64) {
         media.unshift({ name: screenshot.name || "screenshot.jpg", mime: screenshot.mime || "image/jpeg", base64: screenshot.base64 });
       }
-      return runGeminiLiveTurn({ prompt, model, systemPrompt: SYSTEM_PROMPT, media });
+      return runGeminiLiveTurn({ prompt, model, systemPrompt: LIVE_SYSTEM_PROMPT, media });
     }
     if (model.type === "gemini") {
       return this.askGemini({ prompt, model, screenshot, attachments: inlineAttachments });
@@ -304,7 +340,7 @@ export class Backend {
   async startWakeLiveSession(options) {
     const { model, screenshot, inactivitySeconds, onStatus, onText, onResult, onError } = options;
     if (!model || model.type !== "gemini-live") throw new Error("Select a Gemini Live model.");
-    const session = new GeminiWakeSession({ model, systemPrompt: SYSTEM_PROMPT, screenshot, inactivitySeconds, onStatus, onText, onResult, onError });
+    const session = new GeminiWakeSession({ model, systemPrompt: LIVE_SYSTEM_PROMPT, screenshot, inactivitySeconds, onStatus, onText, onResult, onError });
     await session.start();
     return session;
   }
@@ -322,7 +358,7 @@ export class Backend {
     return output;
   }
 
-  async askOpenAi({ prompt, model, screenshot, attachments }) {
+  async askOpenAi({ prompt, model, screenshot, attachments, systemPrompt = SYSTEM_PROMPT }) {
     const endpoint = model.url || "https://api.openai.com/v1/chat/completions";
     const content = [{ type: "text", text: prompt }];
     if (screenshot?.base64) {
@@ -335,7 +371,7 @@ export class Backend {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${model.apiKey}` },
-      body: JSON.stringify({ model: model.model, messages: [{ role: "system", content: SYSTEM_PROMPT }, { role: "user", content }] })
+      body: JSON.stringify({ model: model.model, messages: [{ role: "system", content: systemPrompt }, { role: "user", content }] })
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error?.message || `OpenAI request failed (${response.status}).`);
@@ -373,21 +409,42 @@ export class Backend {
     return this.call("paste_clipboard_entry", { id });
   }
 
-  async readClipboardHistory() {
-    if (!this.invoke) {
-      return [
-        { id: "clip-1", kind: "text", text: "auri tab new Research", createdAt: new Date().toISOString() },
-        { id: "clip-2", kind: "text", text: "Auri keeps commands testable and automatable.", createdAt: new Date().toISOString() }
-      ];
-    }
-    const items = await this.call("read_clipboard_history");
-    const convertFileSrc = window.__TAURI__?.core?.convertFileSrc || window.__TAURI_INTERNALS__?.convertFileSrc;
+  decorateClipboardItems(items) {
+    const result = items.map((item) => ({ ...item }));
+    const convertFileSrc = typeof window === "undefined"
+      ? null
+      : window.__TAURI__?.core?.convertFileSrc || window.__TAURI_INTERNALS__?.convertFileSrc;
     if (convertFileSrc) {
-      for (const item of items) {
+      for (const item of result) {
         if (item.kind === "image" && item.path) item.assetUrl = convertFileSrc(item.path);
       }
     }
-    return items;
+    return result;
+  }
+
+  async readClipboardHistory() {
+    if (!this.invoke) return this.decorateClipboardItems(this.browserClipboardHistory);
+    return this.decorateClipboardItems(await this.call("read_clipboard_history"));
+  }
+
+  async setClipboardPinned(id, pinned) {
+    if (!this.invoke) {
+      const item = this.browserClipboardHistory.find((entry) => entry.id === id);
+      if (!item) throw new Error("Clipboard item was not found.");
+      item.pinned = Boolean(pinned);
+      return this.decorateClipboardItems(this.browserClipboardHistory);
+    }
+    return this.decorateClipboardItems(await this.call("set_clipboard_pinned", { id, pinned: Boolean(pinned) }));
+  }
+
+  async removeClipboardItem(id) {
+    if (!this.invoke) {
+      const index = this.browserClipboardHistory.findIndex((entry) => entry.id === id);
+      if (index < 0) throw new Error("Clipboard item was not found.");
+      this.browserClipboardHistory.splice(index, 1);
+      return this.decorateClipboardItems(this.browserClipboardHistory);
+    }
+    return this.decorateClipboardItems(await this.call("remove_clipboard_entry", { id }));
   }
 
   async saveSettings(settings) {

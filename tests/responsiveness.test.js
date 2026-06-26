@@ -85,9 +85,9 @@ test("every terminal control stays light in connected and input states", async (
   const css = await readFile("styles.css", "utf8");
 
   assert.match(css, /\.terminal-input-zone\s*\{[^}]*background:\s*#f8fbff/s);
-  assert.match(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#405a86/s);
+  assert.match(css, /\.model-select-wrap\.is-live-connected\s*\{[^}]*color:\s*#405a86/s);
   assert.match(css, /\.terminal-emulator \.xterm \.composition-view\s*\{[^}]*background:\s*#f8fbff/s);
-  assert.doesNotMatch(css, /\.model-chip\.is-live-connected\s*\{[^}]*color:\s*#e8f6ff/s);
+  assert.doesNotMatch(css, /\.model-select-wrap\.is-live-connected\s*\{[^}]*color:\s*#e8f6ff/s);
 });
 
 test("xterm submissions refresh cwd from the native shell process", async () => {

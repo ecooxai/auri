@@ -31,7 +31,7 @@ Implemented now:
 - Shell command execution and explicit `cd` synchronization.
 - Terminal composer where Enter inserts a newline and Command/Ctrl+Enter runs.
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
-- `<i>spoken text</i>` assistant reply rendering with insert and copy actions.
+- Assistant replies can expose allowlisted shell-command and input-ready actions in a floating panel, with Run, Insert, and Copy controls.
 - Local model/settings management and an Info tab for errors and notices.
 - Clipboard text history with the 100 + 100 character long-text preview rule.
 - Audio/video recording through the WebView media APIs, with native persistence under `~/auri/media`.
@@ -44,7 +44,7 @@ Not complete yet:
 - The terminal backend is process-based, not a PTY. Interactive full-screen programs such as `top`, `htop`, editors, and password prompts need a PTY session layer.
 - The Alt+Space hold gesture works while Auri receives keyboard events; OS-global shortcut registration is not yet implemented.
 - Gemini Live and OpenAI Live model types are configurable, but true bidirectional realtime audio streaming is not yet implemented; current AI requests use the normal HTTP completion/generation paths.
-- Clipboard persistence currently captures text. Native image clipboard monitoring and deduplication remain to be added.
+- Clipboard persistence captures text and images through native polling. Event-driven clipboard monitoring and broader cross-platform deduplication remain to be added.
 - Recording prefers MP4/M4A when the WebView supports it and falls back to WebM. Guaranteed 64 kbps M4A transcoding requires a native encoder/transcode stage.
 - Linux screenshot capture expects `gnome-screenshot` or `grim`; JPEG conversion uses `ffmpeg` when available.
 
@@ -55,7 +55,7 @@ src/
   model/                 Pure state and parsing logic
     commands.js          Command registry, parser, raw-tail extraction
     state.js             Immutable application reducer and workspace model
-    assistant.js         Safe assistant response and <i> transcript parsing
+    assistant.js         Safe allowlisted assistant action parsing and streaming cleanup
     clipboard.js         Clipboard serialization and preview rules
     presentation.js      Pure display helpers
   controllers/
@@ -73,7 +73,7 @@ src-tauri/src/core/
   files.rs               Directory, metadata, preview, attachment, media storage
   shell.rs               Shell process execution and cwd synchronization
   capture.rs             macOS/Linux screenshot capture
-  clipboard.rs           Persistent clipboard text history
+  clipboard.rs           Persistent clipboard text/image history, pinning, retention, and paste-back
   ipc.rs                 macOS/Linux external CLI command bridge
   util.rs                Dependency-light base64, MIME, path, and CLI helpers
 
@@ -195,15 +195,29 @@ auri ai model update <id> <name> <type> <model> <url> <key>                    U
 auri ai model delete <id>                                                      Delete an AI provider configuration.
 auri clipboard list                                                            Open clipboard history.
 auri clipboard insert <id>                                                     Paste a clipboard item into the previously active application.
+auri clipboard pin <id>                                                       Pin a clipboard item.
+auri clipboard unpin <id>                                                     Unpin a clipboard item.
+auri clipboard remove <id>                                                    Remove a clipboard item.
 auri clipboard copy <text>                                                     Copy text to the system clipboard.
 auri attachment add <path>                                                     Attach a local file to the next AI request.
 auri attachment remove <id>                                                    Remove a prompt attachment.
 auri input insert <text>                                                       Insert text into the focused prompt input.
+auri transcript dismiss                                                        Close the completed voice-input text popup.
 auri web open <url>                                                            Navigate the active webview.
 auri web reload                                                                Reload the active webview.
 auri web back                                                                  Go back in the active webview.
 auri web forward                                                               Go forward in the active webview.
 auri web external                                                              Open the active web URL externally.
+auri web download                                                                Download the active page.
+auri web zoom-in                                                                 Increase the active page zoom.
+auri web zoom-out                                                                Decrease the active page zoom.
+auri web zoom-reset                                                              Reset the active page zoom to 100%.
+auri web bookmark [add [name] [url]|remove <id>]                                 Open the add-bookmark dialog or manage bookmarks.
+auri web bookmarks                                                               Show saved bookmarks.
+auri web history [clear]                                                         Show or clear browser history.
+auri web devtools                                                                Open developer tools for the active page.
+auri live record start                                                        Start push-to-talk microphone input for the selected Live model.
+auri live record stop                                                         Stop microphone input and send the captured turn to the Live API.
 auri record audio                                                              Open audio recording.
 auri record video                                                              Open video recording.
 auri record start <audio|video>                                                Start media capture.
@@ -239,7 +253,7 @@ Expected failures are shown both near the current interaction and in the Info su
 ## Performance guidelines
 
 - Keep state transformations pure and incremental.
-- Truncate clipboard previews before rendering.
+- Truncate clipboard text longer than 150 characters to the first 100 and last 50 characters before rendering.
 - Avoid reading text files larger than 2 MB into the viewer.
 - Limit inline binary attachments to 32 MB and saved recordings to 256 MB.
 - Keep panel rendering modular; do not add unrelated behavior to `panels.js`.
@@ -248,3 +262,4 @@ Expected failures are shown both near the current interaction and in the Info su
 ## Visual design
 
 The interface uses a light aurora palette, translucent surfaces, minimal separators, Unicode symbols with system-font fallbacks, and explicit press/hover/focus feedback. Buttons use icons where their meaning is standard; text remains where an icon alone would be ambiguous or unsafe.
+auri live record toggle                                                       Connect and record, or disconnect the active Live chat.

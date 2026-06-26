@@ -18,6 +18,7 @@ export function createSubtab(type = "terminal", extra = {}) {
     type,
     title: labels[type] ?? type,
     url: type === "webview" ? "https://www.google.com/" : "",
+    zoom: type === "webview" ? 1 : undefined,
     ...extra
   };
 }
@@ -42,9 +43,9 @@ export function createInitialState() {
     tabs: [workspace],
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
+    browser: { bookmarks: [], history: [] },
     models: [
-      { id: "gemini-live-default", name: "Gemini Live", type: "gemini-live", model: "gemini-2.5-flash-native-audio", url: "", apiKey: "", enabled: true },
-      { id: "openai-default", name: "OpenAI", type: "openai", model: "gpt-4.1-mini", url: "", apiKey: "", enabled: false }
+      { id: "gemini-live-default", name: "Gemini Live", type: "gemini-live", model: "gemini-2.5-flash-native-audio", url: "", apiKey: "", enabled: true }
     ],
     selectedModelId: "gemini-live-default",
     settings: {
@@ -60,7 +61,7 @@ export function createInitialState() {
       audioBitrateKbps: 64
     },
     media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, modelMenuId: null, editingModelId: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveStatus: "idle" }
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", assistantActions: [], assistantTranscripts: [] }
   };
 }
 
@@ -71,8 +72,42 @@ const updateTab = (state, workspaceId, updater) => ({
 
 const updateActiveTab = (state, updater) => updateTab(state, state.activeTabId, updater);
 
+export function serializeWorkspaceSession(state) {
+  const tabs = Array.isArray(state?.tabs) ? state.tabs : [];
+  const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.id === state?.activeTabId));
+  return {
+    activeIndex,
+    items: tabs.map((tab, index) => ({
+      title: String(tab?.title || (index === 0 ? "Home" : `Space ${index + 1}`)),
+      path: String(tab?.folder?.path || tab?.terminal?.cwd || "~")
+    }))
+  };
+}
+
+function workspaceFromSession(item, index) {
+  const fallbackTitle = index === 0 ? "Home" : `Space ${index + 1}`;
+  const title = String(item?.title || fallbackTitle).trim() || fallbackTitle;
+  const path = String(item?.path || "~").trim() || "~";
+  const workspace = createWorkspace(title);
+  return {
+    ...workspace,
+    folder: { ...workspace.folder, path },
+    terminal: { ...workspace.terminal, cwd: path }
+  };
+}
+
 export function reduceState(state, event) {
   switch (event.type) {
+    case "WORKSPACES_RESTORE": {
+      const items = Array.isArray(event.payload?.items) ? event.payload.items.slice(0, 50) : [];
+      if (!items.length) return state;
+      const tabs = items.map(workspaceFromSession);
+      const requestedIndex = Number(event.payload?.activeIndex);
+      const activeIndex = Number.isInteger(requestedIndex)
+        ? Math.min(tabs.length - 1, Math.max(0, requestedIndex))
+        : 0;
+      return { ...state, tabs, activeTabId: tabs[activeIndex].id };
+    }
     case "TAB_NEW": {
       const workspace = createWorkspace(event.payload?.title || `Space ${state.tabs.length + 1}`);
       return { ...state, tabs: [...state.tabs, workspace], activeTabId: workspace.id };
@@ -191,6 +226,30 @@ export function reduceState(state, event) {
     }
     case "CLIPBOARD_SET":
       return { ...state, clipboard: { items: event.payload.items } };
+    case "BROWSER_RESTORE":
+      return {
+        ...state,
+        browser: {
+          bookmarks: Array.isArray(event.payload?.bookmarks) ? event.payload.bookmarks : [],
+          history: Array.isArray(event.payload?.history) ? event.payload.history.slice(0, 200) : []
+        }
+      };
+    case "BROWSER_BOOKMARK_ADD": {
+      const item = event.payload;
+      const bookmarks = state.browser.bookmarks.filter((entry) => entry.id !== item.id && entry.url !== item.url);
+      return { ...state, browser: { ...state.browser, bookmarks: [item, ...bookmarks] } };
+    }
+    case "BROWSER_BOOKMARK_REMOVE":
+      return { ...state, browser: { ...state.browser, bookmarks: state.browser.bookmarks.filter((item) => item.id !== event.payload.id) } };
+    case "BROWSER_HISTORY_ADD": {
+      const item = event.payload;
+      const history = state.browser.history[0]?.url === item.url
+        ? [item, ...state.browser.history.slice(1)]
+        : [item, ...state.browser.history];
+      return { ...state, browser: { ...state.browser, history: history.slice(0, 200) } };
+    }
+    case "BROWSER_HISTORY_CLEAR":
+      return { ...state, browser: { ...state.browser, history: [] } };
     case "MEDIA_SET":
       return { ...state, media: { ...state.media, ...event.payload } };
     case "ATTACHMENT_ADD":

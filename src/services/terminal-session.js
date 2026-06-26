@@ -1,5 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { terminalAssistantSegments } from "../model/assistant.js";
 
 const encoder = new TextEncoder();
 
@@ -21,8 +22,9 @@ function snapshotMedia(item) {
 }
 
 export class TerminalSession {
-  constructor(backend) {
+  constructor(backend, assistantActions = {}) {
     this.backend = backend;
+    this.assistantActions = assistantActions;
     this.sessionId = `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     this.term = null;
     this.fitAddon = null;
@@ -39,6 +41,7 @@ export class TerminalSession {
     this.cwdRefreshTimer = null;
     this.onCwdChange = null;
     this.renderQueue = Promise.resolve();
+    this.assistantStreamAtLineStart = true;
   }
 
   async initialize() {
@@ -361,7 +364,9 @@ export class TerminalSession {
   }
 
   printAssistant(name, message, audio = null) {
-    this.printMessage(name || "Auri", message, "35");
+    this.beginAssistantStream(name);
+    for (const segment of terminalAssistantSegments(message)) this.appendAssistantStream(segment.text);
+    this.endAssistantStream();
     if (audio) this.printMedia([{ ...audio, kind: "audio" }]);
   }
 
@@ -369,16 +374,21 @@ export class TerminalSession {
     const esc = String.fromCharCode(27);
     const output = `\r\n${esc}[1;35m${name || "Auri"}${esc}[0m\r\n`;
     this.appendRecord({ type: "bytes", bytes: encoder.encode(output) });
+    this.assistantStreamAtLineStart = true;
   }
 
   appendAssistantStream(text) {
     if (!text) return;
     const normalized = String(text).replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
     this.appendRecord({ type: "bytes", bytes: encoder.encode(normalized) });
+    this.assistantStreamAtLineStart = normalized.endsWith("\r\n");
   }
 
   endAssistantStream() {
-    this.appendRecord({ type: "bytes", bytes: encoder.encode("\r\n") });
+    if (!this.assistantStreamAtLineStart) {
+      this.appendRecord({ type: "bytes", bytes: encoder.encode("\r\n") });
+    }
+    this.assistantStreamAtLineStart = true;
   }
 
   printMessage(label, message, color) {

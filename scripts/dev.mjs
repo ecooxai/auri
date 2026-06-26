@@ -20,6 +20,9 @@ async function copyStatic() {
   await writeFile(path.join(dist, "index.html"), index);
   await cp(path.join(root, "styles.css"), path.join(dist, "styles.css"));
   await cp(path.join(root, "favicon.png"), path.join(dist, "favicon.png"));
+  await cp(path.join(root, "browser-overlay.html"), path.join(dist, "browser-overlay.html"));
+  await cp(path.join(root, "browser-overlay.css"), path.join(dist, "browser-overlay.css"));
+  await cp(path.join(root, "browser-overlay.js"), path.join(dist, "browser-overlay.js"));
 }
 
 await rm(dist, { recursive: true, force: true });

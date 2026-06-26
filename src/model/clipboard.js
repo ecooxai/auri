@@ -1,7 +1,7 @@
 export function previewClipboardText(text) {
   const value = String(text ?? "");
-  if (value.length <= 200) return value;
-  return `${value.slice(0, 100)}…\n…${value.slice(-100)}`;
+  if (value.length <= 150) return value;
+  return `${value.slice(0, 100)}…\n…${value.slice(-50)}`;
 }
 
 export function serializeClipboardEntry(entry) {

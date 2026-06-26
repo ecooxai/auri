@@ -106,6 +106,19 @@ fn paste_clipboard_entry(id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_clipboard_pinned(
+    id: String,
+    pinned: bool,
+) -> Result<Vec<clipboard::ClipboardEntry>, String> {
+    clipboard::set_pinned(&id, pinned)
+}
+
+#[tauri::command]
+fn remove_clipboard_entry(id: String) -> Result<Vec<clipboard::ClipboardEntry>, String> {
+    clipboard::remove_entry(&id)
+}
+
+#[tauri::command]
 fn save_settings(settings: Value) -> Result<(), String> {
     workspace::save_configuration(&settings)
 }
@@ -125,12 +138,26 @@ fn open_external(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    files::open_external_url(&url)
+}
+
+#[tauri::command]
 fn window_start_dragging(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn webview_show(app: tauri::AppHandle, id: String, url: String, navigate: bool, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+fn webview_show(
+    app: tauri::AppHandle,
+    id: String,
+    url: String,
+    navigate: bool,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
     webview::show(&app, &id, &url, navigate, x, y, width, height)
 }
 
@@ -140,8 +167,35 @@ fn webview_hide_all(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn webview_action(app: tauri::AppHandle, id: String, action: String) -> Result<(), String> {
-    webview::action(&app, &id, &action)
+fn webview_overlay_show(
+    app: tauri::AppHandle,
+    payload: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    webview::show_overlay(&app, &payload, x, y, width, height)
+}
+
+#[tauri::command]
+fn webview_overlay_hide(app: tauri::AppHandle) -> Result<(), String> {
+    webview::hide_overlay(&app)
+}
+
+#[tauri::command]
+fn webview_overlay_update_zoom(app: tauri::AppHandle, value: String) -> Result<(), String> {
+    webview::update_overlay_zoom(&app, &value)
+}
+
+#[tauri::command]
+fn webview_action(
+    app: tauri::AppHandle,
+    id: String,
+    action: String,
+    value: Option<f64>,
+) -> Result<(), String> {
+    webview::action(&app, &id, &action, value)
 }
 
 #[tauri::command]
@@ -216,11 +270,17 @@ pub fn run() {
             capture_screenshot,
             read_clipboard_history,
             paste_clipboard_entry,
+            set_clipboard_pinned,
+            remove_clipboard_entry,
             save_settings,
             save_media_file,
             open_external,
+            open_external_url,
             webview_show,
             webview_hide_all,
+            webview_overlay_show,
+            webview_overlay_hide,
+            webview_overlay_update_zoom,
             webview_action,
             webview_close
         ])

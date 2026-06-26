@@ -1,5 +1,7 @@
 import { commandHelp, parseCommand, extractCommandTail, extractActionTail } from "../model/commands.js";
-import { activeWorkspace, activeSubtab } from "../model/state.js";
+import { shellQuote } from "../model/path.js";
+import { activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
+import { defaultBookmarkName, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
 
 const SUBTAB_ALIASES = Object.freeze({
   "recorder-audio": "audio",
@@ -56,11 +58,30 @@ function appendOutput(dispatch, output) {
   });
 }
 
+async function runTerminalCommand(command, context, cwdOverride = null) {
+  const { getState, dispatch, backend } = context;
+  if (!command) throw new Error("Enter a shell command.");
+  const workspace = activeWorkspace(getState());
+  const cwd = cwdOverride || workspace.terminal.cwd;
+  dispatch({ type: "TERMINAL_RUNNING_SET", payload: { value: true } });
+  const result = await backend.runCommand(command, cwd);
+  appendOutput(dispatch, { ...result, command, kind: "command" });
+  if (result.cwd && result.cwd !== workspace.terminal.cwd) {
+    dispatch({ type: "WORKDIR_SET", payload: { path: result.cwd } });
+    const entries = await backend.listDirectory(result.cwd);
+    dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } });
+  }
+  return result;
+}
+
 async function persistConfiguration(backend, state) {
+  if (!backend.saveSettings) return;
   await backend.saveSettings({
     settings: state.settings,
     models: state.models,
-    selectedModelId: state.selectedModelId
+    selectedModelId: state.selectedModelId,
+    browser: state.browser,
+    workspaceSession: serializeWorkspaceSession(state)
   });
 }
 
@@ -117,12 +138,18 @@ export async function executeCommand(input, context) {
       if (action === "create-file" || action === "create-folder") {
         const name = args.join(" ").trim();
         if (!name) throw new Error(`Enter a name for the new ${action === "create-file" ? "file" : "folder"}.`);
-        const created = action === "create-file"
-          ? await backend.createFile(workspace.folder.path, name)
-          : await backend.createFolder(workspace.folder.path, name);
+        if (name === "." || name === ".." || /[\/\\]/.test(name)) {
+          throw new Error("Create items directly in the current folder; path separators are not allowed.");
+        }
+        const safeName = name.startsWith("-") ? `./${name}` : name;
+        const command = action === "create-file"
+          ? `touch ${shellQuote(safeName)}`
+          : `mkdir -p ${shellQuote(safeName)}`;
+        const result = await runTerminalCommand(command, context, workspace.folder.path);
+        if (result.code !== 0) throw new Error(result.stderr?.trim() || `Could not create ${name}.`);
         const entries = await backend.listDirectory(workspace.folder.path);
         dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } });
-        return created;
+        return { name, command };
       }
       if (action === "info") {
         const path = args.join(" ") || workspace.folder.path;
@@ -184,17 +211,7 @@ export async function executeCommand(input, context) {
 
     if (domain === "terminal" && action === "run") {
       const command = extractCommandTail(input) || args.join(" ");
-      if (!command) throw new Error("Enter a shell command.");
-      const workspace = activeWorkspace(getState());
-      dispatch({ type: "TERMINAL_RUNNING_SET", payload: { value: true } });
-      const result = await backend.runCommand(command, workspace.terminal.cwd);
-      appendOutput(dispatch, { ...result, command, kind: "command" });
-      if (result.cwd && result.cwd !== workspace.terminal.cwd) {
-        dispatch({ type: "WORKDIR_SET", payload: { path: result.cwd } });
-        const entries = await backend.listDirectory(result.cwd);
-        dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } });
-      }
-      return result;
+      return runTerminalCommand(command, context);
     }
 
     if (domain === "ai") {
@@ -215,6 +232,7 @@ export async function executeCommand(input, context) {
           attachments: sentAttachments
         });
         dispatch({ type: "ATTACHMENTS_CLEAR", payload: {} });
+        dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } });
         dispatch({ type: "TERMINAL_RUNNING_SET", payload: { value: true } });
         const result = await backend.askAi({ prompt, model, cwd: workspace.terminal.cwd, attachScreenshot: state.settings.alwaysAttachScreenshot, attachments });
         const audioUrl = prepareAssistantAudio(result.audioBlob);
@@ -270,17 +288,83 @@ export async function executeCommand(input, context) {
 
     if (domain === "web") {
       if (action === "open") {
-        let url = extractActionTail(input, "web", "open") || args.join(" ");
-        if (!url) throw new Error("Enter a URL.");
-        if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+        const url = normalizeWebUrl(args.join(" ") || extractActionTail(input, "web", "open"));
         const subtab = activeSubtab(getState());
         if (subtab.type !== "webview") openSubtab("webview", context);
         const current = activeSubtab(getState());
-        dispatch({ type: "SUBTAB_UPDATE", payload: { id: current.id, patch: { url, title: "Web", filePath: null, fileMime: null } } });
+        const title = titleForWebUrl(url);
+        dispatch({ type: "SUBTAB_UPDATE", payload: { id: current.id, patch: { url, title, filePath: null, fileMime: null } } });
+        dispatch({ type: "BROWSER_HISTORY_ADD", payload: { url, title, at: new Date().toISOString() } });
+        await persistConfiguration(backend, getState());
         return { url };
       }
-      if (["reload", "back", "forward", "external"].includes(action)) {
-        const handler = actions[`web${action[0].toUpperCase()}${action.slice(1)}`];
+      if (action === "bookmark") {
+        const operation = args[0];
+        if (!operation) {
+          if (!actions.openWebDialog) throw new Error("The add-bookmark dialog is unavailable.");
+          await actions.openWebDialog("add-bookmark");
+          return { ok: true };
+        }
+        if (operation === "add") {
+          const current = activeSubtab(getState());
+          const values = args.slice(1);
+          let rawUrl = current.url;
+          let requestedName = "";
+          if (values.length === 1) {
+            try {
+              normalizeWebUrl(values[0]);
+              rawUrl = values[0];
+            } catch {
+              requestedName = values[0];
+            }
+          } else if (values.length >= 2) {
+            requestedName = values[0];
+            rawUrl = values[1];
+          }
+          const url = normalizeWebUrl(rawUrl);
+          const name = String(requestedName).trim() || defaultBookmarkName(url);
+          const item = { id: `bookmark-${Date.now()}-${Math.random().toString(16).slice(2)}`, name, url, createdAt: new Date().toISOString() };
+          dispatch({ type: "BROWSER_BOOKMARK_ADD", payload: item });
+          await persistConfiguration(backend, getState());
+          return item;
+        }
+        if (operation === "remove") {
+          const id = args[1];
+          if (!id || !getState().browser.bookmarks.some((item) => item.id === id)) throw new Error("Bookmark not found.");
+          dispatch({ type: "BROWSER_BOOKMARK_REMOVE", payload: { id } });
+          await persistConfiguration(backend, getState());
+          return { id };
+        }
+        throw new Error(`Unknown bookmark action: ${operation}`);
+      }
+      if (action === "bookmarks") {
+        if (!actions.openWebDialog) throw new Error("Bookmarks are unavailable.");
+        await actions.openWebDialog("bookmarks");
+        return { ok: true };
+      }
+      if (action === "history") {
+        if (args[0] === "clear") {
+          dispatch({ type: "BROWSER_HISTORY_CLEAR" });
+          await persistConfiguration(backend, getState());
+          return { ok: true };
+        }
+        if (!actions.openWebDialog) throw new Error("Browser history is unavailable.");
+        await actions.openWebDialog("history");
+        return { ok: true };
+      }
+      const actionNames = {
+        reload: "webReload",
+        back: "webBack",
+        forward: "webForward",
+        external: "webExternal",
+        download: "webDownload",
+        "zoom-in": "webZoomIn",
+        "zoom-out": "webZoomOut",
+        "zoom-reset": "webZoomReset",
+        devtools: "webDevtools"
+      };
+      if (actionNames[action]) {
+        const handler = actions[actionNames[action]];
         if (!handler) throw new Error(`Web action is unavailable: ${action}`);
         await handler();
         return { ok: true };
@@ -301,6 +385,22 @@ export async function executeCommand(input, context) {
         if (!actions.pasteClipboardItem) throw new Error("System clipboard paste is unavailable.");
         await actions.pasteClipboardItem(item.id);
         return { pasted: item.id };
+      }
+      if (action === "pin" || action === "unpin") {
+        const id = args[0];
+        if (!id || !getState().clipboard.items.some((entry) => entry.id === id)) throw new Error("Clipboard item was not found.");
+        if (!backend.setClipboardPinned) throw new Error("Clipboard pinning is unavailable.");
+        const items = await backend.setClipboardPinned(id, action === "pin");
+        dispatch({ type: "CLIPBOARD_SET", payload: { items } });
+        return { id, pinned: action === "pin" };
+      }
+      if (action === "remove") {
+        const id = args[0];
+        if (!id || !getState().clipboard.items.some((entry) => entry.id === id)) throw new Error("Clipboard item was not found.");
+        if (!backend.removeClipboardItem) throw new Error("Clipboard removal is unavailable.");
+        const items = await backend.removeClipboardItem(id);
+        dispatch({ type: "CLIPBOARD_SET", payload: { items } });
+        return { removed: id };
       }
       if (action === "copy") {
         const text = args.join(" ");
@@ -332,6 +432,31 @@ export async function executeCommand(input, context) {
       if (!actions.insertText) throw new Error("No focused input is available.");
       await actions.insertText(text);
       return { inserted: text.length };
+    }
+
+    if (domain === "transcript" && action === "dismiss") {
+      dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } });
+      return { ok: true };
+    }
+
+    if (domain === "live" && action === "record") {
+      const operation = args[0];
+      if (operation === "start") {
+        if (!actions.startLiveRecording) throw new Error("Live microphone input is unavailable in this runtime.");
+        await actions.startLiveRecording();
+        return { ok: true };
+      }
+      if (operation === "stop") {
+        if (!actions.stopLiveRecording) throw new Error("No Live microphone session is active.");
+        await actions.stopLiveRecording();
+        return { ok: true };
+      }
+      if (operation === "toggle") {
+        if (!actions.toggleLiveRecording) throw new Error("Live microphone input is unavailable in this runtime.");
+        await actions.toggleLiveRecording();
+        return { ok: true };
+      }
+      throw new Error("Live record action must be start, stop, or toggle.");
     }
 
     if (domain === "record") {

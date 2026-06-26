@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createInitialState, reduceState } from "../src/model/state.js";
+import { createInitialState, reduceState, serializeWorkspaceSession } from "../src/model/state.js";
 
 test("initial workspace focuses terminal and includes folder pane", () => {
   const state = createInitialState();
@@ -39,10 +39,10 @@ test("errors and malformed render output are routed to Info", () => {
 test("model settings can be updated without replacing other providers", () => {
   const state = reduceState(createInitialState(), {
     type: "MODEL_UPDATE",
-    payload: { id: "openai-default", patch: { apiKey: "local-key" } }
+    payload: { id: "gemini-live-default", patch: { apiKey: "local-key" } }
   });
-  assert.equal(state.models.find((item) => item.id === "openai-default").apiKey, "local-key");
-  assert.equal(state.models.length, 2);
+  assert.equal(state.models.find((item) => item.id === "gemini-live-default").apiKey, "local-key");
+  assert.equal(state.models.length, 1);
 });
 
 test("terminal clear removes history without changing its working directory", () => {
@@ -88,6 +88,15 @@ test("folder sort defaults to name and can be changed per workspace", () => {
   assert.equal(state.tabs[0].folder.sortBy, "type");
 });
 
+test("folder creation UI opens and closes without changing folder contents", () => {
+  let state = createInitialState();
+  assert.equal(state.ui.folderCreateKind, null);
+  state = reduceState(state, { type: "UI_SET", payload: { folderCreateKind: "file" } });
+  assert.equal(state.ui.folderCreateKind, "file");
+  state = reduceState(state, { type: "UI_SET", payload: { folderCreateKind: null } });
+  assert.equal(state.ui.folderCreateKind, null);
+});
+
 test("new workspaces open only Terminal, Clipboard, and Info with Terminal active", () => {
   const state = createInitialState();
   const workspace = state.tabs[0];
@@ -107,4 +116,34 @@ test("terminal line retention defaults to 4000 and rejects unsafe values", () =>
 
   state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalMaxLines", value: "not-a-number" } });
   assert.equal(state.settings.terminalMaxLines, 4000);
+});
+
+
+test("workspace sessions preserve all open folder paths and the active workspace", () => {
+  let state = createInitialState();
+  const firstId = state.activeTabId;
+  state = reduceState(state, { type: "WORKDIR_SET", payload: { path: "/Users/auri/Desktop" } });
+  state = reduceState(state, { type: "TAB_NEW", payload: { title: "Client" } });
+  state = reduceState(state, { type: "WORKDIR_SET", payload: { path: "/Users/auri/Projects/client-app" } });
+  state = reduceState(state, { type: "TAB_SELECT", payload: { id: firstId } });
+
+  const saved = serializeWorkspaceSession(state);
+  assert.deepEqual(saved, {
+    activeIndex: 0,
+    items: [
+      { title: "Home", path: "/Users/auri/Desktop" },
+      { title: "Client", path: "/Users/auri/Projects/client-app" }
+    ]
+  });
+
+  const restored = reduceState(createInitialState(), { type: "WORKSPACES_RESTORE", payload: saved });
+  assert.deepEqual(restored.tabs.map((tab) => tab.folder.path), [
+    "/Users/auri/Desktop",
+    "/Users/auri/Projects/client-app"
+  ]);
+  assert.deepEqual(restored.tabs.map((tab) => tab.terminal.cwd), [
+    "/Users/auri/Desktop",
+    "/Users/auri/Projects/client-app"
+  ]);
+  assert.equal(restored.activeTabId, restored.tabs[0].id);
 });

@@ -24,3 +24,13 @@ export function iconForEntry(entry) {
 export function classifyTerminalInput(input) {
   return /^\s*auri(?:\s|$)/i.test(String(input ?? "")) ? "auri" : "shell";
 }
+
+export function workspaceLabel(workspace) {
+  const path = String(workspace?.folder?.path ?? "").trim();
+  const normalizedPath = path.replace(/[\\/]+$/, "");
+  const folderName = path && path !== "~"
+    ? normalizedPath.split(/[\\/]/).filter(Boolean).at(-1) || path
+    : "";
+  const fallback = String(workspace?.title || "Workspace").trim() || "Workspace";
+  return folderName || fallback;
+}

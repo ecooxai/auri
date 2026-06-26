@@ -1,5 +1,5 @@
 import { activeWorkspace } from "../model/state.js";
-import { renderActivePanel, renderFolder, renderMainTabs, renderSubtabs } from "./panels.js";
+import { renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -11,6 +11,11 @@ export function applyAppFontSize(root, value) {
 export function captureFolderScroll(root, nextPath) {
   const list = root?.querySelector?.(".folder-list");
   return list?.dataset?.folderPath === nextPath ? list.scrollTop : 0;
+}
+
+export function captureClipboardScroll(root) {
+  const grid = root && root.querySelector ? root.querySelector(".clipboard-grid") : null;
+  return grid ? grid.scrollTop : 0;
 }
 
 export class AppView {
@@ -50,29 +55,47 @@ export class AppView {
     this.stashTerminalHost();
     this.pruneTerminalHosts(state);
     const inputValue = options.preserveInput ? this.getTerminalInputValue() : tab.terminal.draft;
+    const folderCreateValue = state.ui.folderCreateKind ? this.getFolderCreateName() : "";
     const folderScrollTop = captureFolderScroll(this.root, tab.folder.path);
+    const clipboardScrollTop = captureClipboardScroll(this.root);
     this.root.innerHTML = `
       <div class="auri-shell">
         ${renderMainTabs(state)}
         <main class="app-surface">
-          ${renderSubtabs(state)}
+          ${renderSubtabs(state, { native: Boolean(options.native) })}
           <div class="workspace-grid">
             ${renderFolder(state)}
-            <div class="content-pane">${renderActivePanel(state)}</div>
+            <div class="content-pane">${renderActivePanel(state, { native: Boolean(options.native) })}${renderAssistantTranscriptPopup(state)}</div>
           </div>
         </main>
       </div>
+      ${renderWebOverlay(state, { native: Boolean(options.native) })}
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
     this.restoreTerminalHost(tab.id);
 
     if (inputValue && this.root.querySelector("#terminal-input")) {
       this.root.querySelector("#terminal-input").value = inputValue;
     }
+    if (folderCreateValue && this.root.querySelector("#folder-create-input")) {
+      this.root.querySelector("#folder-create-input").value = folderCreateValue;
+    }
     const folder = this.root.querySelector(".folder-list");
     if (folder) folder.scrollTop = folderScrollTop;
+    const clipboard = this.root.querySelector(".clipboard-grid");
+    if (clipboard) clipboard.scrollTop = clipboardScrollTop;
     requestAnimationFrame(() => {
       const history = this.root.querySelector("#terminal-history");
       if (history) history.scrollTop = history.scrollHeight;
+      if (state.ui.folderCreateKind) {
+        const input = this.root.querySelector("#folder-create-input");
+        input?.focus();
+        input?.select();
+      }
+      if (!options.native && state.ui.webDialog === "add-bookmark") {
+        const input = this.root.querySelector("#web-bookmark-name");
+        input?.focus();
+        input?.select();
+      }
     });
   }
 
@@ -110,21 +133,14 @@ export class AppView {
     return true;
   }
 
-  requestText(message, defaultValue = "") {
-    const host = this.root?.ownerDocument?.defaultView || globalThis;
-    return typeof host.prompt === "function" ? host.prompt(message, defaultValue) : null;
+  getFolderCreateName() {
+    return this.root.querySelector("#folder-create-input")?.value || "";
   }
 
   getWebUrl() {
     return this.root.querySelector("#web-url")?.value?.trim() || "";
   }
 
-  getModelFields(id) {
-    return {
-      apiKey: this.root.querySelector(`[data-model-key="${CSS.escape(id)}"]`)?.value || "",
-      url: this.root.querySelector(`[data-model-url="${CSS.escape(id)}"]`)?.value || ""
-    };
-  }
 
   getSettingValue(input) {
     if (input.type === "checkbox") return input.checked;

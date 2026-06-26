@@ -13,6 +13,7 @@ function harness() {
   };
 }
 
+
 test("model overflow Edit action reveals and closes the model editor", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const view = {
@@ -213,14 +214,12 @@ test("AI audio replies are forwarded to the inline terminal renderer", async () 
 });
 
 
-test("completed Gemini Live audio is appended inline after streamed text", async () => {
+test("completed Gemini Live reply uses the structured renderer with inline audio", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const calls = [];
   const session = {
     initialize: async () => {},
-    endAssistantStream: () => calls.push({ type: "end" }),
-    printMedia: (items) => calls.push({ type: "media", items }),
-    printAssistant: () => calls.push({ type: "assistant" })
+    printAssistant: (name, text, audio) => calls.push({ type: "assistant", name, text, audio })
   };
   const view = {
     root: { querySelector: () => null },
@@ -242,12 +241,14 @@ test("completed Gemini Live audio is appended inline after streamed text", async
     streamedAudio: true
   }, { name: "Gemini Live" });
 
-  assert.equal(calls[0].type, "end");
-  assert.equal(calls[1].type, "media");
-  assert.equal(calls[1].items[0].name, "Gemini Live response");
-  assert.equal(calls[1].items[0].mime, "audio/wav");
-  assert.match(calls[1].items[0].url, /^blob:/);
-  URL.revokeObjectURL(calls[1].items[0].url);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, "assistant");
+  assert.equal(calls[0].name, "Gemini Live");
+  assert.equal(calls[0].text, "Finished response");
+  assert.equal(calls[0].audio.name, "Gemini Live response");
+  assert.equal(calls[0].audio.mime, "audio/wav");
+  assert.match(calls[0].audio.url, /^blob:/);
+  URL.revokeObjectURL(calls[0].audio.url);
 });
 
 
@@ -583,18 +584,57 @@ test("folder sort command stores the selected order", async () => {
   await assert.rejects(() => executeCommand("folder sort size", h), /name, date, or type/);
 });
 
-test("folder create commands use the current directory and refresh entries", async () => {
+test("folder create commands run quoted terminal commands and refresh entries", async () => {
   const h = harness();
-  const calls = [];
-  h.backend.createFile = async (...args) => { calls.push(["file", ...args]); return { name: args[1] }; };
-  h.backend.createFolder = async (...args) => { calls.push(["folder", ...args]); return { name: args[1] }; };
+  const commands = [];
+  h.backend.runCommand = async (command, cwd) => {
+    commands.push([command, cwd]);
+    return { stdout: "", stderr: "", code: 0, cwd };
+  };
   h.backend.listDirectory = async () => [{ name: "created.txt", path: "~/created.txt", kind: "text", size: 0, modified: 1 }];
 
-  await executeCommand('folder create-file "created.txt"', h);
+  await executeCommand('folder create-file "created file.txt"', h);
   await executeCommand('folder create-folder "New Folder"', h);
 
-  assert.deepEqual(calls, [["file", "~", "created.txt"], ["folder", "~", "New Folder"]]);
+  assert.deepEqual(commands, [["touch 'created file.txt'", "~"], ["mkdir -p 'New Folder'", "~"]]);
   assert.equal(h.state().tabs[0].folder.entries[0].name, "created.txt");
+  assert.deepEqual(h.state().tabs[0].terminal.history.slice(-2).map((item) => item.command), ["touch 'created file.txt'", "mkdir -p 'New Folder'"]);
+});
+
+test("folder creation form submits on Enter and cancels on Escape", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    getFolderCreateName: () => "notes today.txt",
+    showToast() {}
+  };
+  const backend = { isNative: true };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.runInternal = async (command) => { commands.push(command); };
+  controller.dispatch({ type: "UI_SET", payload: { folderCreateKind: "file" } });
+
+  let prevented = 0;
+  await controller.handleKeydown({
+    target: { id: "folder-create-input" },
+    key: "Enter",
+    preventDefault() { prevented += 1; }
+  });
+  assert.deepEqual(commands, ['folder create-file "notes today.txt"']);
+  assert.equal(controller.state.ui.folderCreateKind, null);
+  assert.equal(prevented, 1);
+
+  controller.dispatch({ type: "UI_SET", payload: { folderCreateKind: "folder" } });
+  await controller.handleKeydown({
+    target: { id: "folder-create-input" },
+    key: "Escape",
+    preventDefault() { prevented += 1; }
+  });
+  assert.equal(controller.state.ui.folderCreateKind, null);
+  assert.equal(commands.length, 1);
+  assert.equal(prevented, 2);
 });
 
 test("folder info opens Info with structured disk, ownership, and permission details", async () => {
@@ -618,4 +658,219 @@ test("folder info opens Info with structured disk, ownership, and permission det
   assert.equal(h.state().info.items[0].title, "Folder info · project");
   assert.equal(h.state().info.items[0].details.owner, "ecoo");
   assert.equal(h.state().info.items[0].details.permissions.execute, true);
+});
+
+test("folder New File and OK button open and submit the inline form", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    getFolderCreateName: () => "button-created.txt",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  const click = (action) => controller.handleClick({
+    target: { closest: () => ({ dataset: { action } }) },
+    preventDefault() {}
+  });
+
+  await click("folder-new-file");
+  assert.equal(controller.state.ui.folderCreateKind, "file");
+  await click("folder-create-confirm");
+
+  assert.deepEqual(commands, ['folder create-file "button-created.txt"']);
+  assert.equal(controller.state.ui.folderCreateKind, null);
+});
+
+test("terminal model dropdown selects a model through the command layer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+
+  await controller.handleChange({ target: { id: "terminal-model-select", value: "openai-default", dataset: {} } });
+
+  assert.deepEqual(commands, ['ai model select "openai-default"']);
+});
+
+test("clipboard pin and remove commands persist through the backend and replace state", async () => {
+  const h = harness();
+  h.dispatch({
+    type: "CLIPBOARD_SET",
+    payload: { items: [{ id: "clip-1", kind: "text", text: "one", pinned: false, createdAt: 1 }] }
+  });
+  const calls = [];
+  h.backend.setClipboardPinned = async (id, pinned) => {
+    calls.push(["pin", id, pinned]);
+    return [{ id, kind: "text", text: "one", pinned, createdAt: 1 }];
+  };
+  h.backend.removeClipboardItem = async (id) => {
+    calls.push(["remove", id]);
+    return [];
+  };
+
+  await executeCommand("clipboard pin clip-1", h);
+  assert.equal(h.state().clipboard.items[0].pinned, true);
+  await executeCommand("clipboard remove clip-1", h);
+  assert.equal(h.state().clipboard.items.length, 0);
+  assert.deepEqual(calls, [["pin", "clip-1", true], ["remove", "clip-1"]]);
+});
+
+test("clipboard menu click toggles the menu without pasting", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let pasted = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false, pasteClipboardItem: async () => { pasted += 1; } },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  await controller.handleClick({
+    target: { closest: () => ({ dataset: { action: "clipboard-menu", id: "clip-1" } }) },
+    preventDefault() {}
+  });
+
+  assert.equal(controller.state.ui.clipboardMenuId, "clip-1");
+  assert.equal(pasted, 0);
+});
+
+
+test("configuration saves include the current workspace session", async () => {
+  const h = harness();
+  const saved = [];
+  h.backend.saveSettings = async (configuration) => saved.push(configuration);
+  h.dispatch({ type: "WORKDIR_SET", payload: { path: "/Users/auri/Desktop" } });
+
+  await executeCommand("settings set fontSize 18", h);
+
+  assert.deepEqual(saved.at(-1).workspaceSession, {
+    activeIndex: 0,
+    items: [{ title: "Home", path: "/Users/auri/Desktop" }]
+  });
+});
+
+test("app startup restores open workspaces and loads the active saved folder", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const previousWindow = globalThis.window;
+  const previousLocalStorage = globalThis.localStorage;
+  const previousAnimationFrame = globalThis.requestAnimationFrame;
+  const loadedPaths = [];
+  const savedSession = {
+    activeIndex: 1,
+    items: [
+      { title: "Home", path: "/Users/auri/Desktop" },
+      { title: "Client", path: "/Users/auri/Projects/client-app" }
+    ]
+  };
+  globalThis.window = { addEventListener() {} };
+  globalThis.requestAnimationFrame = (callback) => callback();
+  globalThis.localStorage = {
+    getItem: () => JSON.stringify({ workspaceSession: savedSession }),
+    setItem() {}
+  };
+  const view = {
+    root: { addEventListener() {}, querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: false,
+    initialize: async () => ({ root: "~", mode: "browser-preview" }),
+    listDirectory: async (path) => { loadedPaths.push(path); return []; },
+    saveSettings: async () => ({ ok: true })
+  };
+  const terminalSessionFactory = () => ({
+    initialize: async () => true,
+    mount: async () => {},
+    stop: async () => {}
+  });
+
+  try {
+    const controller = new AppController({ view, backend, terminalSessionFactory });
+    await controller.initialize();
+    assert.deepEqual(controller.state.tabs.map((tab) => tab.folder.path), [
+      "/Users/auri/Desktop",
+      "/Users/auri/Projects/client-app"
+    ]);
+    assert.equal(controller.state.activeTabId, controller.state.tabs[1].id);
+    assert.equal(loadedPaths.at(-1), "/Users/auri/Projects/client-app");
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.localStorage = previousLocalStorage;
+    globalThis.requestAnimationFrame = previousAnimationFrame;
+  }
+});
+
+test("workspace and folder changes automatically persist the session", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const saved = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false, saveSettings: async (configuration) => saved.push(configuration) },
+    terminalSessionFactory: () => ({ initialize: async () => {}, stop: async () => {} })
+  });
+  controller.configurationReady = true;
+
+  controller.dispatch({ type: "WORKDIR_SET", payload: { path: "/Users/auri/Desktop" } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(saved.at(-1).workspaceSession.items[0].path, "/Users/auri/Desktop");
+});
+
+test("folder Home uses an unquoted tilde while normal paths stay safely quoted", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: false,
+    runCommand: async (command) => {
+      commands.push(command);
+      return { code: 0, cwd: command === "cd ~" ? "/Users/ecoo" : "/tmp/project", stdout: "", stderr: "" };
+    },
+    listDirectory: async () => []
+  };
+  const controller = new AppController({
+    view,
+    backend,
+    terminalSessionFactory: () => ({ initialize: async () => {}, focus() {} })
+  });
+
+  await controller.changeDirectory("~");
+  await controller.changeDirectory("/tmp/project");
+
+  assert.deepEqual(commands, ["cd ~", "cd '/tmp/project'"]);
 });

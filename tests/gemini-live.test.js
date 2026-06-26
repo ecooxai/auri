@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   GEMINI_LIVE_DEFAULT_MODEL,
   GEMINI_LIVE_DEFAULT_URL,
+  GeminiWakeSession,
   createLiveAccumulator,
   defaultApiUrlForType,
   geminiLiveClientOptions,
@@ -100,4 +101,51 @@ test("Gemini Live uses client content for text and current realtime media fields
   });
   assert.equal(result.text, "Live response");
   assert.equal(closed, true);
+});
+
+
+test("wake session disconnects when no reply arrives for the configured seconds", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const statuses = [];
+  let closed = false;
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    inactivitySeconds: 10,
+    onStatus: (status) => statuses.push(status)
+  });
+  session.stopMicrophone = async () => {};
+  session.player.close = async () => {};
+  session.session = {
+    sendRealtimeInput() {},
+    close() { closed = true; }
+  };
+
+  await session.stop();
+  t.mock.timers.tick(5000);
+  session.armResponseTimeout();
+  t.mock.timers.tick(9999);
+  await Promise.resolve();
+  assert.equal(closed, false);
+
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(closed, true);
+  assert.deepEqual(statuses.slice(-2), ["disconnecting", "disconnected-timeout"]);
+});
+
+test("wake session primes reply audio playback before asynchronous microphone setup", async () => {
+  const order = [];
+  const session = new GeminiWakeSession({ model: { apiKey: "test" } });
+  session.player = {
+    ensureContext: async () => { order.push("player"); },
+    close: async () => {}
+  };
+  session.startMicrophone = async () => { order.push("microphone"); };
+  session.connect = async () => { order.push("connect"); };
+
+  await session.start();
+
+  assert.deepEqual(order, ["player", "microphone", "connect"]);
 });

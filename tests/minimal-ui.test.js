@@ -43,8 +43,8 @@ test("the app uses one Chrome-style top tab bar without the redundant window hea
   assert.match(panels, /class="subtab-bar chrome-tabbar"/);
   assert.match(panels, /"subtab-menu"/);
   assert.match(panels, /"command-palette"/);
-  assert.match(panels, /"info-open"/);
-  assert.match(panels, /"settings-open"/);
+  assert.match(panels, /\["settings", "⚙", "Settings"\]/);
+  assert.match(panels, /\["info", "ⓘ", "Info"\]/);
 });
 
 test("workspace rail keeps workspace navigation and workspace actions", async () => {
@@ -54,8 +54,8 @@ test("workspace rail keeps workspace navigation and workspace actions", async ()
   const renderMainTabs = panels.slice(start, end);
 
   assert.match(renderMainTabs, /tab-select/);
-  assert.match(renderMainTabs, /info-open/);
-  assert.match(renderMainTabs, /settings-open/);
+  assert.doesNotMatch(renderMainTabs, /info-open/);
+  assert.doesNotMatch(renderMainTabs, /settings-open/);
   assert.match(renderMainTabs, /tab-new/);
   assert.match(renderMainTabs, /tab-close/);
   assert.doesNotMatch(renderMainTabs, /brand-orb/);
@@ -71,8 +71,8 @@ test("workspace controls stay in the vertical rail while tab controls stay at th
 
   assert.match(rail, /"tab-new"/);
   assert.match(rail, /"tab-close"/);
-  assert.match(rail, /"info-open"/);
-  assert.match(rail, /"settings-open"/);
+  assert.doesNotMatch(rail, /"info-open"/);
+  assert.doesNotMatch(rail, /"settings-open"/);
   assert.doesNotMatch(topbar, /"tab-new"/);
   assert.doesNotMatch(topbar, /"tab-close"/);
   assert.doesNotMatch(topbar, /"info-open"/);
@@ -189,9 +189,70 @@ test("folder More menu contains sorting, creation, and folder info actions", asy
   assert.match(css, /\.folder-menu\s*\{[^}]*position:\s*absolute/s);
 });
 
+test("new file and folder use an inline floating name form below the path", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const view = await readFile("src/views/app-view.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+  const start = panels.indexOf("export function renderFolder");
+  const end = panels.indexOf("export function renderTerminal");
+  const folder = panels.slice(start, end);
+
+  assert.match(folder, /id="folder-create-form"/);
+  assert.match(folder, /id="folder-create-input"/);
+  assert.match(folder, /data-action="folder-create-confirm"/);
+  assert.ok(folder.indexOf('id="folder-path-input"') < folder.indexOf('id="folder-create-form"'));
+  assert.match(view, /folderCreateKind[\s\S]*#folder-create-input[\s\S]*focus/);
+  assert.match(css, /\.folder-create-popover\s*\{[^}]*position:\s*absolute[^}]*z-index/s);
+  assert.match(css, /\.folder-create-form\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto/s);
+});
+
 test("settings expose a persisted terminal line retention control", async () => {
   const panels = await readFile("src/views/panels.js", "utf8");
   assert.match(panels, /data-setting="terminalMaxLines"/);
   assert.match(panels, /Terminal retained lines/);
   assert.match(panels, /value="\$\{state\.settings\.terminalMaxLines\}"/);
+});
+
+test("terminal AI controls use a model dropdown followed by Ask and Run actions", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const start = panels.indexOf("export function renderTerminal");
+  const end = panels.indexOf("function metadataRows");
+  const terminal = panels.slice(start, end);
+
+  assert.match(terminal, /<select id="terminal-model-select"[^>]*aria-label="AI model"/);
+  assert.match(terminal, /state\.models\.filter\(\(item\) => item\.enabled\)[\s\S]*<option/);
+  assert.doesNotMatch(terminal, /class="model-chip/);
+  assert.doesNotMatch(terminal, /model-select-icon/);
+  assert.match(terminal, /data-action="terminal-ask"><span>✦<\/span>Ask<\/button>/);
+  assert.match(terminal, /data-action="terminal-run"><span>▶<\/span>Run<\/button>/);
+  assert.ok(terminal.indexOf('data-action="terminal-ask"') < terminal.indexOf('data-action="terminal-run"'));
+
+  const css = await readFile("styles.css", "utf8");
+  assert.match(css, /\.model-select\s*\{[^}]*appearance:\s*none[^}]*-webkit-appearance:\s*none/s);
+  assert.match(css, /\.model-select-wrap\s*\{[^}]*width:\s*25px[^}]*min-width:\s*25px[^}]*flex:\s*0 0 25px/s);
+  assert.match(css, /\.model-select-wrap\s*\{[^}]*background:\s*#f4f7fb/s);
+  assert.match(css, /\.model-select-wrap\s*\{[^}]*border:\s*1px solid/s);
+  assert.match(css, /\.model-select-wrap::after\s*\{[^}]*pointer-events:\s*none/s);
+  assert.match(css, /\.model-select\s*\{[^}]*position:\s*absolute[^}]*opacity:\s*0/s);
+  assert.match(css, /\.composer-buttons\s*\{[^}]*margin-left:\s*auto/s);
+});
+
+test("workspace rail renders a small left-aligned folder name without ellipsis", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+  const start = panels.indexOf("export function renderMainTabs");
+  const end = panels.indexOf("export function renderSubtabs");
+  const rail = panels.slice(start, end);
+
+  assert.match(rail, /workspaceLabel\(tab\)/);
+  assert.doesNotMatch(rail, /workspaceLabel\(tab, index\)/);
+  assert.match(rail, /class="main-tab-label"/);
+  assert.doesNotMatch(rail, /<span>\$\{index \+ 1\}<\/span>/);
+  assert.doesNotMatch(rail, /<small>/);
+  assert.match(css, /\.main-tab-label\s*\{[^}]*text-overflow:\s*clip(?:\s*!important)?/s);
+  assert.match(css, /\.main-tab\s*\{[^}]*justify-content:\s*flex-start/s);
+  assert.match(css, /\.main-tab-label\s*\{[^}]*flex:\s*1/s);
+  assert.match(css, /\.main-tab-label\s*\{[^}]*text-align:\s*left/s);
+  assert.doesNotMatch(css, /\.main-tab-label\s*\{[^}]*text-overflow:\s*ellipsis/s);
+  assert.match(css, /\.main-tab-label\s*\{[^}]*font-size:\s*\.66rem/s);
 });

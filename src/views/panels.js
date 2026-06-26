@@ -1,8 +1,9 @@
 import { escapeHtml } from "../model/assistant.js";
-import { formatBytes, iconForEntry } from "../model/presentation.js";
+import { formatBytes, iconForEntry, workspaceLabel } from "../model/presentation.js";
 import { previewClipboardText } from "../model/clipboard.js";
 import { activeSubtab, activeWorkspace } from "../model/state.js";
 import { sortFolderEntries } from "../model/folder.js";
+import { defaultBookmarkName, normalizeWebUrl, webZoomPercent } from "../model/browser.js";
 
 const subtabIcons = {
   terminal: "⌘",
@@ -18,28 +19,55 @@ const subtabIcons = {
 const button = (icon, label, action, extra = "") =>
   `<button class="icon-button" type="button" data-action="${action}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}" ${extra}>${icon}</button>`;
 
+export function renderAssistantTranscriptPopup(state) {
+  const configured = Array.isArray(state?.ui?.assistantActions) ? state.ui.assistantActions : [];
+  const legacy = Array.isArray(state?.ui?.assistantTranscripts)
+    ? state.ui.assistantTranscripts.map((text) => ({ kind: "insert", text }))
+    : [];
+  const items = (configured.length ? configured : legacy)
+    .filter((item) => ["command", "insert"].includes(item?.kind) && String(item?.text || "").trim())
+    .map((item) => ({ kind: item.kind, text: String(item.text).trim() }));
+  if (!items.length) return "";
+
+  return `<aside class="assistant-transcript-popup assistant-action-popup" role="dialog" aria-label="AI reply actions">
+    <header><strong>AI actions</strong><button type="button" data-action="transcript-dismiss" aria-label="Close AI actions" title="Close">×</button></header>
+    <div class="assistant-transcript-list assistant-action-list">
+      ${items.map((item) => {
+        const escaped = escapeHtml(item.text);
+        const command = item.kind === "command";
+        return `<div class="assistant-transcript-row assistant-action-row is-${item.kind}">
+          <pre>${escaped}</pre>
+          <div class="assistant-transcript-actions assistant-action-buttons">
+            <button type="button" data-action="copy-text" data-value="${escaped}">Copy</button>
+            <button type="button" data-action="assistant-insert" data-value="${escaped}">Insert</button>
+            ${command ? `<button type="button" class="is-primary" data-action="assistant-run" data-value="${escaped}">Run</button>` : ""}
+          </div>
+        </div>`;
+      }).join("")}
+    </div>
+  </aside>`;
+}
+
 export function renderMainTabs(state) {
   return `
     <nav class="main-tabs" aria-label="Workspaces">
       <div class="main-tab-list">
-        ${state.tabs.map((tab, index) => `
+        ${state.tabs.map((tab) => `
           <button type="button" class="main-tab ${tab.id === state.activeTabId ? "is-active" : ""}"
-            data-action="tab-select" data-id="${tab.id}" title="${escapeHtml(tab.title)}">
-            <span>${index + 1}</span>
-            <small>${escapeHtml(tab.title.slice(0, 7))}</small>
+            data-action="tab-select" data-id="${tab.id}" title="${escapeHtml(workspaceLabel(tab))}">
+            <span class="main-tab-label">${escapeHtml(workspaceLabel(tab))}</span>
           </button>
         `).join("")}
       </div>
       ${button("＋", "New workspace", "tab-new")}
       <div class="rail-spacer"></div>
-      ${button(state.info.unread ? `ⓘ<b>${state.info.unread}</b>` : "ⓘ", "Info", "info-open")}
-      ${button("⚙", "Settings", "settings-open")}
       ${button("×", "Close workspace", "tab-close")}
     </nav>`;
 }
 
-export function renderSubtabs(state) {
+export function renderSubtabs(state, { native = false } = {}) {
   const tab = activeWorkspace(state);
+  const nativeWebviewActive = native && activeSubtab(state).type === "webview";
   return `
     <div class="subtab-bar chrome-tabbar" data-tauri-drag-region>
       <div class="subtab-scroll" role="tablist" aria-label="Workspace tabs" data-tauri-drag-region>
@@ -55,7 +83,7 @@ export function renderSubtabs(state) {
       <div class="chrome-actions" aria-label="Tab controls">
         <div class="subtab-add-wrap">
           ${button("＋", "New tab", "subtab-menu", 'data-chrome-control="true"')}
-          ${state.ui.addSubtabMenuOpen ? renderSubtabMenu() : ""}
+          ${state.ui.addSubtabMenuOpen && !nativeWebviewActive ? renderSubtabMenu() : ""}
         </div>
         ${button("⌘", "Command palette", "command-palette", 'data-chrome-control="true"')}
       </div>
@@ -92,6 +120,7 @@ export function renderFolder(state) {
           <input id="folder-path-input" class="folder-path-input" type="text" value="${escapeHtml(tab.folder.path)}"
             aria-label="Folder path" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
         </label>
+        ${state.ui.folderCreateKind ? renderFolderCreateForm(state.ui.folderCreateKind) : ""}
       </div>
       <div class="folder-list" role="list" data-folder-path="${escapeHtml(tab.folder.path)}">
         ${entries.length ? entries.map((entry) => {
@@ -106,6 +135,19 @@ export function renderFolder(state) {
       </div>
       <div class="folder-footer"><span>${entries.length} items</span><span>Synced with terminal</span></div>
     </aside>`;
+}
+
+function renderFolderCreateForm(kind) {
+  const label = kind === "file" ? "New file name" : "New folder name";
+  const placeholder = kind === "file" ? "untitled.txt" : "New Folder";
+  return `<div class="folder-create-popover">
+    <form id="folder-create-form" class="folder-create-form" autocomplete="off">
+      <input id="folder-create-input" name="name" type="text" aria-label="${label}" placeholder="${placeholder}"
+        autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button type="button" data-action="folder-create-confirm">OK</button>
+    </form>
+    <small>Enter to create · Esc to cancel</small>
+  </div>`;
 }
 
 function renderFolderMenu(sortBy) {
@@ -123,7 +165,6 @@ function renderFolderMenu(sortBy) {
 
 export function renderTerminal(state) {
   const tab = activeWorkspace(state);
-  const model = state.models.find((item) => item.id === state.selectedModelId);
   return `
     <section class="terminal-panel">
       <div class="terminal-toolbar">
@@ -137,13 +178,16 @@ export function renderTerminal(state) {
         ${state.media.attachments.length ? `<div class="attachment-row">${state.media.attachments.map((item) => `<span class="attachment-chip">${item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : "▷"} ${escapeHtml(item.name)}<button type="button" data-action="attachment-remove" data-id="${item.id}">×</button></span>`).join("")}</div>` : ""}
         <textarea id="terminal-input" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · ⌘/Ctrl + Enter runs"></textarea>
         <div class="composer-actions">
-          <div class="model-strip">
-            ${state.models.filter((item) => item.enabled).map((item) => `<button type="button" class="model-chip ${item.id === state.selectedModelId ? "is-active" : ""} ${item.id === state.selectedModelId && state.ui.liveConnected ? "is-live-connected" : ""}" data-action="model-select" data-id="${item.id}"><span>${item.type.includes("gemini") ? "✦" : "◌"}</span>${escapeHtml(item.name)}</button>`).join("")}
-          </div>
+          <label class="model-select-wrap ${state.ui.liveConnected ? "is-live-connected" : ""}" title="Select AI model">
+            <select id="terminal-model-select" class="model-select" aria-label="AI model">
+              ${state.models.filter((item) => item.enabled).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === state.selectedModelId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+            </select>
+          </label>
           <div class="composer-buttons">
             <label class="icon-button attach-button" title="Attach files" aria-label="Attach files">＋<input id="file-attachment" type="file" multiple hidden></label>
+            <button type="button" class="icon-button live-mic-button${state.ui.liveConnected && state.ui.liveRecording ? " is-recording" : ""}" data-action="live-record" aria-label="${state.ui.liveConnected && state.ui.liveRecording ? "Recording — release to send or click to disconnect" : "Click to connect or hold one second to talk"}" title="${state.ui.liveConnected && state.ui.liveRecording ? "Recording — release to send or click to disconnect" : "Click to connect or hold one second to talk"}" aria-pressed="${state.ui.liveConnected && state.ui.liveRecording}">${state.ui.liveConnected && state.ui.liveRecording ? '<span class="live-recording-glyph" aria-hidden="true"><i></i><i></i><i></i></span>' : '<span class="live-mic-glyph" aria-hidden="true">🎙</span>'}</button>
+            <button type="button" class="action-button primary" data-action="terminal-ask"><span>✦</span>Ask</button>
             <button type="button" class="action-button secondary" data-action="terminal-run"><span>▶</span>Run</button>
-            <button type="button" class="action-button primary" data-action="terminal-ask"><span>✦</span>Ask ${escapeHtml(model?.name || "AI")}</button>
           </div>
         </div>
       </div>
@@ -177,7 +221,91 @@ export function renderViewer(state) {
   </section>`;
 }
 
-export function renderWebview(state) {
+function renderWebMenu(subtab) {
+  return `<div class="web-menu" role="menu" aria-label="Browser menu">
+    <button type="button" role="menuitem" data-action="web-external"><span>↗</span><strong>Open externally</strong></button>
+    <button type="button" role="menuitem" data-action="web-download"><span>↓</span><strong>Download page</strong></button>
+    <button type="button" role="menuitem" data-action="web-add-bookmark"><span>☆</span><strong>Add bookmark</strong></button>
+    <button type="button" role="menuitem" data-action="web-bookmarks"><span>★</span><strong>Bookmarks</strong></button>
+    <button type="button" role="menuitem" data-action="web-history"><span>◷</span><strong>History</strong></button>
+    <div class="web-menu-separator"></div>
+    <div class="web-zoom-row" aria-label="Page zoom">
+      <span>Zoom</span>
+      <div><button type="button" data-action="web-zoom-out" aria-label="Zoom out">−</button><button class="web-zoom-value" type="button" data-action="web-zoom-reset" aria-label="Reset zoom">${webZoomPercent(subtab.zoom)}</button><button type="button" data-action="web-zoom-in" aria-label="Zoom in">＋</button></div>
+    </div>
+    <div class="web-menu-separator"></div>
+    <button type="button" role="menuitem" data-action="web-devtools"><span>⌘</span><strong>Developer tools</strong></button>
+  </div>`;
+}
+
+function renderBookmarkDialog(state, subtab) {
+  const draft = state.ui.bookmarkDraft || {};
+  const rawUrl = draft.url || subtab.url || "";
+  let url = rawUrl;
+  try {
+    url = normalizeWebUrl(rawUrl);
+  } catch {}
+  const name = draft.name || defaultBookmarkName(url);
+  return `<div class="web-dialog-backdrop" data-action="web-dialog-close">
+    <section class="web-dialog web-bookmark-dialog" role="dialog" aria-modal="true" aria-label="Add bookmark" onclick="event.stopPropagation()">
+      <header><div><span>☆</span><div><small>PAGE</small><h2>Add bookmark</h2></div></div><button type="button" data-action="web-dialog-close" aria-label="Close">×</button></header>
+      <form id="web-bookmark-form">
+        <label>Name<input id="web-bookmark-name" name="name" value="${escapeHtml(name)}" required autocomplete="off"></label>
+        <label>URL<input id="web-bookmark-url" name="url" type="url" value="${escapeHtml(url)}" required autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <div><button class="action-button secondary" type="button" data-action="web-dialog-close">Cancel</button><button class="action-button primary" type="submit">Save bookmark</button></div>
+      </form>
+    </section>
+  </div>`;
+}
+
+function renderBookmarksDialog(state) {
+  const rows = state.browser.bookmarks.length
+    ? state.browser.bookmarks.map((item) => `<article class="web-list-row">
+        <button class="web-list-open" type="button" data-action="web-bookmark-open" data-url="${escapeHtml(item.url)}">
+          <span>★</span><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.url)}</small></div>
+        </button>
+        <button class="web-list-remove" type="button" data-action="web-bookmark-remove" data-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">×</button>
+      </article>`).join("")
+    : `<div class="web-list-empty"><span>☆</span><strong>No bookmarks yet</strong><p>Save the current page from the browser menu.</p></div>`;
+  return `<div class="web-dialog-backdrop" data-action="web-dialog-close">
+    <section class="web-dialog web-list-dialog" role="dialog" aria-modal="true" aria-label="Bookmarks" onclick="event.stopPropagation()">
+      <header><div><span>★</span><div><small>LIBRARY</small><h2>Bookmarks</h2></div></div><button type="button" data-action="web-dialog-close" aria-label="Close">×</button></header>
+      <div class="web-list">${rows}</div>
+      <footer><button class="action-button primary" type="button" data-action="web-add-bookmark">＋ Add bookmark</button></footer>
+    </section>
+  </div>`;
+}
+
+function renderHistoryDialog(state) {
+  const rows = state.browser.history.length
+    ? state.browser.history.map((item) => `<button class="web-history-row" type="button" data-action="web-history-open" data-url="${escapeHtml(item.url)}">
+        <span>◷</span><div><strong>${escapeHtml(item.title || defaultBookmarkName(item.url))}</strong><small>${escapeHtml(item.url)}</small></div><time>${escapeHtml(new Date(item.at).toLocaleString())}</time>
+      </button>`).join("")
+    : `<div class="web-list-empty"><span>◷</span><strong>No browsing history</strong><p>Pages opened in Auri will appear here.</p></div>`;
+  return `<div class="web-dialog-backdrop" data-action="web-dialog-close">
+    <section class="web-dialog web-list-dialog" role="dialog" aria-modal="true" aria-label="History" onclick="event.stopPropagation()">
+      <header><div><span>◷</span><div><small>RECENT</small><h2>History</h2></div></div><button type="button" data-action="web-dialog-close" aria-label="Close">×</button></header>
+      <div class="web-list">${rows}</div>
+      <footer>${state.browser.history.length ? `<button class="action-button secondary" type="button" data-action="web-history-clear">Clear history</button>` : ""}</footer>
+    </section>
+  </div>`;
+}
+
+function renderWebDialog(state, subtab) {
+  if (state.ui.webDialog === "add-bookmark") return renderBookmarkDialog(state, subtab);
+  if (state.ui.webDialog === "bookmarks") return renderBookmarksDialog(state);
+  if (state.ui.webDialog === "history") return renderHistoryDialog(state);
+  return "";
+}
+
+export function renderWebOverlay(state, { native = false } = {}) {
+  if (native) return "";
+  const subtab = activeSubtab(state);
+  if (subtab.type !== "webview" || !state.ui.webDialog) return "";
+  return renderWebDialog(state, subtab);
+}
+
+export function renderWebview(state, { native = false } = {}) {
   const subtab = activeSubtab(state);
   const url = subtab.url || "https://www.google.com/";
   const displayUrl = subtab.filePath || url;
@@ -185,7 +313,7 @@ export function renderWebview(state) {
     ? `<object class="file-web-object" data="${escapeHtml(url)}" type="${escapeHtml(subtab.fileMime || "application/octet-stream")}"><p>This file cannot be previewed here.</p></object>`
     : `<div id="native-webview-host" class="native-webview-host" data-webview-id="${escapeHtml(subtab.id)}" data-url="${escapeHtml(url)}"><div class="native-webview-fallback"><span>◎</span><p>Website content opens in the native Auri webview.</p><small>Browser preview cannot bypass site embedding restrictions.</small></div></div>`;
   return `<section class="web-panel">
-    <div class="url-bar">${button("←", "Back", "web-back")}${button("→", "Forward", "web-forward")}${button("↻", "Reload", "web-reload")}<input id="web-url" value="${escapeHtml(displayUrl)}" aria-label="URL"><button type="button" class="go-button" data-action="web-go">Go</button>${button("↗", "Open externally", "web-external")}</div>
+    <div class="url-bar">${button("←", "Back", "web-back")}${button("→", "Forward", "web-forward")}${button("↻", "Reload", "web-reload")}<input id="web-url" value="${escapeHtml(displayUrl)}" aria-label="URL"><button type="button" class="go-button" data-action="web-go">Go</button><div class="web-menu-wrap">${button("⋮", "Browser menu", "web-menu", `aria-haspopup="menu" aria-expanded="${state.ui.webMenuOpen}"`)}${state.ui.webMenuOpen && !native ? `<button class="web-menu-dismiss" type="button" data-action="web-menu-close" aria-label="Close browser menu"></button>${renderWebMenu(subtab)}` : ""}</div></div>
     <div class="web-frame-wrap">${content}</div>
   </section>`;
 }
@@ -213,8 +341,35 @@ export function renderInfo(state) {
 }
 
 export function renderClipboard(state) {
-  return `<section class="clipboard-panel"><header class="panel-title"><div><span>▣</span><div><small>HISTORY</small><h2>Clipboard</h2></div></div>${button("↻", "Refresh clipboard", "clipboard-refresh")}</header>
-    <div class="clipboard-grid">${state.clipboard.items.length ? state.clipboard.items.map((item) => `<article class="clipboard-card" data-action="clipboard-insert" data-id="${item.id}" tabindex="0"><div class="clipboard-card-head"><span>${item.kind === "image" ? "◈" : "≡"}</span><time>${new Date(item.createdAt).toLocaleTimeString()}</time></div>${item.kind === "image" && item.assetUrl ? `<img class="clipboard-image" src="${escapeHtml(item.assetUrl)}" alt="Clipboard image">` : `<pre>${escapeHtml(item.kind === "text" ? previewClipboardText(item.text) : item.path)}</pre>`}<div>${button("↙", "Paste into previous application", "clipboard-insert", `data-id="${item.id}"`)}</div></article>`).join("") : `<div class="empty-state"><span>▣</span><h2>No clipboard history</h2><p>Copied text and images appear here automatically.</p></div>`}</div>
+  const pinnedOnly = Boolean(state.ui.clipboardPinnedOnly);
+  const items = pinnedOnly ? state.clipboard.items.filter((item) => item.pinned) : state.clipboard.items;
+  const filterLabel = pinnedOnly ? "Show all clipboard items" : "Show pinned clipboard items";
+  const cards = items.map((item) => {
+    const menuOpen = state.ui.clipboardMenuId === item.id;
+    const content = item.kind === "image" && item.assetUrl
+      ? `<button class="clipboard-content clipboard-image-content" type="button" data-action="clipboard-insert" data-id="${item.id}" aria-label="Paste clipboard image"><img class="clipboard-image" src="${escapeHtml(item.assetUrl)}" alt="Clipboard image"></button>`
+      : `<button class="clipboard-content clipboard-text-content" type="button" data-action="clipboard-insert" data-id="${item.id}" aria-label="Paste clipboard text"><pre>${escapeHtml(item.kind === "text" ? previewClipboardText(item.text) : item.path)}</pre></button>`;
+    return `<article class="clipboard-card ${item.pinned ? "is-pinned" : ""}" data-id="${item.id}">
+      <div class="clipboard-card-head">
+        <div class="clipboard-card-menu-wrap">
+          <button class="clipboard-menu-button" type="button" data-action="clipboard-menu" data-id="${item.id}" aria-label="Clipboard item actions" aria-haspopup="menu" aria-expanded="${menuOpen}" title="Clipboard item actions">≡</button>
+          ${menuOpen ? `<div class="clipboard-menu" role="menu">
+            <button type="button" role="menuitem" data-action="clipboard-${item.pinned ? "unpin" : "pin"}" data-id="${item.id}">${item.pinned ? "Unpin" : "Pin"}</button>
+            <button type="button" role="menuitem" data-action="clipboard-remove" data-id="${item.id}">Remove</button>
+          </div>` : ""}
+        </div>
+        <div class="clipboard-card-meta">${item.pinned ? `<span aria-label="Pinned" title="Pinned">📌</span>` : ""}<time>${new Date(item.createdAt).toLocaleTimeString()}</time></div>
+      </div>
+      ${content}
+    </article>`;
+  }).join("");
+  const emptyTitle = pinnedOnly ? "No pinned clipboard items" : "No clipboard history";
+  const emptyCopy = pinnedOnly ? "Pin an item from its menu to keep it easy to find." : "Copied text and images appear here automatically.";
+  return `<section class="clipboard-panel"><header class="panel-title"><div><span>▣</span><h2>Clipboard</h2></div><div class="clipboard-toolbar">
+      <button class="icon-button ${pinnedOnly ? "is-active" : ""}" type="button" data-action="clipboard-filter-pinned" aria-label="${filterLabel}" title="${filterLabel}" aria-pressed="${pinnedOnly}">📌</button>
+      ${button("↻", "Refresh clipboard", "clipboard-refresh")}
+    </div></header>
+    <div class="clipboard-grid">${cards || `<div class="empty-state"><span>▣</span><h2>${emptyTitle}</h2><p>${emptyCopy}</p></div>`}</div>
   </section>`;
 }
 
@@ -283,7 +438,7 @@ export function renderSettings(state) {
       <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div><div class="model-list">${models}</div>${renderModelEditor(editingModel)}
       <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type">${renderModelTypeOptions("gemini")}</select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" placeholder="Optional"></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label><label><span>Terminal retained lines<small>Oldest lines are discarded · 100–100,000</small></span><input data-setting="terminalMaxLines" type="number" min="100" max="100000" step="100" value="${state.settings.terminalMaxLines}"></label></div></section>
-      <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Long press to open</small></span><input data-setting="wakeShortcut" value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>Disconnect live API<small>Seconds</small></span><input data-setting="liveDisconnectSeconds" type="number" min="10" max="600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
+      <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Long press to open</small></span><input data-setting="wakeShortcut" value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>No-reply disconnect<small>Seconds after audio input stops or reply activity</small></span><input data-setting="liveDisconnectSeconds" type="number" min="10" max="600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>
     </div>
   </section>`;
@@ -302,11 +457,11 @@ function renderEmptyPanel(icon, title, copy) {
   return `<div class="empty-state"><span>${icon}</span><h2>${title}</h2><p>${copy}</p></div>`;
 }
 
-export function renderActivePanel(state) {
+export function renderActivePanel(state, options = {}) {
   const subtab = activeSubtab(state);
   if (subtab.type === "terminal") return renderTerminal(state);
   if (subtab.type === "viewer") return renderViewer(state);
-  if (subtab.type === "webview") return renderWebview(state);
+  if (subtab.type === "webview") return renderWebview(state, options);
   if (subtab.type === "clipboard") return renderClipboard(state);
   if (subtab.type === "settings") return renderSettings(state);
   if (subtab.type === "info") return renderInfo(state);

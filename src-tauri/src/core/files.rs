@@ -353,6 +353,24 @@ pub fn read_binary_file(path: &str) -> Result<BinaryFile, String> {
     })
 }
 
+pub fn open_external_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|error| format!("Invalid web URL: {error}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Only HTTP and HTTPS URLs can be opened externally.".to_string());
+    }
+    let status = if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).status()
+    } else {
+        Command::new("xdg-open").arg(url).status()
+    }
+    .map_err(|error| error.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("The operating system could not open this URL.".to_string())
+    }
+}
+
 pub fn open_external(path: &str) -> Result<(), String> {
     let resolved = expand_path(path)?;
     let status = if cfg!(target_os = "macos") {

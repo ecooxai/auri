@@ -42,3 +42,13 @@ test("TerminalSession reuses an already-mounted emulator and applies the configu
   assert.match(source, /scrollback: lineLimit/);
   assert.match(source, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
 });
+
+test("assistant transcript markers render as normal terminal text without decorations", async () => {
+  const source = await readFile("src/services/terminal-session.js", "utf8");
+
+  assert.match(source, /terminalAssistantSegments\(message\)/);
+  assert.match(source, /appendAssistantStream\(segment\.text\)/);
+  assert.doesNotMatch(source, /assistant-highlight/);
+  assert.doesNotMatch(source, /renderAssistantHighlight/);
+  assert.doesNotMatch(source, /appendAssistantHighlight/);
+});
