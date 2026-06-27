@@ -60,6 +60,11 @@ fn read_binary_file(path: String) -> Result<files::BinaryFile, String> {
 }
 
 #[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<files::TextFileWrite, String> {
+    files::write_text_file(&path, &content)
+}
+
+#[tauri::command]
 async fn run_command(command: String, cwd: String) -> Result<shell::CommandResult, String> {
     tauri::async_runtime::spawn_blocking(move || shell::run(&command, &cwd))
         .await
@@ -338,6 +343,7 @@ pub fn run() {
             folder_info,
             read_text_file,
             read_binary_file,
+            write_text_file,
             run_command,
             terminal_start,
             terminal_write,

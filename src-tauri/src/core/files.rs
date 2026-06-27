@@ -74,6 +74,13 @@ pub struct BinaryFile {
     pub base64: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextFileWrite {
+    pub path: String,
+    pub size: u64,
+}
+
 pub fn list_directory(path: &str) -> Result<Vec<FileEntry>, String> {
     let resolved = expand_path(path)?;
     let mut entries = Vec::new();
@@ -331,6 +338,28 @@ pub fn read_text_file(path: &str) -> Result<String, String> {
     }
     fs::read_to_string(&resolved)
         .map_err(|error| format!("Could not decode this file as UTF-8 text: {error}"))
+}
+
+pub fn write_text_file(path: &str, content: &str) -> Result<TextFileWrite, String> {
+    let resolved = expand_path(path)?;
+    let metadata = fs::metadata(&resolved).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("The selected path is not a file.".to_string());
+    }
+    if content.len() > 4 * 1024 * 1024 {
+        return Err("Text editing is limited to 4 MB for responsiveness.".to_string());
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&resolved)
+        .map_err(|error| format!("Could not open this text file for writing: {error}"))?;
+    std::io::Write::write_all(&mut file, content.as_bytes())
+        .map_err(|error| format!("Could not save this text file: {error}"))?;
+    Ok(TextFileWrite {
+        path: display_path(&resolved),
+        size: content.len() as u64,
+    })
 }
 
 pub fn read_binary_file(path: &str) -> Result<BinaryFile, String> {

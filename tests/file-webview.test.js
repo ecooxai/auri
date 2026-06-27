@@ -50,7 +50,7 @@ test("native inspection does not create a restricted asset URL for arbitrary fil
   assert.equal(metadata.assetUrl, undefined);
 });
 
-test("opened media files render through a blob-backed HTML webview document", () => {
+test("opened files render through a blob-backed HTML viewer app document", () => {
   let state = createInitialState();
   state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
   const id = state.tabs[0].activeSubtabId;
@@ -62,4 +62,18 @@ test("opened media files render through a blob-backed HTML webview document", ()
   assert.match(html, /data="blob:auri-media-page"/);
   assert.match(html, /type="text\/html"/);
   assert.doesNotMatch(html, /data="\/tmp\/test\.m4a"/);
+});
+
+test("file webview object is sized as an embedded app surface", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
+  const id = state.tabs[0].activeSubtabId;
+  state = reduceState(state, {
+    type: "SUBTAB_UPDATE",
+    payload: { id, patch: { url: "blob:auri-file-viewer", filePath: "/tmp/manual.pdf", fileMime: "text/html" } }
+  });
+
+  const html = renderWebview(state);
+  assert.match(html, /class="file-web-object"/);
+  assert.match(html, /blob:auri-file-viewer/);
 });

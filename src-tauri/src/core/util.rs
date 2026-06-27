@@ -172,11 +172,18 @@ pub fn shell_history_command(line: &str) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    if value.starts_with('#') && value[1..].chars().all(|character| character.is_ascii_digit()) {
+    if value.starts_with('#')
+        && value[1..]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    {
         return None;
     }
     let command = if value.starts_with(": ") {
-        value.split_once(';').map(|(_, command)| command).unwrap_or(value)
+        value
+            .split_once(';')
+            .map(|(_, command)| command)
+            .unwrap_or(value)
     } else {
         value
     };

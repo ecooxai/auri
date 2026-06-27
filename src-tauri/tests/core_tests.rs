@@ -125,9 +125,11 @@ fn recent_shell_history_is_newest_first_deduplicated_and_bounded() {
         "old command
 : 1712345678:0;git status
 npm test
-git status".to_string(),
+git status"
+            .to_string(),
         "cargo check
-npm test".to_string(),
+npm test"
+            .to_string(),
     ];
     assert_eq!(
         util::recent_shell_history_commands(&histories, 3),

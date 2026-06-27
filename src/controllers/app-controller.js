@@ -456,6 +456,7 @@ export class AppController {
 
   bindEvents() {
     this.view.root.addEventListener("click", (event) => this.handleClick(event));
+    this.view.root.addEventListener("dblclick", (event) => this.handleDoubleClick(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleLiveRecordPointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -485,8 +486,22 @@ export class AppController {
       this.activeTerminalSession().resize?.();
       this.syncNativeWebview().catch((error) => this.reportError("Webview", error));
     });
+    window.addEventListener("message", (event) => this.handleFileViewerMessage(event));
   }
 
+
+  async handleDoubleClick(event) {
+    const target = event.target?.closest?.('[data-action="file-entry"]');
+    if (!target) return false;
+    event.preventDefault?.();
+    try {
+      await this.openFolderEntry(target.dataset.path, target.dataset.kind, { forceOpen: true });
+      return true;
+    } catch (error) {
+      this.view.showToast(error?.message || String(error), "error");
+      return false;
+    }
+  }
 
   async handleLiveRecordPointerDown(event) {
     const target = event.target?.closest?.('[data-action="live-record"]');
@@ -1426,14 +1441,15 @@ export class AppController {
     this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } });
   }
 
-  async openFolderEntry(path, kind) {
+  async openFolderEntry(path, kind, { forceOpen = false } = {}) {
     if (kind === "directory") {
       await this.changeDirectory(path, { echoInTerminal: true });
       return;
     }
     const workspace = activeWorkspace(this.state);
     const repeat = workspace.folder.selectedPath === path;
-    await this.runInternal(`file ${repeat ? "open" : "inspect"} ${quoteArg(path)}`);
+    const action = forceOpen || repeat ? "open" : "inspect";
+    await this.runInternal(`file ${action} ${quoteArg(path)}`);
   }
 
   openSingletonSubtab(type) {
@@ -1564,6 +1580,23 @@ export class AppController {
     }
     this.dispatch({ type: "BROWSER_HISTORY_ADD", payload: { url, title, at: new Date().toISOString() } }, { preserveInput: true });
     await this.persistConfiguration();
+  }
+
+  async handleFileViewerMessage(event) {
+    const data = event?.data || {};
+    if (data.source !== "auri-file-viewer" || data.type !== "save-text") return false;
+    const path = String(data.path || "");
+    if (!path) return false;
+    try {
+      const result = await this.backend.writeTextFile(path, String(data.content ?? ""));
+      event.source?.postMessage?.({ source: "auri-host", type: "save-result", ok: true, path }, event.origin || "*");
+      this.view.showToast?.(`Saved ${path.split("/").pop() || "file"}`, "success");
+      return result || true;
+    } catch (error) {
+      event.source?.postMessage?.({ source: "auri-host", type: "save-result", ok: false, path, error: error?.message || String(error) }, event.origin || "*");
+      this.reportError("File save", error);
+      return false;
+    }
   }
 
   browserOverlayPayload(subtab) {

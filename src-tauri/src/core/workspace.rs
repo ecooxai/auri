@@ -90,7 +90,6 @@ pub fn save_configuration(configuration: &Value) -> Result<(), String> {
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
 }
 
-
 pub fn read_shell_history() -> Result<Vec<String>, String> {
     let home = home_dir()?;
     let mut histories = Vec::new();

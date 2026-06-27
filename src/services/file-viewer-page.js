@@ -1,0 +1,282 @@
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function safeJson(value) {
+  return JSON.stringify(value)
+    .replaceAll("<", "\\u003c")
+    .replaceAll(">", "\\u003e")
+    .replaceAll("&", "\\u0026")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+function extension(path) {
+  const name = String(path || "").split(/[\\/]/).pop() || "";
+  return name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+}
+
+export function isEditableTextFile(path, mime = "") {
+  const ext = extension(path);
+  return String(mime).startsWith("text/") || [
+    "txt", "md", "markdown", "json", "jsonl", "js", "jsx", "ts", "tsx", "mjs", "cjs",
+    "html", "htm", "css", "scss", "sass", "less", "xml", "svg", "csv", "tsv", "yaml", "yml",
+    "toml", "ini", "env", "log", "rs", "py", "rb", "go", "java", "c", "h", "cpp", "hpp",
+    "cs", "php", "sh", "bash", "zsh", "fish", "sql", "lock", "gitignore"
+  ].includes(ext);
+}
+
+export function viewerKindForFile(path, mime = "") {
+  const ext = extension(path);
+  const type = String(mime || "").toLowerCase();
+  if (isEditableTextFile(path, type)) return "text";
+  if (type === "application/pdf" || ext === "pdf") return "pdf";
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("audio/")) return "audio";
+  if (type.startsWith("video/")) return "video";
+  if (["docx", "doc", "rtf", "odt"].includes(ext)) return "document";
+  return "file";
+}
+
+export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null }) {
+  const kind = viewerKindForFile(path || title, mime);
+  const safeTitle = escapeHtml(title);
+  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title) });
+  const mediaMenu = kind === "audio" || kind === "video"
+    ? `<button id="more-button" class="icon-button" type="button" aria-haspopup="menu" aria-expanded="false" title="More">⋮</button>
+       <div id="convert-menu" class="convert-menu" hidden>
+        <button data-format="mp3">Convert to MP3</button>
+        <button data-format="wav">Convert to WAV</button>
+        <button data-format="m4a">Convert to M4A</button>
+        <button data-format="mp4_h264">Convert to MP4 H.264</button>
+        <button data-format="mp4_h265">Convert to MP4 H.265</button>
+       </div>`
+    : "";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${safeTitle}</title>
+<style>
+:root{color-scheme:light;--bg:#f6f8fb;--panel:rgba(255,255,255,.88);--panel-strong:#fff;--line:rgba(25,34,51,.1);--text:#182033;--muted:#687284;--soft:#eef2f7;--accent:#2f6fed;--shadow:0 18px 60px rgba(24,32,51,.12)}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at top left,#fff 0,#f6f8fb 46%,#eef3f8 100%);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.75);backdrop-filter:blur(18px);position:relative;z-index:5}.file-dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#95b8ff,#dfe8ff);box-shadow:0 0 0 4px #eef4ff}.title{min-width:0;flex:1}.title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.title small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.pill{font-size:11px;color:#41516c;background:var(--soft);border:1px solid var(--line);padding:5px 8px;border-radius:999px}.icon-button,.clean-button{border:1px solid var(--line);background:var(--panel-strong);color:var(--text);border-radius:10px;min-height:32px;padding:0 11px;font:inherit;box-shadow:0 1px 0 rgba(255,255,255,.9);cursor:pointer}.icon-button{width:32px;padding:0;font-size:18px;line-height:1}.icon-button:hover,.clean-button:hover,.convert-menu button:hover{background:#f9fbff}.stage{min-height:0;overflow:auto;display:grid;place-items:center;padding:24px}.card{width:min(980px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.message-card{padding:34px;text-align:center;display:grid;gap:12px}.message-card span{font-size:38px}.message-card p{margin:0;color:var(--muted)}.image-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 92px);object-fit:contain;border-radius:16px;box-shadow:var(--shadow)}.video-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 132px);background:#0f172a;border-radius:16px;box-shadow:var(--shadow)}.pdf-shell,.doc-shell{width:min(1100px,calc(100vw - 48px));height:calc(100vh - 100px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.viewer-toolbar{display:flex;align-items:center;gap:8px;min-height:46px;padding:8px 10px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.7)}.viewer-toolbar small{color:var(--muted);margin-left:auto}.pdf-pages,.doc-content{overflow:auto;padding:18px}.pdf-pages canvas{display:block;max-width:100%;height:auto;margin:0 auto 18px;background:white;border-radius:12px;box-shadow:0 10px 28px rgba(24,32,51,.1)}.doc-content{background:white}.doc-content article{max-width:760px;margin:0 auto;color:#172033}.editor-shell{width:min(1200px,calc(100vw - 36px));height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.editor-status{margin-left:auto;color:var(--muted);font-size:12px}.editor-host,.cm-editor,.cm-scroller{min-height:0;height:100%}.cm-editor{font-size:13px;background:#fbfcff}.fallback-editor{width:100%;height:100%;border:0;resize:none;padding:18px;background:#fbfcff;color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}.audio-card{width:min(860px,calc(100vw - 48px));display:grid;gap:18px;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow)}.audio-hero{display:flex;align-items:center;gap:14px}.audio-badge{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#edf3ff;color:var(--accent);font-size:24px}.wave-wrap{position:relative;padding:10px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fbfdff,#f1f5fb)}#waveform{display:block;width:100%;height:148px;touch-action:none;cursor:crosshair}.loop-pill{position:absolute;right:18px;bottom:16px;padding:5px 9px;border-radius:999px;background:rgba(47,111,237,.1);color:#2457bc;font-size:12px}.media-controls{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:10px;align-items:center}.media-controls input[type=range]{width:100%}.time-readout{color:var(--muted);font-variant-numeric:tabular-nums;min-width:112px;text-align:right}.speed-select{border:1px solid var(--line);background:white;border-radius:10px;height:32px;padding:0 8px}.convert-menu{position:absolute;right:12px;top:46px;display:grid;gap:4px;width:210px;padding:8px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.convert-menu button{border:0;background:white;text-align:left;padding:9px 10px;border-radius:10px;color:var(--text);font:inherit;cursor:pointer}.convert-panel{position:fixed;right:18px;top:66px;width:min(360px,calc(100vw - 36px));display:grid;gap:12px;padding:14px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:10}.convert-panel h2{font-size:14px;margin:0}.convert-panel label{display:grid;gap:5px;color:var(--muted);font-size:12px}.convert-panel input,.convert-panel select{height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fbfcff;color:var(--text)}.convert-actions{display:flex;gap:8px;justify-content:flex-end}.progress{height:8px;border-radius:999px;background:#edf1f6;overflow:hidden}.progress i{display:block;height:100%;width:0;background:var(--accent)}.result-link{color:var(--accent);text-decoration:none;font-weight:600}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:760px){.stage{padding:12px}.media-controls{grid-template-columns:1fr 1fr 1fr}.time-readout{text-align:left}.pill{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar"><i class="file-dot"></i><div class="title"><strong>${safeTitle}</strong><small>${escapeHtml(path)}</small></div><span class="pill">${escapeHtml(kind)}</span>${mediaMenu}</header>
+  <main id="stage" class="stage" aria-live="polite"></main>
+</div>
+<script>window.__AURI_FILE__=${data};</script>
+<script type="module">
+const file = window.__AURI_FILE__;
+const stage = document.getElementById('stage');
+const formatTime = (value) => {
+  if (!Number.isFinite(value)) return '0:00';
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.floor(value % 60).toString().padStart(2, '0');
+  return minutes + ':' + seconds;
+};
+function escapeText(value){return String(value ?? '').replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));}
+function setStage(html){stage.innerHTML = html;}
+function sourceTag(){return '<source src="' + file.resourceUrl + '" type="' + file.mime + '">';}
+function showUnsupported(message){setStage('<section class="card message-card"><span>◇</span><strong>' + escapeText(file.title) + '</strong><p>' + escapeText(message) + '</p></section>');}
+async function renderText(){
+  setStage('<section class="editor-shell"><div class="viewer-toolbar"><button id="save-text" class="clean-button" type="button">Save</button><small class="editor-status" id="editor-status">Editable text · CodeMirror</small></div><div id="editor" class="editor-host"></div></section>');
+  const host = document.getElementById('editor');
+  let getContent = () => file.text || '';
+  try {
+    const [{EditorState}, {EditorView, basicSetup}] = await Promise.all([
+      import('https://esm.sh/@codemirror/state@6.5.2'),
+      import('https://esm.sh/codemirror@6.0.1')
+    ]);
+    const view = new EditorView({ state: EditorState.create({ doc: file.text || '', extensions: [basicSetup] }), parent: host });
+    getContent = () => view.state.doc.toString();
+  } catch (error) {
+    host.innerHTML = '<textarea class="fallback-editor" spellcheck="false"></textarea>';
+    host.firstElementChild.value = file.text || '';
+    getContent = () => host.firstElementChild.value;
+    document.getElementById('editor-status').textContent = 'Editable text · fallback editor';
+  }
+  document.getElementById('save-text').addEventListener('click', () => {
+    const status = document.getElementById('editor-status');
+    status.textContent = 'Saving…';
+    parent.postMessage({ source: 'auri-file-viewer', type: 'save-text', path: file.path, content: getContent() }, '*');
+  });
+}
+window.addEventListener('message', (event) => {
+  const data = event.data || {};
+  if (data.source !== 'auri-host' || data.type !== 'save-result') return;
+  const status = document.getElementById('editor-status');
+  if (status) status.textContent = data.ok ? 'Saved' : ('Save failed: ' + (data.error || 'Unknown error'));
+});
+async function renderPdf(){
+  setStage('<section class="pdf-shell"><div class="viewer-toolbar"><strong>PDF</strong><small id="pdf-status">Loading PDF.js…</small></div><div id="pdf-pages" class="pdf-pages"></div></section>');
+  const status = document.getElementById('pdf-status');
+  const pages = document.getElementById('pdf-pages');
+  try {
+    const pdfjs = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/+esm');
+    pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+    const pdf = await pdfjs.getDocument(file.resourceUrl).promise;
+    status.textContent = pdf.numPages + ' page' + (pdf.numPages === 1 ? '' : 's');
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: Math.min(1.5, Math.max(1, (stage.clientWidth - 72) / page.getViewport({ scale: 1 }).width)) });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      pages.appendChild(canvas);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    }
+  } catch (error) {
+    status.textContent = 'Using browser PDF fallback';
+    pages.innerHTML = '<object data="' + file.resourceUrl + '" type="application/pdf" style="width:100%;height:100%;min-height:70vh"><p>PDF preview is unavailable.</p></object>';
+  }
+}
+async function renderDocument(){
+  setStage('<section class="doc-shell"><div class="viewer-toolbar"><strong>Document</strong><small id="doc-status">Loading…</small></div><div class="doc-content"><article id="doc-body"></article></div></section>');
+  const status = document.getElementById('doc-status');
+  const body = document.getElementById('doc-body');
+  if (file.extension !== 'docx') {
+    status.textContent = 'Preview not available';
+    body.innerHTML = '<p>This document format can be opened externally. DOCX preview is supported in the in-app viewer.</p>';
+    return;
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/mammoth@1.9.1/mammoth.browser.min.js';
+      script.onload = resolve; script.onerror = reject; document.head.appendChild(script);
+    });
+    const buffer = await fetch(file.resourceUrl).then((response) => response.arrayBuffer());
+    const result = await window.mammoth.convertToHtml({ arrayBuffer: buffer });
+    body.innerHTML = result.value || '<p>No document content was extracted.</p>';
+    status.textContent = 'DOCX preview';
+  } catch (error) {
+    status.textContent = 'Preview failed';
+    body.innerHTML = '<p>Could not render this document in the web viewer.</p>';
+  }
+}
+function drawBars(canvas, peaks = [], progress = 0, selection = null) {
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 760;
+  const height = canvas.clientHeight || 148;
+  canvas.width = Math.floor(width * ratio); canvas.height = Math.floor(height * ratio);
+  const ctx = canvas.getContext('2d'); ctx.setTransform(ratio, 0, 0, ratio, 0, 0); ctx.clearRect(0,0,width,height);
+  const bars = peaks.length ? peaks : Array.from({length:96},(_,index)=>.18 + .34 * Math.abs(Math.sin(index*.45)));
+  const gap = 3; const barWidth = Math.max(2, (width - gap * (bars.length - 1)) / bars.length);
+  if (selection) { ctx.fillStyle = 'rgba(47,111,237,.12)'; ctx.fillRect(selection.start * width, 0, Math.max(1, (selection.end - selection.start) * width), height); }
+  bars.forEach((peak,index)=>{ const x = index * (barWidth + gap); const h = Math.max(5, peak * (height - 18)); const y = (height - h) / 2; ctx.fillStyle = x / width <= progress ? 'rgba(47,111,237,.72)' : 'rgba(160,176,204,.42)'; ctx.fillRect(x, y, barWidth, h); });
+}
+async function audioPeaks(url, count = 128) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return [];
+    const buffer = await fetch(url).then((response) => response.arrayBuffer());
+    const context = new AudioContextClass();
+    const decoded = await context.decodeAudioData(buffer.slice(0));
+    await context.close?.();
+    const data = decoded.getChannelData(0);
+    const block = Math.max(1, Math.floor(data.length / count));
+    return Array.from({ length: count }, (_, index) => {
+      let sum = 0;
+      for (let offset = 0; offset < block; offset += 1) sum += Math.abs(data[index * block + offset] || 0);
+      return Math.min(1, Math.max(.04, sum / block * 4));
+    });
+  } catch { return []; }
+}
+function attachMediaMenu(mediaElement) {
+  const more = document.getElementById('more-button');
+  const menu = document.getElementById('convert-menu');
+  if (!more || !menu) return;
+  more.addEventListener('click', () => { const open = menu.hidden; menu.hidden = !open; more.setAttribute('aria-expanded', String(open)); });
+  menu.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-format]'); if (!button) return;
+    menu.hidden = true; more.setAttribute('aria-expanded', 'false'); showConvertPanel(button.dataset.format, mediaElement);
+  });
+}
+function renderAudio(){
+  setStage('<section class="audio-card"><div class="audio-hero"><span class="audio-badge">♪</span><div><strong>' + escapeText(file.title) + '</strong><p class="muted">Drag across the waveform to loop a range.</p></div></div><audio id="audio" preload="metadata" src="' + file.resourceUrl + '"></audio><div class="wave-wrap"><canvas id="waveform" aria-label="Audio waveform"></canvas><span id="loop-pill" class="loop-pill" hidden></span></div><div class="media-controls"><button id="play" class="clean-button" type="button">Play</button><button id="back5" class="clean-button" type="button">−5s</button><button id="forward5" class="clean-button" type="button">+5s</button><input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"><select id="speed" class="speed-select" aria-label="Speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select><span id="time" class="time-readout">0:00 / 0:00</span></div></section>');
+  const audio = document.getElementById('audio'); const canvas = document.getElementById('waveform'); const play = document.getElementById('play'); const time = document.getElementById('time'); const loopPill = document.getElementById('loop-pill');
+  let peaks = []; let loop = null; let dragStart = null; let pointerDown = false; let selection = null;
+  const positionForEvent = (event) => Math.min(1, Math.max(0, (event.clientX - canvas.getBoundingClientRect().left) / canvas.getBoundingClientRect().width));
+  const secondsForEvent = (event) => positionForEvent(event) * (audio.duration || 0);
+  const refresh = () => { const duration = audio.duration || 0; const progress = duration ? audio.currentTime / duration : 0; drawBars(canvas, peaks, progress, selection); time.textContent = formatTime(audio.currentTime || 0) + ' / ' + formatTime(duration); play.textContent = audio.paused ? 'Play' : 'Pause'; };
+  audioPeaks(file.resourceUrl).then((value)=>{ peaks = value; refresh(); });
+  audio.addEventListener('loadedmetadata', refresh); audio.addEventListener('timeupdate', () => { if (loop && audio.currentTime >= loop.end) audio.currentTime = loop.start; refresh(); }); audio.addEventListener('play', refresh); audio.addEventListener('pause', refresh);
+  window.addEventListener('resize', refresh);
+  play.addEventListener('click', () => audio.paused ? audio.play() : audio.pause());
+  document.getElementById('back5').addEventListener('click', () => { audio.currentTime = Math.max(0, audio.currentTime - 5); refresh(); });
+  document.getElementById('forward5').addEventListener('click', () => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5); refresh(); });
+  document.getElementById('volume').addEventListener('input', (event) => { audio.volume = Number(event.target.value); });
+  document.getElementById('speed').addEventListener('change', (event) => { audio.playbackRate = Number(event.target.value) || 1; });
+  canvas.addEventListener('pointerdown', (event) => { pointerDown = true; dragStart = secondsForEvent(event); loop = null; loopPill.hidden = true; canvas.setPointerCapture?.(event.pointerId); audio.currentTime = dragStart; audio.play(); refresh(); });
+  canvas.addEventListener('pointermove', (event) => { if (!pointerDown) return; const now = secondsForEvent(event); const start = Math.min(dragStart, now); const end = Math.max(dragStart, now); selection = audio.duration ? { start: start / audio.duration, end: end / audio.duration } : null; refresh(); });
+  canvas.addEventListener('pointerup', (event) => { if (!pointerDown) return; pointerDown = false; const endTime = secondsForEvent(event); const start = Math.min(dragStart, endTime); const end = Math.max(dragStart, endTime); selection = null; if (end - start > .25) { loop = { start, end }; audio.currentTime = start; loopPill.textContent = 'Loop ' + formatTime(start) + '–' + formatTime(end); loopPill.hidden = false; audio.play(); } else { audio.currentTime = endTime; audio.play(); } refresh(); });
+  attachMediaMenu(audio);
+}
+function renderVideo(){
+  setStage('<video id="video" class="video-viewer" controls preload="metadata">' + sourceTag() + 'This video format is not supported.</video>');
+  attachMediaMenu(document.getElementById('video'));
+}
+function renderImage(){ setStage('<img class="image-viewer" src="' + file.resourceUrl + '" alt="' + escapeText(file.title) + '">'); }
+function outputName(format){ const base = (file.title || 'converted').replace(/\.[^.]+$/, ''); return base + '.' + (format === 'mp4_h264' || format === 'mp4_h265' ? 'mp4' : format); }
+function resolutionArgs(value){ if (value === 'native') return []; const height = Number(value) || 720; return ['-vf', 'scale=-2:' + height]; }
+function conversionArgs(format, bitrate, resolution, isAudioOnly){
+  const output = outputName(format);
+  if (format === 'mp3') return { output, args: ['-i','input','-vn','-b:a', bitrate + 'k', output] };
+  if (format === 'wav') return { output, args: ['-i','input','-vn', output] };
+  if (format === 'm4a') return { output, args: ['-i','input','-vn','-c:a','aac','-b:a', bitrate + 'k', output] };
+  const videoCodec = format === 'mp4_h265' ? 'libx265' : 'libx264';
+  if (isAudioOnly) return { output, args: ['-i','input','-filter_complex','showwaves=s=1280x720:mode=cline:colors=white[v]','-map','[v]','-map','0:a','-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k','-shortest',output] };
+  return { output, args: ['-i','input',...resolutionArgs(resolution),'-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k',output] };
+}
+function showConvertPanel(format, mediaElement){
+  document.getElementById('convert-panel')?.remove();
+  const panel = document.createElement('section'); panel.id = 'convert-panel'; panel.className = 'convert-panel';
+  panel.innerHTML = '<h2>Convert to ' + escapeText(format.replace("_", " ").toUpperCase()) + '</h2><label>Audio bitrate<select id="convert-bitrate"><option value="96">96 kbps</option><option value="128" selected>128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></label><label>Resolution<select id="convert-resolution"><option value="native" selected>Native</option><option value="480">480p</option><option value="720">720p</option></select></label><div class="progress"><i id="convert-progress"></i></div><small id="convert-status">Ready</small><div class="convert-actions"><button id="convert-cancel" class="clean-button" type="button">Cancel</button><button id="convert-start" class="clean-button" type="button">Convert</button></div>';
+  document.body.appendChild(panel);
+  document.getElementById('convert-cancel').addEventListener('click', () => panel.remove());
+  document.getElementById('convert-start').addEventListener('click', async () => {
+    const status = document.getElementById('convert-status'); const bar = document.getElementById('convert-progress');
+    try {
+      status.textContent = 'Loading ffmpeg.wasm…';
+      const [{ FFmpeg }, { fetchFile, toBlobURL }] = await Promise.all([import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js'), import('https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js')]);
+      const ffmpeg = new FFmpeg();
+      ffmpeg.on('progress', ({ progress }) => { bar.style.width = Math.max(0, Math.min(100, progress * 100)) + '%'; });
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
+      await ffmpeg.load({ coreURL: await toBlobURL(baseURL + '/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL(baseURL + '/ffmpeg-core.wasm', 'application/wasm') });
+      status.textContent = 'Converting…';
+      await ffmpeg.writeFile('input', await fetchFile(file.resourceUrl));
+      const bitrate = document.getElementById('convert-bitrate').value;
+      const resolution = document.getElementById('convert-resolution').value;
+      const { output, args } = conversionArgs(format, bitrate, resolution, file.kind === 'audio');
+      await ffmpeg.exec(args);
+      const data = await ffmpeg.readFile(output);
+      const blob = new Blob([data.buffer], { type: output.endsWith('.mp4') ? 'video/mp4' : output.endsWith('.wav') ? 'audio/wav' : output.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg' });
+      const url = URL.createObjectURL(blob);
+      status.innerHTML = '<a class="result-link" download="' + escapeText(output) + '" href="' + url + '">Download ' + escapeText(output) + '</a>';
+      bar.style.width = '100%';
+    } catch (error) {
+      status.textContent = 'Conversion failed: ' + (error?.message || error || 'unknown error');
+    }
+  });
+}
+if (file.kind === 'text') renderText();
+else if (file.kind === 'pdf') renderPdf();
+else if (file.kind === 'document') renderDocument();
+else if (file.kind === 'image') renderImage();
+else if (file.kind === 'audio') renderAudio();
+else if (file.kind === 'video') renderVideo();
+else showUnsupported('Preview is not available for this file type yet. Use the external-open button from Auri if you need the native app.');
+</script>
+</body>
+</html>`;
+}

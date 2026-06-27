@@ -137,6 +137,61 @@ test("file open routes the selected file into a webview subtab", async () => {
   assert.equal(active.title, "test.m4a");
 });
 
+test("folder file double-click opens the file directly in the webview app", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: false,
+    inspectFile: async (path) => ({ path, name: "notes.txt", kind: "text" })
+  };
+  const controller = new AppController({
+    view,
+    backend,
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.openFileInWebview = async (path, metadata) => ({ url: "blob:auri-file-viewer", title: metadata.name, filePath: path, mime: "text/html" });
+
+  await controller.handleDoubleClick({
+    target: { closest: () => ({ dataset: { action: "file-entry", path: "/tmp/notes.txt", kind: "text" } }) },
+    preventDefault() {}
+  });
+
+  const tab = controller.state.tabs[0];
+  const active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+  assert.equal(active.type, "webview");
+  assert.equal(active.filePath, "/tmp/notes.txt");
+  assert.equal(active.url, "blob:auri-file-viewer");
+});
+
+test("file viewer save messages write text through the backend", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const posted = [];
+  const writes = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, showToast() {} },
+    backend: { isNative: false, writeTextFile: async (path, content) => { writes.push({ path, content }); return { path, size: content.length }; } },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  const result = await controller.handleFileViewerMessage({
+    origin: "blob://viewer",
+    data: { source: "auri-file-viewer", type: "save-text", path: "/tmp/notes.txt", content: "updated" },
+    source: { postMessage: (message, origin) => posted.push({ message, origin }) }
+  });
+
+  assert.deepEqual(writes, [{ path: "/tmp/notes.txt", content: "updated" }]);
+  assert.equal(result.size, 7);
+  assert.deepEqual(posted[0], {
+    message: { source: "auri-host", type: "save-result", ok: true, path: "/tmp/notes.txt" },
+    origin: "blob://viewer"
+  });
+});
+
 test("AI requests add the user message before the assistant reply", async () => {
   const h = harness();
   h.backend.askAi = async () => ({ text: "hello back" });

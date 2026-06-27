@@ -130,7 +130,6 @@ pub fn write(session_id: &str, data: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("Could not flush terminal input: {error}"))
 }
 
-
 pub fn cwd(session_id: &str) -> Result<String, String> {
     let session = SESSIONS
         .lock()

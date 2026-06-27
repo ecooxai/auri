@@ -1,4 +1,5 @@
 import { GeminiWakeSession, runGeminiLiveTurn } from "./gemini-live.js";
+import { fileViewerPageHtml, isEditableTextFile, viewerKindForFile } from "./file-viewer-page.js";
 
 export const SYSTEM_PROMPT = `You are Auri, a desktop assistant inside a terminal-centered workspace.
 Be concise, practical, and direct.
@@ -22,6 +23,10 @@ function extension(path) {
   return name.includes(".") ? name.split(".").pop().toLowerCase() : "";
 }
 
+function titleForPath(path, fallback = "File") {
+  return String(path || "").split("/").pop() || fallback;
+}
+
 
 export function previewMimeForPath(path, reportedMime = "") {
   const ext = extension(path);
@@ -30,24 +35,58 @@ export function previewMimeForPath(path, reportedMime = "") {
     aac: "audio/aac",
     mp3: "audio/mpeg",
     wav: "audio/wav",
+    wave: "audio/wav",
     ogg: "audio/ogg",
+    oga: "audio/ogg",
     flac: "audio/flac",
+    opus: "audio/ogg",
     mp4: "video/mp4",
+    m4v: "video/mp4",
     mov: "video/quicktime",
     webm: "video/webm",
+    mkv: "video/x-matroska",
+    avi: "video/x-msvideo",
     png: "image/png",
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
     gif: "image/gif",
     webp: "image/webp",
+    avif: "image/avif",
+    bmp: "image/bmp",
+    tif: "image/tiff",
+    tiff: "image/tiff",
     svg: "image/svg+xml",
     pdf: "application/pdf",
+    doc: "application/msword",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    rtf: "application/rtf",
+    odt: "application/vnd.oasis.opendocument.text",
     txt: "text/plain",
-    md: "text/plain",
+    text: "text/plain",
+    md: "text/markdown",
+    markdown: "text/markdown",
+    log: "text/plain",
+    csv: "text/csv",
+    tsv: "text/tab-separated-values",
     json: "application/json",
+    jsonl: "application/json",
     html: "text/html",
+    htm: "text/html",
     css: "text/css",
-    js: "text/javascript"
+    js: "text/javascript",
+    mjs: "text/javascript",
+    cjs: "text/javascript",
+    ts: "text/typescript",
+    tsx: "text/typescript",
+    jsx: "text/javascript",
+    xml: "application/xml",
+    yaml: "text/yaml",
+    yml: "text/yaml",
+    toml: "text/plain",
+    ini: "text/plain",
+    rs: "text/plain",
+    py: "text/x-python",
+    sh: "text/x-shellscript"
   };
   return byExtension[ext] || (reportedMime && reportedMime !== "application/octet-stream" ? reportedMime : "application/octet-stream");
 }
@@ -63,22 +102,12 @@ function escapeHtml(value) {
 }
 
 export function mediaPageHtml({ mediaUrl, mime, title }) {
-  const safeUrl = escapeHtml(mediaUrl);
-  const safeMime = escapeHtml(mime);
-  const safeTitle = escapeHtml(title);
-  const tag = String(mime).startsWith("video/") ? "video" : "audio";
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${safeTitle}</title>
-<style>
-html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#f4f7fa;font:14px system-ui,sans-serif;color:#172033}.media{width:min(900px,calc(100% - 48px));display:grid;gap:18px;text-align:center}.media h1{font-size:16px;margin:0;overflow-wrap:anywhere}.media audio{width:min(560px,100%);justify-self:center}.media video{width:100%;max-height:calc(100vh - 110px);background:#111827;border-radius:16px}
-</style>
-</head>
-<body><main class="media"><h1>${safeTitle}</h1><${tag} controls preload="metadata"><source src="${safeUrl}" type="${safeMime}">This media format is not supported.</${tag}></main></body>
-</html>`;
+  return fileViewerPageHtml({
+    resourceUrl: mediaUrl,
+    mime,
+    title,
+    path: title || "media"
+  });
 }
 
 function base64ToBytes(value) {
@@ -285,38 +314,58 @@ export class Backend {
   }
 
 
-  async createFileView(path) {
+  createFileViewPage({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null }) {
+    const page = new Blob([fileViewerPageHtml({ resourceUrl, mime, title, path, text })], { type: "text/html" });
+    return URL.createObjectURL(page);
+  }
+
+  async createFileView(path, metadata = {}) {
     if (!this.invoke) {
-      const metadata = browserMetadata(path);
-      const blob = new Blob([metadata.preview || `Preview for ${path}`], { type: "text/plain" });
-      return { url: URL.createObjectURL(blob), title: metadata.name, filePath: path, mime: blob.type };
+      const item = browserMetadata(path);
+      const mime = previewMimeForPath(path, metadata.mime);
+      const title = metadata.name || item.name || titleForPath(path);
+      const text = isEditableTextFile(path, mime)
+        ? item.preview || `Preview for ${path}`
+        : null;
+      const url = this.createFileViewPage({ mime, title, path, text });
+      return { url, title, filePath: path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
     }
+
+    const firstMime = previewMimeForPath(path, metadata.mime || "");
+    if (isEditableTextFile(path, firstMime)) {
+      const text = await this.call("read_text_file", { path });
+      const title = metadata.name || titleForPath(path);
+      const url = this.createFileViewPage({ mime: firstMime, title, path, text });
+      return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "text" };
+    }
+
     const file = await this.call("read_binary_file", { path });
     const mime = previewMimeForPath(path, file.mime);
     const mediaBlob = new Blob([base64ToBytes(file.base64)], { type: mime });
     const resourceUrl = URL.createObjectURL(mediaBlob);
-    if (mime.startsWith("audio/") || mime.startsWith("video/")) {
-      const page = new Blob([mediaPageHtml({ mediaUrl: resourceUrl, mime, title: file.name })], { type: "text/html" });
-      const url = URL.createObjectURL(page);
-      this.fileViewResources.set(url, resourceUrl);
-      return { url, title: file.name, filePath: path, mime: "text/html", mediaMime: mime };
-    }
-    return { url: resourceUrl, title: file.name, filePath: path, mime };
+    const url = this.createFileViewPage({ resourceUrl, mime, title: file.name, path: file.path || path });
+    this.fileViewResources.set(url, [resourceUrl]);
+    return { url, title: file.name, filePath: file.path || path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
   }
 
   releaseFileView(url) {
     if (typeof url !== "string" || !url.startsWith("blob:")) return;
-    const resourceUrl = this.fileViewResources.get(url);
-    if (resourceUrl) {
-      URL.revokeObjectURL(resourceUrl);
-      this.fileViewResources.delete(url);
-    }
+    const resources = this.fileViewResources.get(url) || [];
+    for (const resourceUrl of resources) URL.revokeObjectURL(resourceUrl);
+    this.fileViewResources.delete(url);
     URL.revokeObjectURL(url);
   }
 
   async readFile(path) {
     if (!this.invoke) return browserMetadata(path).preview || "Preview is available in the native build.";
     return this.call("read_text_file", { path });
+  }
+
+  async writeTextFile(path, content) {
+    if (!this.invoke) {
+      return { path, size: String(content ?? "").length, browserPreview: true };
+    }
+    return this.call("write_text_file", { path, content });
   }
 
   async runCommand(command, cwd) {
