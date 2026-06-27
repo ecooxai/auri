@@ -291,6 +291,67 @@ test("each workspace owns a distinct terminal session", async () => {
   assert.equal(created.length, 2);
 });
 
+
+test("new terminal subtabs create independent sessions at the workspace cwd", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const previousAnimationFrame = globalThis.requestAnimationFrame;
+  const created = [];
+  const mounts = [];
+  const terminalSessionFactory = () => {
+    const session = {
+      initialize: async () => {},
+      mount: async (_element, cwd) => { mounts.push({ session, cwd }); },
+      run: async () => {},
+      stop: async () => {},
+      printUser() {},
+      printAssistant() {},
+      printMessage() {},
+      beginAssistantStream() {},
+      appendAssistantStream() {},
+      endAssistantStream() {}
+    };
+    created.push(session);
+    return session;
+  };
+  const backend = {
+    isNative: false,
+    saveSettings: async () => {}
+  };
+  let host = null;
+  const view = {
+    root: {
+      querySelector(selector) {
+        if (selector === "#terminal-emulator") return host;
+        return null;
+      }
+    },
+    render(state) {
+      const workspace = state.tabs.find((tab) => tab.id === state.activeTabId);
+      const active = workspace.subtabs.find((subtab) => subtab.id === workspace.activeSubtabId);
+      host = active?.type === "terminal"
+        ? { dataset: { workspaceId: workspace.id, terminalId: active.id }, addEventListener() {} }
+        : null;
+    },
+    getTerminalInputValue: () => "",
+    setTerminalCompletions() {},
+    showToast() {}
+  };
+  globalThis.requestAnimationFrame = (callback) => callback();
+
+  try {
+    const controller = new AppController({ view, backend, terminalSessionFactory });
+    controller.dispatch({ type: "WORKDIR_SET", payload: { path: "/tmp/auri-space" } });
+
+    await controller.runInternal("subtab new terminal");
+
+    assert.equal(created.length, 2);
+    assert.notEqual(created[0], created[1]);
+    assert.deepEqual(mounts.map((item) => item.cwd), ["/tmp/auri-space", "/tmp/auri-space"]);
+  } finally {
+    globalThis.requestAnimationFrame = previousAnimationFrame;
+  }
+});
+
 test("clipboard insert delegates paste-back to the native action", async () => {
   const h = harness();
   h.dispatch({

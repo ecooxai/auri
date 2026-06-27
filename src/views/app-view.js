@@ -29,28 +29,32 @@ export class AppView {
     this.terminalHosts = new Map();
   }
 
+  terminalHostKey(host) {
+    return host?.dataset?.terminalId || host?.dataset?.workspaceId || null;
+  }
+
   stashTerminalHost() {
     const host = this.root?.querySelector?.("#terminal-emulator");
-    const workspaceId = host?.dataset?.workspaceId;
-    if (!host || !workspaceId) return null;
-    this.terminalHosts.set(workspaceId, host);
+    const key = this.terminalHostKey(host);
+    if (!host || !key) return null;
+    this.terminalHosts.set(key, host);
     host.remove();
     return host;
   }
 
-  restoreTerminalHost(workspaceId) {
+  restoreTerminalHost(terminalId) {
     const placeholder = this.root?.querySelector?.("#terminal-emulator");
     if (!placeholder) return null;
-    const preserved = this.terminalHosts.get(workspaceId);
+    const preserved = this.terminalHosts.get(terminalId);
     if (!preserved || preserved === placeholder) return placeholder;
     placeholder.replaceWith(preserved);
     return preserved;
   }
 
   pruneTerminalHosts(state) {
-    const workspaceIds = new Set(state.tabs.map((tab) => tab.id));
-    for (const workspaceId of this.terminalHosts.keys()) {
-      if (!workspaceIds.has(workspaceId)) this.terminalHosts.delete(workspaceId);
+    const terminalIds = new Set(state.tabs.flatMap((tab) => tab.subtabs.filter((subtab) => subtab.type === "terminal").map((subtab) => subtab.id)));
+    for (const terminalId of this.terminalHosts.keys()) {
+      if (!terminalIds.has(terminalId)) this.terminalHosts.delete(terminalId);
     }
   }
 
@@ -77,7 +81,8 @@ export class AppView {
       </div>
       ${renderWebOverlay(state, { native: Boolean(options.native) })}
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
-    this.restoreTerminalHost(tab.id);
+    const active = activeSubtab(state);
+    this.restoreTerminalHost(active?.type === "terminal" ? active.id : null);
 
     if (inputValue && this.root.querySelector("#terminal-input")) {
       this.root.querySelector("#terminal-input").value = inputValue;

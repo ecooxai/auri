@@ -210,7 +210,7 @@ export class TerminalSession {
 
   async mount(element, cwd = "~", fontSize = 20, maxLines = 4000) {
     if (!element) return;
-    this.cwd = cwd || this.cwd;
+    if (!this.started) this.cwd = cwd || this.cwd;
     const lineLimit = Math.min(100000, Math.max(100, Number(maxLines) || 4000));
     const terminalFontSize = Math.round(Math.min(30, Math.max(14, Number(fontSize) || 20)) * 0.6);
 

@@ -186,6 +186,8 @@ function renderLiveStatus(status) {
 
 export function renderTerminal(state) {
   const tab = activeWorkspace(state);
+  const terminal = activeSubtab(state);
+  const terminalId = terminal?.type === "terminal" ? terminal.id : tab.subtabs.find((item) => item.type === "terminal")?.id || tab.id;
   return `
     <section class="terminal-panel">
       <div class="terminal-toolbar">
@@ -193,7 +195,7 @@ export function renderTerminal(state) {
         <div class="terminal-status"><span class="status-dot ${tab.terminal.running ? "is-busy" : ""}"></span>${tab.terminal.running ? "Working" : "Ready"}</div>
         ${button("⌫", "Clear terminal", "terminal-clear")}
       </div>
-      <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator" data-workspace-id="${escapeHtml(tab.id)}"></div></div>
+      <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator" data-workspace-id="${escapeHtml(tab.id)}" data-terminal-id="${escapeHtml(terminalId)}"></div></div>
       <div class="terminal-input-zone">
         <div id="terminal-completion" class="terminal-completion" role="listbox" aria-label="Terminal completion suggestions" hidden></div>
         <div class="composer-wrap">

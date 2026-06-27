@@ -165,8 +165,34 @@ export class AppController {
     };
   }
 
-  terminalSessionFor(workspaceId = this.state.activeTabId) {
-    let session = this.terminalSessions.get(workspaceId);
+  terminalSubtabs(state = this.state) {
+    return state.tabs.flatMap((workspace) => workspace.subtabs
+      .filter((subtab) => subtab.type === "terminal")
+      .map((subtab) => ({ workspace, subtab })));
+  }
+
+  resolveTerminalTarget(identifier = null) {
+    const terminalSubtabs = this.terminalSubtabs();
+    if (!terminalSubtabs.length) return null;
+
+    if (identifier) {
+      const bySubtab = terminalSubtabs.find(({ subtab }) => subtab.id === identifier);
+      if (bySubtab) return bySubtab;
+      const byWorkspace = terminalSubtabs.find(({ workspace }) => workspace.id === identifier);
+      if (byWorkspace) return byWorkspace;
+    }
+
+    const workspace = activeWorkspace(this.state);
+    const active = activeSubtab(this.state);
+    if (active?.type === "terminal") return { workspace, subtab: active };
+    return terminalSubtabs.find((item) => item.workspace.id === workspace.id) || terminalSubtabs[0];
+  }
+
+  terminalSessionFor(identifier = null) {
+    const target = this.resolveTerminalTarget(identifier);
+    if (!target) throw new Error("No terminal tab is available.");
+    const sessionKey = target.subtab.id;
+    let session = this.terminalSessions.get(sessionKey);
     if (session) return session;
     session = this.terminalSessionFactory(this.backend, {
       insertText: async (text) => {
@@ -187,17 +213,17 @@ export class AppController {
         }
       }
     });
-    session.onCwdChange = (path) => this.handleTerminalCwdChange(workspaceId, path);
+    session.onCwdChange = (path) => this.handleTerminalCwdChange(target.workspace.id, path);
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
       this.reportError("Terminal", error);
       return false;
     });
-    this.terminalSessions.set(workspaceId, session);
+    this.terminalSessions.set(sessionKey, session);
     return session;
   }
 
   activeTerminalSession() {
-    return this.terminalSessionFor(this.state.activeTabId);
+    return this.terminalSessionFor();
   }
 
   clearTerminalCompletions(updateView = true) {
@@ -271,12 +297,13 @@ export class AppController {
       const draft = this.view.getTerminalInputValue?.() || "";
       this.state = reduceState(this.state, { type: "TERMINAL_DRAFT_SET", payload: { value: draft } });
     }
-    const previousIds = new Set(this.state.tabs.map((tab) => tab.id));
+    const previousTerminals = new Set(this.terminalSubtabs().map(({ subtab }) => subtab.id));
     const previousWebviews = new Set(this.state.tabs.flatMap((tab) => tab.subtabs.filter((item) => item.type === "webview").map((item) => item.id)));
     this.state = reduceState(this.state, event);
     this.clearTerminalCompletions(false);
-    for (const id of previousIds) {
-      if (!this.state.tabs.some((tab) => tab.id === id)) {
+    const currentTerminals = new Set(this.terminalSubtabs().map(({ subtab }) => subtab.id));
+    for (const id of previousTerminals) {
+      if (!currentTerminals.has(id)) {
         this.terminalSessions.get(id)?.stop?.().catch?.(() => {});
         this.terminalSessions.delete(id);
       }
@@ -299,8 +326,11 @@ export class AppController {
     const terminalHost = this.view.root.querySelector?.("#terminal-emulator");
     if (terminalHost) {
       const workspace = activeWorkspace(this.state);
-      const session = this.terminalSessionFor(workspace.id);
-      requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines).catch((error) => this.reportError("Terminal", error)));
+      const terminalTarget = this.resolveTerminalTarget();
+      if (terminalTarget) {
+        const session = this.terminalSessionFor(terminalTarget.subtab.id);
+        requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines).catch((error) => this.reportError("Terminal", error)));
+      }
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
   }
