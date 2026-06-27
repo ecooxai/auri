@@ -62,6 +62,7 @@ pub struct FileInfo {
     pub height: Option<u32>,
     pub codec: Option<String>,
     pub bitrate: Option<u64>,
+    pub sample_rate: Option<u64>,
     pub modified: Option<u64>,
 }
 
@@ -78,6 +79,15 @@ pub struct BinaryFile {
 #[serde(rename_all = "camelCase")]
 pub struct TextFileWrite {
     pub path: String,
+    pub size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConvertedMedia {
+    pub path: String,
+    pub name: String,
+    pub mime: String,
     pub size: u64,
 }
 
@@ -288,11 +298,13 @@ pub fn inspect_file(path: &str) -> Result<FileInfo, String> {
     let (mut width, mut height) = image_dimensions(&resolved).unwrap_or((0, 0));
     let mut codec = None;
     let mut bitrate = None;
+    let mut sample_rate = None;
 
     if kind == "audio" || kind == "video" {
         if let Some(probe) = ffprobe(&resolved) {
             codec = probe.codec;
             bitrate = probe.bitrate;
+            sample_rate = probe.sample_rate;
             if width == 0 {
                 width = probe.width.unwrap_or(0);
             }
@@ -326,6 +338,7 @@ pub fn inspect_file(path: &str) -> Result<FileInfo, String> {
         height: (height > 0).then_some(height),
         codec,
         bitrate,
+        sample_rate,
         modified,
     })
 }
@@ -420,6 +433,7 @@ struct ProbeResult {
     bitrate: Option<u64>,
     width: Option<u32>,
     height: Option<u32>,
+    sample_rate: Option<u64>,
 }
 
 fn ffprobe(path: &Path) -> Option<ProbeResult> {
@@ -440,22 +454,28 @@ fn ffprobe(path: &Path) -> Option<ProbeResult> {
     }
     let value: Value = serde_json::from_slice(&output.stdout).ok()?;
     let streams = value.get("streams")?.as_array()?;
-    let primary = streams
+    let video_stream = streams
         .iter()
-        .find(|item| item.get("codec_type").and_then(Value::as_str) == Some("video"))
-        .or_else(|| streams.first());
+        .find(|item| item.get("codec_type").and_then(Value::as_str) == Some("video"));
+    let audio_stream = streams
+        .iter()
+        .find(|item| item.get("codec_type").and_then(Value::as_str) == Some("audio"));
+    let primary = video_stream.or(audio_stream).or_else(|| streams.first());
     let codec = primary
         .and_then(|item| item.get("codec_name"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let width = primary
+    let width = video_stream
         .and_then(|item| item.get("width"))
         .and_then(Value::as_u64)
         .map(|value| value as u32);
-    let height = primary
+    let height = video_stream
         .and_then(|item| item.get("height"))
         .and_then(Value::as_u64)
         .map(|value| value as u32);
+    let sample_rate = audio_stream
+        .and_then(|item| item.get("sample_rate"))
+        .and_then(value_as_u64);
     let bitrate = primary
         .and_then(|item| item.get("bit_rate"))
         .and_then(value_as_u64)
@@ -470,6 +490,7 @@ fn ffprobe(path: &Path) -> Option<ProbeResult> {
         bitrate,
         width,
         height,
+        sample_rate,
     })
 }
 
@@ -529,6 +550,177 @@ pub struct SavedMedia {
     pub name: String,
     pub mime: String,
     pub size: u64,
+}
+
+fn converted_extension(format: &str) -> Option<&'static str> {
+    match format {
+        "mp3" => Some("mp3"),
+        "wav" => Some("wav"),
+        "m4a" => Some("m4a"),
+        "mp4_h264" | "mp4_h265" => Some("mp4"),
+        _ => None,
+    }
+}
+
+fn unique_converted_path(source: &Path, format: &str) -> Result<PathBuf, String> {
+    let extension =
+        converted_extension(format).ok_or_else(|| "Unsupported conversion format.".to_string())?;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Could not determine the source folder.".to_string())?;
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("converted");
+    for index in 0..1000 {
+        let suffix = if index == 0 {
+            format!("-converted.{extension}")
+        } else {
+            format!("-converted-{index}.{extension}")
+        };
+        let candidate = parent.join(format!("{stem}{suffix}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Could not choose a destination name for the converted file.".to_string())
+}
+
+fn normalized_sample_rate(sample_rate: Option<u32>) -> Option<String> {
+    match sample_rate {
+        Some(16_000) => Some("16000".to_string()),
+        Some(24_000) => Some("24000".to_string()),
+        Some(48_000) => Some("48000".to_string()),
+        _ => None,
+    }
+}
+
+fn normalized_resolution(resolution: Option<&str>) -> Option<&'static str> {
+    match resolution.unwrap_or("native") {
+        "480" | "480p" => Some("480"),
+        "720" | "720p" => Some("720"),
+        _ => None,
+    }
+}
+
+pub fn convert_media_file(
+    path: &str,
+    format: &str,
+    bitrate_kbps: Option<u32>,
+    sample_rate: Option<u32>,
+    resolution: Option<&str>,
+) -> Result<ConvertedMedia, String> {
+    let source = expand_path(path)?;
+    let metadata = fs::metadata(&source).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("The selected path is not a file.".to_string());
+    }
+    let path_string = display_path(&source);
+    let kind = file_kind(&path_string);
+    if kind != "audio" && kind != "video" {
+        return Err("Only audio and video files can be converted.".to_string());
+    }
+    let destination = unique_converted_path(&source, format)?;
+    let bitrate = bitrate_kbps.unwrap_or(128).clamp(32, 512).to_string();
+    let sample_rate_value = normalized_sample_rate(sample_rate);
+    let video_codec = match format {
+        "mp4_h264" => Some("libx264"),
+        "mp4_h265" => Some("libx265"),
+        _ => None,
+    };
+
+    let mut command = Command::new("ffmpeg");
+    command.arg("-y").arg("-i").arg(&source);
+    match format {
+        "mp3" => {
+            command.args(["-vn", "-b:a", &format!("{bitrate}k")]);
+            if let Some(rate) = sample_rate_value.as_deref() {
+                command.args(["-ar", rate]);
+            }
+        }
+        "wav" => {
+            command.arg("-vn");
+            if let Some(rate) = sample_rate_value.as_deref() {
+                command.args(["-ar", rate]);
+            }
+        }
+        "m4a" => {
+            command.args(["-vn", "-c:a", "aac", "-b:a", &format!("{bitrate}k")]);
+            if let Some(rate) = sample_rate_value.as_deref() {
+                command.args(["-ar", rate]);
+            }
+        }
+        "mp4_h264" | "mp4_h265" => {
+            let codec = video_codec.unwrap();
+            if kind == "audio" {
+                command.args([
+                    "-filter_complex",
+                    "showwaves=s=1280x720:mode=cline:colors=white[v]",
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "0:a",
+                    "-c:v",
+                    codec,
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    &format!("{bitrate}k"),
+                    "-shortest",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]);
+                if let Some(rate) = sample_rate_value.as_deref() {
+                    command.args(["-ar", rate]);
+                }
+            } else {
+                if let Some(height) = normalized_resolution(resolution) {
+                    command.args(["-vf", &format!("scale=-2:{height}")]);
+                }
+                command.args([
+                    "-c:v",
+                    codec,
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    &format!("{bitrate}k"),
+                    "-pix_fmt",
+                    "yuv420p",
+                ]);
+                if format == "mp4_h265" {
+                    command.args(["-tag:v", "hvc1"]);
+                }
+            }
+        }
+        _ => return Err("Unsupported conversion format.".to_string()),
+    }
+    command.arg(&destination);
+    let output = command
+        .output()
+        .map_err(|error| format!("Could not run ffmpeg. Install ffmpeg and try again: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("ffmpeg could not convert this file.");
+        return Err(message.to_string());
+    }
+    let size = fs::metadata(&destination)
+        .map_err(|error| error.to_string())?
+        .len();
+    let display = display_path(&destination);
+    Ok(ConvertedMedia {
+        name: destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("converted")
+            .to_string(),
+        mime: mime_type(&display).to_string(),
+        path: display,
+        size,
+    })
 }
 
 pub fn save_media_file(name: &str, kind: &str, base64: &str) -> Result<SavedMedia, String> {

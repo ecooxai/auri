@@ -43,10 +43,10 @@ export function viewerKindForFile(path, mime = "") {
   return "file";
 }
 
-export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null }) {
+export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false }) {
   const kind = viewerKindForFile(path || title, mime);
   const safeTitle = escapeHtml(title);
-  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title) });
+  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title), autoplay });
   const mediaMenu = kind === "audio" || kind === "video"
     ? `<button id="more-button" class="icon-button" type="button" aria-haspopup="menu" aria-expanded="false" title="More">⋮</button>
        <div id="convert-menu" class="convert-menu" hidden>
@@ -66,7 +66,7 @@ export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet
 <title>${safeTitle}</title>
 <style>
 :root{color-scheme:light;--bg:#f6f8fb;--panel:rgba(255,255,255,.88);--panel-strong:#fff;--line:rgba(25,34,51,.1);--text:#182033;--muted:#687284;--soft:#eef2f7;--accent:#2f6fed;--shadow:0 18px 60px rgba(24,32,51,.12)}
-*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at top left,#fff 0,#f6f8fb 46%,#eef3f8 100%);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.75);backdrop-filter:blur(18px);position:relative;z-index:5}.file-dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#95b8ff,#dfe8ff);box-shadow:0 0 0 4px #eef4ff}.title{min-width:0;flex:1}.title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.title small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.pill{font-size:11px;color:#41516c;background:var(--soft);border:1px solid var(--line);padding:5px 8px;border-radius:999px}.icon-button,.clean-button{border:1px solid var(--line);background:var(--panel-strong);color:var(--text);border-radius:10px;min-height:32px;padding:0 11px;font:inherit;box-shadow:0 1px 0 rgba(255,255,255,.9);cursor:pointer}.icon-button{width:32px;padding:0;font-size:18px;line-height:1}.icon-button:hover,.clean-button:hover,.convert-menu button:hover{background:#f9fbff}.stage{min-height:0;overflow:auto;display:grid;place-items:center;padding:24px}.card{width:min(980px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.message-card{padding:34px;text-align:center;display:grid;gap:12px}.message-card span{font-size:38px}.message-card p{margin:0;color:var(--muted)}.image-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 92px);object-fit:contain;border-radius:16px;box-shadow:var(--shadow)}.video-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 132px);background:#0f172a;border-radius:16px;box-shadow:var(--shadow)}.pdf-shell,.doc-shell{width:min(1100px,calc(100vw - 48px));height:calc(100vh - 100px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.viewer-toolbar{display:flex;align-items:center;gap:8px;min-height:46px;padding:8px 10px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.7)}.viewer-toolbar small{color:var(--muted);margin-left:auto}.pdf-pages,.doc-content{overflow:auto;padding:18px}.pdf-pages canvas{display:block;max-width:100%;height:auto;margin:0 auto 18px;background:white;border-radius:12px;box-shadow:0 10px 28px rgba(24,32,51,.1)}.doc-content{background:white}.doc-content article{max-width:760px;margin:0 auto;color:#172033}.editor-shell{width:min(1200px,calc(100vw - 36px));height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.editor-status{margin-left:auto;color:var(--muted);font-size:12px}.editor-host,.cm-editor,.cm-scroller{min-height:0;height:100%}.cm-editor{font-size:13px;background:#fbfcff}.fallback-editor{width:100%;height:100%;border:0;resize:none;padding:18px;background:#fbfcff;color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}.audio-card{width:min(860px,calc(100vw - 48px));display:grid;gap:18px;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow)}.audio-hero{display:flex;align-items:center;gap:14px}.audio-badge{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#edf3ff;color:var(--accent);font-size:24px}.wave-wrap{position:relative;padding:10px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fbfdff,#f1f5fb)}#waveform{display:block;width:100%;height:148px;touch-action:none;cursor:crosshair}.loop-pill{position:absolute;right:18px;bottom:16px;padding:5px 9px;border-radius:999px;background:rgba(47,111,237,.1);color:#2457bc;font-size:12px}.media-controls{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:10px;align-items:center}.media-controls input[type=range]{width:100%}.time-readout{color:var(--muted);font-variant-numeric:tabular-nums;min-width:112px;text-align:right}.speed-select{border:1px solid var(--line);background:white;border-radius:10px;height:32px;padding:0 8px}.convert-menu{position:absolute;right:12px;top:46px;display:grid;gap:4px;width:210px;padding:8px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.convert-menu button{border:0;background:white;text-align:left;padding:9px 10px;border-radius:10px;color:var(--text);font:inherit;cursor:pointer}.convert-panel{position:fixed;right:18px;top:66px;width:min(360px,calc(100vw - 36px));display:grid;gap:12px;padding:14px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:10}.convert-panel h2{font-size:14px;margin:0}.convert-panel label{display:grid;gap:5px;color:var(--muted);font-size:12px}.convert-panel input,.convert-panel select{height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fbfcff;color:var(--text)}.convert-actions{display:flex;gap:8px;justify-content:flex-end}.progress{height:8px;border-radius:999px;background:#edf1f6;overflow:hidden}.progress i{display:block;height:100%;width:0;background:var(--accent)}.result-link{color:var(--accent);text-decoration:none;font-weight:600}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:760px){.stage{padding:12px}.media-controls{grid-template-columns:1fr 1fr 1fr}.time-readout{text-align:left}.pill{display:none}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at top left,#fff 0,#f6f8fb 46%,#eef3f8 100%);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.75);backdrop-filter:blur(18px);position:relative;z-index:5}.file-dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#95b8ff,#dfe8ff);box-shadow:0 0 0 4px #eef4ff}.title{min-width:0;flex:1}.title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.title small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.pill{font-size:11px;color:#41516c;background:var(--soft);border:1px solid var(--line);padding:5px 8px;border-radius:999px}.icon-button,.clean-button{border:1px solid var(--line);background:var(--panel-strong);color:var(--text);border-radius:10px;min-height:32px;padding:0 11px;font:inherit;box-shadow:0 1px 0 rgba(255,255,255,.9);cursor:pointer}.icon-button{width:32px;padding:0;font-size:18px;line-height:1}.icon-button:hover,.clean-button:hover,.convert-menu button:hover{background:#f9fbff}.stage{min-height:0;overflow:auto;display:grid;place-items:center;padding:24px}.card{width:min(980px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.message-card{padding:34px;text-align:center;display:grid;gap:12px}.message-card span{font-size:38px}.message-card p{margin:0;color:var(--muted)}.message-card .clean-button{justify-self:center}.image-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 92px);object-fit:contain;border-radius:16px;box-shadow:var(--shadow)}.video-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 132px);background:#0f172a;border-radius:16px;box-shadow:var(--shadow)}.pdf-shell,.doc-shell{width:min(1100px,calc(100vw - 48px));height:calc(100vh - 100px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.viewer-toolbar{display:flex;align-items:center;gap:8px;min-height:46px;padding:8px 10px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.7)}.viewer-toolbar small{color:var(--muted);margin-left:auto}.pdf-pages,.doc-content{overflow:auto;padding:18px}.pdf-pages canvas{display:block;max-width:100%;height:auto;margin:0 auto 18px;background:white;border-radius:12px;box-shadow:0 10px 28px rgba(24,32,51,.1)}.doc-content{background:white}.doc-content article{max-width:760px;margin:0 auto;color:#172033}.editor-shell{width:min(1200px,calc(100vw - 36px));height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.editor-status{margin-left:auto;color:var(--muted);font-size:12px}.editor-host,.cm-editor,.cm-scroller{min-height:0;height:100%}.cm-editor{font-size:13px;background:#fbfcff}.fallback-editor{width:100%;height:100%;border:0;resize:none;padding:18px;background:#fbfcff;color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}.audio-card{width:min(860px,calc(100vw - 48px));display:grid;gap:18px;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow)}.audio-hero{display:flex;align-items:center;gap:14px}.audio-badge{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#edf3ff;color:var(--accent);font-size:24px}.muted{color:var(--muted);margin:.1rem 0 0}.wave-wrap{position:relative;padding:10px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fbfdff,#f1f5fb)}#waveform{display:block;width:100%;height:148px;touch-action:none;cursor:crosshair}.loop-pill{position:absolute;right:18px;bottom:16px;padding:5px 9px;border-radius:999px;background:rgba(47,111,237,.1);color:#2457bc;font-size:12px}.media-controls{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:10px;align-items:center}.media-controls input[type=range]{width:100%}.time-readout{color:var(--muted);font-variant-numeric:tabular-nums;min-width:112px;text-align:right}.speed-select{border:1px solid var(--line);background:white;border-radius:10px;height:32px;padding:0 8px}.convert-menu{position:absolute;right:12px;top:46px;display:grid;gap:4px;width:210px;padding:8px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.convert-menu[hidden],.convert-panel[hidden]{display:none!important}.convert-menu button{border:0;background:white;text-align:left;padding:9px 10px;border-radius:10px;color:var(--text);font:inherit;cursor:pointer}.convert-panel{position:fixed;right:18px;top:66px;width:min(360px,calc(100vw - 36px));display:grid;gap:12px;padding:14px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:10}.convert-panel h2{font-size:14px;margin:0}.convert-panel label{display:grid;gap:5px;color:var(--muted);font-size:12px}.convert-panel input,.convert-panel select{height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fbfcff;color:var(--text)}.convert-actions{display:flex;gap:8px;justify-content:flex-end}.progress{height:8px;border-radius:999px;background:#edf1f6;overflow:hidden}.progress i{display:block;height:100%;width:0;background:var(--accent)}.result-link{color:var(--accent);text-decoration:none;font-weight:600}.result-path{display:block;color:var(--text);overflow-wrap:anywhere;margin-top:4px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:760px){.stage{padding:12px}.media-controls{grid-template-columns:1fr 1fr 1fr}.time-readout{text-align:left}.pill{display:none}}
 </style>
 </head>
 <body>
@@ -78,6 +78,7 @@ export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet
 <script type="module">
 const file = window.__AURI_FILE__;
 const stage = document.getElementById('stage');
+const pendingConversions = new Map();
 const formatTime = (value) => {
   if (!Number.isFinite(value)) return '0:00';
   const minutes = Math.floor(value / 60);
@@ -87,7 +88,14 @@ const formatTime = (value) => {
 function escapeText(value){return String(value ?? '').replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char]));}
 function setStage(html){stage.innerHTML = html;}
 function sourceTag(){return '<source src="' + file.resourceUrl + '" type="' + file.mime + '">';}
-function showUnsupported(message){setStage('<section class="card message-card"><span>◇</span><strong>' + escapeText(file.title) + '</strong><p>' + escapeText(message) + '</p></section>');}
+function postToAuri(message){ parent.postMessage({ source: 'auri-file-viewer', path: file.path, ...message }, '*'); }
+function showUnsupported(message){
+  setStage('<section class="card message-card"><span>◇</span><strong>' + escapeText(file.title) + '</strong><p id="unsupported-message">' + escapeText(message) + '</p><button id="open-as-text" class="clean-button" type="button">Open as text</button></section>');
+  document.getElementById('open-as-text')?.addEventListener('click', () => {
+    document.getElementById('unsupported-message').textContent = 'Trying to decode this file as text…';
+    postToAuri({ type: 'open-as-text' });
+  });
+}
 async function renderText(){
   setStage('<section class="editor-shell"><div class="viewer-toolbar"><button id="save-text" class="clean-button" type="button">Save</button><small class="editor-status" id="editor-status">Editable text · CodeMirror</small></div><div id="editor" class="editor-host"></div></section>');
   const host = document.getElementById('editor');
@@ -108,14 +116,39 @@ async function renderText(){
   document.getElementById('save-text').addEventListener('click', () => {
     const status = document.getElementById('editor-status');
     status.textContent = 'Saving…';
-    parent.postMessage({ source: 'auri-file-viewer', type: 'save-text', path: file.path, content: getContent() }, '*');
+    postToAuri({ type: 'save-text', content: getContent() });
   });
 }
 window.addEventListener('message', (event) => {
   const data = event.data || {};
-  if (data.source !== 'auri-host' || data.type !== 'save-result') return;
-  const status = document.getElementById('editor-status');
-  if (status) status.textContent = data.ok ? 'Saved' : ('Save failed: ' + (data.error || 'Unknown error'));
+  if (data.source !== 'auri-host') return;
+  if (data.type === 'save-result') {
+    const status = document.getElementById('editor-status');
+    if (status) status.textContent = data.ok ? 'Saved' : ('Save failed: ' + (data.error || 'Unknown error'));
+  }
+  if (data.type === 'open-as-text-result' && !data.ok) {
+    const message = document.getElementById('unsupported-message');
+    if (message) message.textContent = 'Could not decode as text: ' + (data.error || 'Unknown error');
+  }
+  if (data.type === 'convert-started') {
+    const pending = pendingConversions.get(data.id);
+    if (pending) pending.status.textContent = 'Converting with native ffmpeg…';
+  }
+  if (data.type === 'convert-result') {
+    const pending = pendingConversions.get(data.id);
+    if (!pending) return;
+    pendingConversions.delete(data.id);
+    pending.button.disabled = false;
+    if (data.ok) {
+      pending.bar.style.width = '100%';
+      const result = data.result || {};
+      pending.status.innerHTML = 'Converted successfully.<span class="result-path">' + escapeText(result.path || result.name || 'Done') + '</span>';
+    } else {
+      pending.bar.style.width = '0';
+      pending.status.innerHTML = 'Native conversion failed: ' + escapeText(data.error || 'Unknown error') + '<br><button id="wasm-fallback" class="clean-button" type="button">Try ffmpeg.wasm fallback</button>';
+      document.getElementById('wasm-fallback')?.addEventListener('click', () => runWasmConversion(pending));
+    }
+  }
 });
 async function renderPdf(){
   setStage('<section class="pdf-shell"><div class="viewer-toolbar"><strong>PDF</strong><small id="pdf-status">Loading PDF.js…</small></div><div id="pdf-pages" class="pdf-pages"></div></section>');
@@ -210,7 +243,8 @@ function renderAudio(){
   const secondsForEvent = (event) => positionForEvent(event) * (audio.duration || 0);
   const refresh = () => { const duration = audio.duration || 0; const progress = duration ? audio.currentTime / duration : 0; drawBars(canvas, peaks, progress, selection); time.textContent = formatTime(audio.currentTime || 0) + ' / ' + formatTime(duration); play.textContent = audio.paused ? 'Play' : 'Pause'; };
   audioPeaks(file.resourceUrl).then((value)=>{ peaks = value; refresh(); });
-  audio.addEventListener('loadedmetadata', refresh); audio.addEventListener('timeupdate', () => { if (loop && audio.currentTime >= loop.end) audio.currentTime = loop.start; refresh(); }); audio.addEventListener('play', refresh); audio.addEventListener('pause', refresh);
+  audio.addEventListener('loadedmetadata', () => { refresh(); if (file.autoplay) audio.play().catch(() => {}); }, { once: true });
+  audio.addEventListener('timeupdate', () => { if (loop && audio.currentTime >= loop.end) audio.currentTime = loop.start; refresh(); }); audio.addEventListener('play', refresh); audio.addEventListener('pause', refresh);
   window.addEventListener('resize', refresh);
   play.addEventListener('click', () => audio.paused ? audio.play() : audio.pause());
   document.getElementById('back5').addEventListener('click', () => { audio.currentTime = Math.max(0, audio.currentTime - 5); refresh(); });
@@ -224,50 +258,75 @@ function renderAudio(){
 }
 function renderVideo(){
   setStage('<video id="video" class="video-viewer" controls preload="metadata">' + sourceTag() + 'This video format is not supported.</video>');
-  attachMediaMenu(document.getElementById('video'));
+  const video = document.getElementById('video');
+  if (file.autoplay) video.addEventListener('loadedmetadata', () => video.play().catch(() => {}), { once: true });
+  attachMediaMenu(video);
 }
 function renderImage(){ setStage('<img class="image-viewer" src="' + file.resourceUrl + '" alt="' + escapeText(file.title) + '">'); }
 function outputName(format){ const base = (file.title || 'converted').replace(/\.[^.]+$/, ''); return base + '.' + (format === 'mp4_h264' || format === 'mp4_h265' ? 'mp4' : format); }
+function audioRateArgs(value){ return value && value !== 'original' ? ['-ar', value] : []; }
 function resolutionArgs(value){ if (value === 'native') return []; const height = Number(value) || 720; return ['-vf', 'scale=-2:' + height]; }
-function conversionArgs(format, bitrate, resolution, isAudioOnly){
+function conversionArgs(format, bitrate, resolution, sampleRate, isAudioOnly){
   const output = outputName(format);
-  if (format === 'mp3') return { output, args: ['-i','input','-vn','-b:a', bitrate + 'k', output] };
-  if (format === 'wav') return { output, args: ['-i','input','-vn', output] };
-  if (format === 'm4a') return { output, args: ['-i','input','-vn','-c:a','aac','-b:a', bitrate + 'k', output] };
+  if (format === 'mp3') return { output, args: ['-i','input','-vn','-b:a', bitrate + 'k',...audioRateArgs(sampleRate),output] };
+  if (format === 'wav') return { output, args: ['-i','input','-vn',...audioRateArgs(sampleRate),output] };
+  if (format === 'm4a') return { output, args: ['-i','input','-vn','-c:a','aac','-b:a', bitrate + 'k',...audioRateArgs(sampleRate),output] };
   const videoCodec = format === 'mp4_h265' ? 'libx265' : 'libx264';
-  if (isAudioOnly) return { output, args: ['-i','input','-filter_complex','showwaves=s=1280x720:mode=cline:colors=white[v]','-map','[v]','-map','0:a','-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k','-shortest',output] };
+  if (isAudioOnly) return { output, args: ['-i','input','-filter_complex','showwaves=s=1280x720:mode=cline:colors=white[v]','-map','[v]','-map','0:a','-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k',...audioRateArgs(sampleRate),'-shortest',output] };
   return { output, args: ['-i','input',...resolutionArgs(resolution),'-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k',output] };
+}
+function sampleRateField(){
+  return '<label>Sample rate<select id="convert-sample-rate"><option value="original" selected>Original</option><option value="16000">16k</option><option value="24000">24k (CD)</option><option value="48000">48k</option></select></label>';
+}
+function resolutionField(){
+  return '<label>Resolution<select id="convert-resolution"><option value="native" selected>Native</option><option value="480">480p</option><option value="720">720p</option></select></label>';
 }
 function showConvertPanel(format, mediaElement){
   document.getElementById('convert-panel')?.remove();
   const panel = document.createElement('section'); panel.id = 'convert-panel'; panel.className = 'convert-panel';
-  panel.innerHTML = '<h2>Convert to ' + escapeText(format.replace("_", " ").toUpperCase()) + '</h2><label>Audio bitrate<select id="convert-bitrate"><option value="96">96 kbps</option><option value="128" selected>128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></label><label>Resolution<select id="convert-resolution"><option value="native" selected>Native</option><option value="480">480p</option><option value="720">720p</option></select></label><div class="progress"><i id="convert-progress"></i></div><small id="convert-status">Ready</small><div class="convert-actions"><button id="convert-cancel" class="clean-button" type="button">Cancel</button><button id="convert-start" class="clean-button" type="button">Convert</button></div>';
+  const isAudioSource = file.kind === 'audio';
+  panel.innerHTML = '<h2>Convert to ' + escapeText(format.replace("_", " ").toUpperCase()) + '</h2><label>Audio bitrate<select id="convert-bitrate"><option value="96">96 kbps</option><option value="128" selected>128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></label>' + (isAudioSource ? sampleRateField() : resolutionField()) + '<div class="progress"><i id="convert-progress"></i></div><small id="convert-status">Ready</small><div class="convert-actions"><button id="convert-cancel" class="clean-button" type="button">Cancel</button><button id="convert-start" class="clean-button" type="button">Convert</button></div>';
   document.body.appendChild(panel);
   document.getElementById('convert-cancel').addEventListener('click', () => panel.remove());
-  document.getElementById('convert-start').addEventListener('click', async () => {
-    const status = document.getElementById('convert-status'); const bar = document.getElementById('convert-progress');
-    try {
-      status.textContent = 'Loading ffmpeg.wasm…';
-      const [{ FFmpeg }, { fetchFile, toBlobURL }] = await Promise.all([import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js'), import('https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js')]);
-      const ffmpeg = new FFmpeg();
-      ffmpeg.on('progress', ({ progress }) => { bar.style.width = Math.max(0, Math.min(100, progress * 100)) + '%'; });
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
-      await ffmpeg.load({ coreURL: await toBlobURL(baseURL + '/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL(baseURL + '/ffmpeg-core.wasm', 'application/wasm') });
-      status.textContent = 'Converting…';
-      await ffmpeg.writeFile('input', await fetchFile(file.resourceUrl));
-      const bitrate = document.getElementById('convert-bitrate').value;
-      const resolution = document.getElementById('convert-resolution').value;
-      const { output, args } = conversionArgs(format, bitrate, resolution, file.kind === 'audio');
-      await ffmpeg.exec(args);
-      const data = await ffmpeg.readFile(output);
-      const blob = new Blob([data.buffer], { type: output.endsWith('.mp4') ? 'video/mp4' : output.endsWith('.wav') ? 'audio/wav' : output.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg' });
-      const url = URL.createObjectURL(blob);
-      status.innerHTML = '<a class="result-link" download="' + escapeText(output) + '" href="' + url + '">Download ' + escapeText(output) + '</a>';
-      bar.style.width = '100%';
-    } catch (error) {
-      status.textContent = 'Conversion failed: ' + (error?.message || error || 'unknown error');
-    }
+  document.getElementById('convert-start').addEventListener('click', () => {
+    const status = document.getElementById('convert-status'); const bar = document.getElementById('convert-progress'); const button = document.getElementById('convert-start');
+    const bitrate = document.getElementById('convert-bitrate').value;
+    const sampleRate = document.getElementById('convert-sample-rate')?.value || 'original';
+    const resolution = document.getElementById('convert-resolution')?.value || 'native';
+    const id = 'convert-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+    button.disabled = true; bar.style.width = '12%'; status.textContent = 'Sending conversion to Auri…';
+    pendingConversions.set(id, { id, status, bar, button, format, bitrate, sampleRate, resolution });
+    postToAuri({ type: 'convert-media', id, format, bitrateKbps: Number(bitrate), sampleRate, resolution });
   });
+}
+function withTimeout(promise, label, ms = 20000){
+  return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(label + ' timed out')), ms))]);
+}
+async function runWasmConversion(pending){
+  try {
+    pending.status.textContent = 'Loading ffmpeg.wasm fallback…';
+    pending.bar.style.width = '8%';
+    const [{ FFmpeg }, { fetchFile, toBlobURL }] = await withTimeout(Promise.all([
+      import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js'),
+      import('https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js')
+    ]), 'ffmpeg.wasm module load');
+    const ffmpeg = new FFmpeg();
+    ffmpeg.on('progress', ({ progress }) => { pending.bar.style.width = Math.max(8, Math.min(100, progress * 100)) + '%'; });
+    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
+    await withTimeout(ffmpeg.load({ coreURL: await toBlobURL(baseURL + '/ffmpeg-core.js', 'text/javascript'), wasmURL: await toBlobURL(baseURL + '/ffmpeg-core.wasm', 'application/wasm') }), 'ffmpeg.wasm core load');
+    pending.status.textContent = 'Converting in the viewer…';
+    await ffmpeg.writeFile('input', await fetchFile(file.resourceUrl));
+    const { output, args } = conversionArgs(pending.format, pending.bitrate, pending.resolution, pending.sampleRate, file.kind === 'audio');
+    await ffmpeg.exec(args);
+    const data = await ffmpeg.readFile(output);
+    const blob = new Blob([data.buffer], { type: output.endsWith('.mp4') ? 'video/mp4' : output.endsWith('.wav') ? 'audio/wav' : output.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg' });
+    const url = URL.createObjectURL(blob);
+    pending.status.innerHTML = '<a class="result-link" download="' + escapeText(output) + '" href="' + url + '">Download ' + escapeText(output) + '</a>';
+    pending.bar.style.width = '100%';
+  } catch (error) {
+    pending.status.textContent = 'ffmpeg.wasm fallback failed: ' + (error?.message || error || 'unknown error');
+    pending.bar.style.width = '0';
+  }
 }
 if (file.kind === 'text') renderText();
 else if (file.kind === 'pdf') renderPdf();
@@ -275,7 +334,7 @@ else if (file.kind === 'document') renderDocument();
 else if (file.kind === 'image') renderImage();
 else if (file.kind === 'audio') renderAudio();
 else if (file.kind === 'video') renderVideo();
-else showUnsupported('Preview is not available for this file type yet. Use the external-open button from Auri if you need the native app.');
+else showUnsupported('Preview is not available for this file type yet. You can try opening it as UTF-8 text.');
 </script>
 </body>
 </html>`;

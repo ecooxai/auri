@@ -180,6 +180,7 @@ function browserMetadata(path) {
     height: image ? 1440 : null,
     codec: audio ? "AAC" : video ? "H.264 / AAC" : null,
     bitrate: audio ? 64000 : video ? 4200000 : null,
+    sampleRate: audio ? 48000 : null,
     modified: new Date().toISOString(),
     preview: text ? "Auri browser preview\n\nNative file contents are available in the Tauri build." : null
   };
@@ -314,28 +315,29 @@ export class Backend {
   }
 
 
-  createFileViewPage({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null }) {
-    const page = new Blob([fileViewerPageHtml({ resourceUrl, mime, title, path, text })], { type: "text/html" });
+  createFileViewPage({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false }) {
+    const page = new Blob([fileViewerPageHtml({ resourceUrl, mime, title, path, text, autoplay })], { type: "text/html" });
     return URL.createObjectURL(page);
   }
 
-  async createFileView(path, metadata = {}) {
+  async createFileView(path, metadata = {}, options = {}) {
+    const autoplay = Boolean(options.autoplay);
     if (!this.invoke) {
       const item = browserMetadata(path);
-      const mime = previewMimeForPath(path, metadata.mime);
+      const mime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime);
       const title = metadata.name || item.name || titleForPath(path);
-      const text = isEditableTextFile(path, mime)
+      const text = options.asText || isEditableTextFile(path, mime)
         ? item.preview || `Preview for ${path}`
         : null;
-      const url = this.createFileViewPage({ mime, title, path, text });
+      const url = this.createFileViewPage({ mime, title, path, text, autoplay });
       return { url, title, filePath: path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
     }
 
-    const firstMime = previewMimeForPath(path, metadata.mime || "");
-    if (isEditableTextFile(path, firstMime)) {
+    const firstMime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime || "");
+    if (options.asText || isEditableTextFile(path, firstMime)) {
       const text = await this.call("read_text_file", { path });
       const title = metadata.name || titleForPath(path);
-      const url = this.createFileViewPage({ mime: firstMime, title, path, text });
+      const url = this.createFileViewPage({ mime: firstMime, title, path, text, autoplay });
       return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "text" };
     }
 
@@ -343,7 +345,7 @@ export class Backend {
     const mime = previewMimeForPath(path, file.mime);
     const mediaBlob = new Blob([base64ToBytes(file.base64)], { type: mime });
     const resourceUrl = URL.createObjectURL(mediaBlob);
-    const url = this.createFileViewPage({ resourceUrl, mime, title: file.name, path: file.path || path });
+    const url = this.createFileViewPage({ resourceUrl, mime, title: file.name, path: file.path || path, autoplay });
     this.fileViewResources.set(url, [resourceUrl]);
     return { url, title: file.name, filePath: file.path || path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
   }
@@ -366,6 +368,18 @@ export class Backend {
       return { path, size: String(content ?? "").length, browserPreview: true };
     }
     return this.call("write_text_file", { path, content });
+  }
+
+  async convertMediaFile({ path, format, bitrateKbps = 128, sampleRate = null, resolution = "native" }) {
+    if (!this.invoke) throw new Error("Media conversion needs the native Tauri build with ffmpeg installed.");
+    const normalizedSampleRate = sampleRate && sampleRate !== "original" ? Number(sampleRate) : null;
+    return this.call("convert_media_file", {
+      path,
+      format,
+      bitrateKbps: Number(bitrateKbps) || 128,
+      sampleRate: normalizedSampleRate,
+      resolution: resolution || "native"
+    });
   }
 
   async runCommand(command, cwd) {

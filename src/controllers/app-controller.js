@@ -155,7 +155,7 @@ export class AppController {
         webExternal: () => this.openWebExternal(),
         openWebDialog: (dialog) => this.openWebDialog(dialog),
         openExternal: (path) => this.openExternal(path),
-        openFileInWebview: (path, metadata) => this.openFileInWebview(path, metadata),
+        openFileInWebview: (path, metadata, options) => this.openFileInWebview(path, metadata, options),
         copyText: (text) => navigator.clipboard.writeText(text),
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
@@ -1584,19 +1584,75 @@ export class AppController {
 
   async handleFileViewerMessage(event) {
     const data = event?.data || {};
-    if (data.source !== "auri-file-viewer" || data.type !== "save-text") return false;
+    if (data.source !== "auri-file-viewer") return false;
     const path = String(data.path || "");
+    const targetOrigin = event.origin || "*";
+    const post = (message) => event.source?.postMessage?.({ source: "auri-host", ...message }, targetOrigin);
     if (!path) return false;
-    try {
-      const result = await this.backend.writeTextFile(path, String(data.content ?? ""));
-      event.source?.postMessage?.({ source: "auri-host", type: "save-result", ok: true, path }, event.origin || "*");
-      this.view.showToast?.(`Saved ${path.split("/").pop() || "file"}`, "success");
-      return result || true;
-    } catch (error) {
-      event.source?.postMessage?.({ source: "auri-host", type: "save-result", ok: false, path, error: error?.message || String(error) }, event.origin || "*");
-      this.reportError("File save", error);
-      return false;
+
+    if (data.type === "save-text") {
+      try {
+        const result = await this.backend.writeTextFile(path, String(data.content ?? ""));
+        post({ type: "save-result", ok: true, path });
+        this.view.showToast?.(`Saved ${path.split("/").pop() || "file"}`, "success");
+        return result || true;
+      } catch (error) {
+        post({ type: "save-result", ok: false, path, error: error?.message || String(error) });
+        this.reportError("File save", error);
+        return false;
+      }
     }
+
+    if (data.type === "open-as-text") {
+      try {
+        const fileView = await this.openFileInWebview(path, { name: path.split("/").pop() || "Text" }, { asText: true });
+        const current = activeSubtab(this.state);
+        if (current.type === "webview") {
+          this.dispatch({
+            type: "SUBTAB_UPDATE",
+            payload: {
+              id: current.id,
+              patch: {
+                url: fileView.url,
+                title: fileView.title || path.split("/").pop() || "Text",
+                filePath: fileView.filePath || path,
+                fileMime: fileView.mime || "text/html"
+              }
+            }
+          }, { preserveInput: true });
+        }
+        post({ type: "open-as-text-result", ok: true, path });
+        return fileView;
+      } catch (error) {
+        post({ type: "open-as-text-result", ok: false, path, error: error?.message || String(error) });
+        this.reportError("Open as text", error);
+        return false;
+      }
+    }
+
+    if (data.type === "convert-media") {
+      const id = String(data.id || "");
+      post({ type: "convert-started", id, path });
+      try {
+        const result = await this.backend.convertMediaFile({
+          path,
+          format: String(data.format || ""),
+          bitrateKbps: Number(data.bitrateKbps) || 128,
+          sampleRate: data.sampleRate || null,
+          resolution: data.resolution || "native"
+        });
+        post({ type: "convert-result", id, ok: true, path, result });
+        await this.refreshFolder().catch(() => {});
+        this.view.showToast?.(`Converted ${result.name || "media"}`, "success");
+        return result;
+      } catch (error) {
+        post({ type: "convert-result", id, ok: false, path, error: error?.message || String(error) });
+        this.reportError("Media conversion", error);
+        return false;
+      }
+    }
+
+    return false;
   }
 
   browserOverlayPayload(subtab) {
@@ -1723,9 +1779,9 @@ export class AppController {
     throw new Error("External browser opening is unavailable.");
   }
 
-  async openFileInWebview(path, metadata) {
+  async openFileInWebview(path, metadata, options = {}) {
     if (this.fileViewUrl) this.backend.releaseFileView?.(this.fileViewUrl);
-    const fileView = await this.backend.createFileView(path, metadata);
+    const fileView = await this.backend.createFileView(path, metadata, options);
     this.fileViewUrl = fileView.url;
     return fileView;
   }

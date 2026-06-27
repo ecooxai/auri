@@ -216,7 +216,9 @@ export async function executeCommand(input, context) {
         return metadata;
       }
       if (!actions.openFileInWebview) throw new Error("File WebView opening is unavailable.");
-      const fileView = await actions.openFileInWebview(path, metadata);
+      const fileView = await actions.openFileInWebview(path, metadata, {
+        autoplay: metadata.kind === "audio" || metadata.kind === "video"
+      });
       openSubtab("webview", context);
       const current = activeSubtab(getState());
       dispatch({

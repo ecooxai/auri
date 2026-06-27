@@ -25,11 +25,15 @@ test("native folder bridge exposes creation, metadata, modification dates, and r
   assert.match(backend, /async createFile\(directory, name\)/);
   assert.match(backend, /async createFolder\(directory, name\)/);
   assert.match(backend, /async folderInfo\(path\)/);
+  assert.match(backend, /async convertMediaFile/);
   assert.match(files, /pub modified: Option<u64>/);
+  assert.match(files, /pub sample_rate: Option<u64>/);
   assert.match(files, /pub fn create_file/);
   assert.match(files, /pub fn create_folder/);
   assert.match(files, /pub fn folder_info/);
+  assert.match(files, /pub fn convert_media_file/);
   assert.match(lib, /create_file,/);
   assert.match(lib, /create_folder,/);
   assert.match(lib, /folder_info,/);
+  assert.match(lib, /convert_media_file,/);
 });

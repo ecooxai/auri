@@ -220,12 +220,24 @@ export function renderTerminal(state) {
     </section>`;
 }
 
+function formatSampleRate(value) {
+  const rate = Number(value);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
+  return rate >= 1000 ? `${Number((rate / 1000).toFixed(1))} kHz` : `${rate} Hz`;
+}
+
 function metadataRows(meta) {
   if (!meta) return "";
+  const typeCodec = [meta.fileType || meta.kind, meta.codec].filter(Boolean).join(" · ");
+  const sizeBitrate = [
+    formatBytes(meta.size),
+    meta.bitrate ? `${Math.round(meta.bitrate / 1000)} kbps` : null
+  ].filter(Boolean).join(" · ");
   const values = [
-    ["Type", meta.fileType || meta.kind], ["Size", formatBytes(meta.size)],
+    ["Type · Codec", typeCodec],
+    ["Size · Bitrate", sizeBitrate],
+    ["Sample rate", formatSampleRate(meta.sampleRate)],
     ["Resolution", meta.width && meta.height ? `${meta.width} × ${meta.height}` : null],
-    ["Codec", meta.codec], ["Bitrate", meta.bitrate ? `${Math.round(meta.bitrate / 1000)} kbps` : null],
     ["Modified", meta.modified ? new Date(meta.modified).toLocaleString() : null]
   ].filter(([, value]) => value);
   return values.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");

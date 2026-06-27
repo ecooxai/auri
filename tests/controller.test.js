@@ -123,8 +123,9 @@ test("CLI events use the main command controller", async () => {
 test("file open routes the selected file into a webview subtab", async () => {
   const h = harness();
   h.backend.inspectFile = async (path) => ({ path, name: "test.m4a", kind: "audio" });
+  let openOptions = null;
   h.actions = {
-    openFileInWebview: async (path, metadata) => ({ url: "blob:auri-audio", title: metadata.name, filePath: path })
+    openFileInWebview: async (path, metadata, options) => { openOptions = options; return { url: "blob:auri-audio", title: metadata.name, filePath: path }; }
   };
 
   await executeCommand('file open "/tmp/test.m4a"', h);
@@ -135,6 +136,7 @@ test("file open routes the selected file into a webview subtab", async () => {
   assert.equal(active.url, "blob:auri-audio");
   assert.equal(active.filePath, "/tmp/test.m4a");
   assert.equal(active.title, "test.m4a");
+  assert.deepEqual(openOptions, { autoplay: true });
 });
 
 test("folder file double-click opens the file directly in the webview app", async () => {
@@ -190,6 +192,61 @@ test("file viewer save messages write text through the backend", async () => {
     message: { source: "auri-host", type: "save-result", ok: true, path: "/tmp/notes.txt" },
     origin: "blob://viewer"
   });
+});
+
+
+test("file viewer open-as-text messages replace the active file viewer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, showToast() {} },
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.dispatch({ type: "SUBTAB_NEW", payload: { type: "webview" } });
+  controller.openFileInWebview = async (path, metadata, options) => ({ url: "blob:text-viewer", title: metadata.name, filePath: path, mime: "text/html", options });
+  const posted = [];
+
+  const result = await controller.handleFileViewerMessage({
+    origin: "blob://viewer",
+    data: { source: "auri-file-viewer", type: "open-as-text", path: "/tmp/data.bin" },
+    source: { postMessage: (message, origin) => posted.push({ message, origin }) }
+  });
+
+  const tab = controller.state.tabs[0];
+  const active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+  assert.equal(active.url, "blob:text-viewer");
+  assert.equal(active.filePath, "/tmp/data.bin");
+  assert.deepEqual(result.options, { asText: true });
+  assert.equal(posted[0].message.type, "open-as-text-result");
+  assert.equal(posted[0].message.ok, true);
+});
+
+test("file viewer conversion messages run native conversion through the backend", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const calls = [];
+  const posted = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, showToast() {} },
+    backend: {
+      isNative: true,
+      convertMediaFile: async (payload) => { calls.push(payload); return { path: "/tmp/song-converted.mp3", name: "song-converted.mp3" }; },
+      listDirectory: async () => []
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state.tabs[0].folder.path = "/tmp";
+
+  const result = await controller.handleFileViewerMessage({
+    origin: "blob://viewer",
+    data: { source: "auri-file-viewer", type: "convert-media", id: "c1", path: "/tmp/song.wav", format: "mp3", bitrateKbps: 192, sampleRate: "48000", resolution: "native" },
+    source: { postMessage: (message, origin) => posted.push({ message, origin }) }
+  });
+
+  assert.deepEqual(calls, [{ path: "/tmp/song.wav", format: "mp3", bitrateKbps: 192, sampleRate: "48000", resolution: "native" }]);
+  assert.equal(result.name, "song-converted.mp3");
+  assert.equal(posted[0].message.type, "convert-started");
+  assert.equal(posted[1].message.type, "convert-result");
+  assert.equal(posted[1].message.ok, true);
 });
 
 test("AI requests add the user message before the assistant reply", async () => {

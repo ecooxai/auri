@@ -65,6 +65,27 @@ fn write_text_file(path: String, content: String) -> Result<files::TextFileWrite
 }
 
 #[tauri::command]
+async fn convert_media_file(
+    path: String,
+    format: String,
+    bitrate_kbps: Option<u32>,
+    sample_rate: Option<u32>,
+    resolution: Option<String>,
+) -> Result<files::ConvertedMedia, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        files::convert_media_file(
+            &path,
+            &format,
+            bitrate_kbps,
+            sample_rate,
+            resolution.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Conversion task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn run_command(command: String, cwd: String) -> Result<shell::CommandResult, String> {
     tauri::async_runtime::spawn_blocking(move || shell::run(&command, &cwd))
         .await
@@ -344,6 +365,7 @@ pub fn run() {
             read_text_file,
             read_binary_file,
             write_text_file,
+            convert_media_file,
             run_command,
             terminal_start,
             terminal_write,
