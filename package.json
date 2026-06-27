@@ -6,14 +6,15 @@
   "scripts": {
     "test": "node --test",
     "test:rust": "node scripts/rust-check.mjs",
-    "dev": "node scripts/dev.mjs",
+    "dev": "npm run tauri:dev",
     "build": "node scripts/build.mjs",
     "check": "npm test && npm run test:rust && npm run build",
     "tauri:dev": "cargo tauri dev",
     "tauri:build": "node scripts/tauri-build.mjs",
     "cli:build": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin auri",
     "cli:install": "cargo install --path src-tauri --bin auri --force",
-    "native:watch": "bash scripts/native-watch.sh"
+    "native:watch": "bash scripts/native-watch.sh",
+    "dev:web": "node scripts/dev.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.10.0",

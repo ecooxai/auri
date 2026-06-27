@@ -1,4 +1,4 @@
-import { activeWorkspace } from "../model/state.js";
+import { activeSubtab, activeWorkspace } from "../model/state.js";
 import { customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {

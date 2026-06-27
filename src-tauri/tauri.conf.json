@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "identifier": "app.auri.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run dev:web",
     "devUrl": "http://127.0.0.1:4173/?auri-dev=3",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"

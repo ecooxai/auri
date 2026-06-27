@@ -59,3 +59,24 @@ test("programmatic terminal runs do not steal focus from the composer", async ()
   assert.match(runMethod, /this\.write\(`\$\{command\}\\r`\)/);
   assert.doesNotMatch(runMethod, /this\.focus\(\)/);
 });
+
+
+test("AppView render resolves the active terminal subtab without throwing", async () => {
+  const { createInitialState } = await import("../src/model/state.js");
+  const { AppView } = await import("../src/views/app-view.js");
+  const previousAnimationFrame = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (callback) => callback();
+  const root = {
+    innerHTML: "",
+    querySelector() { return null; },
+    ownerDocument: { documentElement: { style: { setProperty() {} } } }
+  };
+
+  try {
+    const view = new AppView(root);
+    assert.doesNotThrow(() => view.render(createInitialState(), { native: true }));
+    assert.match(root.innerHTML, /id="terminal-emulator"/);
+  } finally {
+    globalThis.requestAnimationFrame = previousAnimationFrame;
+  }
+});
