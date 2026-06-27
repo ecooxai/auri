@@ -5,6 +5,8 @@ import { MediaCapture } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
 import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
 import { AssistantStreamParser, parseAssistantReply } from "../model/assistant.js";
+import { terminalCompletionContext, terminalCompletions } from "../model/terminal-completion.js";
+import { shortcutFromKeyboardEvent, shortcutKeyMatchesKeyboardEvent, shortcutMatchesKeyboardEvent } from "../model/shortcut.js";
 
 function parentPath(path) {
   const value = String(path || "~").replace(/\/+$/, "");
@@ -57,7 +59,7 @@ function hasAssistantActionPopup(state) {
   return Boolean(state?.ui?.assistantActions?.length || state?.ui?.assistantTranscripts?.length);
 }
 
-const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "WORKDIR_SET"]);
+const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "WORKDIR_SET", "TERMINAL_COMMAND_REMEMBER"]);
 
 function attachmentPreviewUrl(file, kind) {
   if (kind === "file" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
@@ -66,6 +68,33 @@ function attachmentPreviewUrl(file, kind) {
   } catch {
     return null;
   }
+}
+
+function requestMediaPreview(item, index = 0) {
+  const media = {
+    id: String(item?.id || `request-media-${Date.now()}-${index}`),
+    name: String(item?.name || `Attachment ${index + 1}`),
+    kind: String(item?.kind || (String(item?.mime || "").startsWith("image/") ? "image" : String(item?.mime || "").startsWith("audio/") ? "audio" : "file")),
+    mime: String(item?.mime || "application/octet-stream"),
+    path: item?.path || null,
+    url: item?.url || item?.assetUrl || null
+  };
+  if (!media.url && item?.path && typeof window !== "undefined") {
+    const convertFileSrc = window.__TAURI__?.core?.convertFileSrc || window.__TAURI_INTERNALS__?.convertFileSrc;
+    try { media.url = convertFileSrc?.(item.path) || null; } catch {}
+  }
+  if (!media.url && item?.blob && typeof URL !== "undefined" && URL.createObjectURL) {
+    try { media.url = URL.createObjectURL(item.blob); } catch {}
+  }
+  if (!media.url && item?.base64 && typeof URL !== "undefined" && URL.createObjectURL && typeof atob === "function") {
+    try {
+      const binary = atob(item.base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let position = 0; position < binary.length; position += 1) bytes[position] = binary.charCodeAt(position);
+      media.url = URL.createObjectURL(new Blob([bytes], { type: media.mime }));
+    } catch {}
+  }
+  return media;
 }
 
 export class AppController {
@@ -94,6 +123,11 @@ export class AppController {
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
     this.configurationReady = false;
+    this.terminalCompletions = [];
+    this.terminalCompletionIndex = -1;
+    this.terminalCompletionRange = null;
+    this.terminalEnterHoldTimer = null;
+    this.terminalEnterHeld = false;
   }
 
   context() {
@@ -104,9 +138,11 @@ export class AppController {
       actions: {
         startRecording: (kind) => this.startRecording(kind),
         stopRecording: () => this.capture.stop(),
-        startLiveRecording: () => this.activateWakeSession(),
+        startLiveRecording: () => this.activateWakeSession(null, { captureScreenshot: true }),
         stopLiveRecording: () => this.stopWakeLiveRecording(),
         toggleLiveRecording: () => this.toggleLiveRecording(),
+        refreshMediaPermissions: () => this.refreshMediaPermissions(),
+        requestMediaPermission: (permission) => this.requestMediaPermission(permission),
         attachMedia: (kind) => this.attachRecordedMedia(kind),
         webReload: () => this.runWebviewAction("reload"),
         webBack: () => this.runWebviewAction("back"),
@@ -164,6 +200,53 @@ export class AppController {
     return this.terminalSessionFor(this.state.activeTabId);
   }
 
+  clearTerminalCompletions(updateView = true) {
+    this.terminalCompletions = [];
+    this.terminalCompletionIndex = -1;
+    this.terminalCompletionRange = null;
+    if (updateView) this.view.setTerminalCompletions?.([], -1);
+  }
+
+  refreshTerminalCompletions(value = this.view.getTerminalInputValue?.() || "", cursor) {
+    const workspace = activeWorkspace(this.state);
+    const context = terminalCompletionContext(value, cursor);
+    this.terminalCompletionRange = { start: context.start, end: context.end };
+    this.terminalCompletions = terminalCompletions(value, {
+      cursor: context.end,
+      history: workspace?.terminal?.commandHistory || [],
+      shellHistory: this.state.completion?.shellHistory || [],
+      customEntries: this.state.settings.customCompletions || "",
+      entries: workspace?.folder?.entries || []
+    });
+    this.terminalCompletionIndex = this.terminalCompletions.length ? 0 : -1;
+    this.view.setTerminalCompletions?.(this.terminalCompletions, this.terminalCompletionIndex);
+    return this.terminalCompletions;
+  }
+
+  moveTerminalCompletion(delta) {
+    if (!this.terminalCompletions.length) return false;
+    const count = this.terminalCompletions.length;
+    this.terminalCompletionIndex = (this.terminalCompletionIndex + delta + count) % count;
+    this.view.setTerminalCompletions?.(this.terminalCompletions, this.terminalCompletionIndex);
+    return true;
+  }
+
+  acceptTerminalCompletion(index = this.terminalCompletionIndex) {
+    const resolvedIndex = Number.isInteger(Number(index)) ? Number(index) : this.terminalCompletionIndex;
+    const completion = this.terminalCompletions[resolvedIndex];
+    if (!completion) return false;
+    const currentValue = this.view.getTerminalInputValue?.() || "";
+    const range = this.terminalCompletionRange || terminalCompletionContext(currentValue);
+    if (this.view.replaceTerminalInputRange) {
+      this.view.replaceTerminalInputRange(range.start, range.end, completion.value);
+    } else {
+      const nextValue = `${currentValue.slice(0, range.start)}${completion.value}${currentValue.slice(range.end)}`;
+      this.view.setTerminalInput(nextValue);
+    }
+    this.clearTerminalCompletions();
+    return true;
+  }
+
   showAssistantActions(reply) {
     const parsed = parseAssistantReply(reply);
     this.dispatch({
@@ -191,6 +274,7 @@ export class AppController {
     const previousIds = new Set(this.state.tabs.map((tab) => tab.id));
     const previousWebviews = new Set(this.state.tabs.flatMap((tab) => tab.subtabs.filter((item) => item.type === "webview").map((item) => item.id)));
     this.state = reduceState(this.state, event);
+    this.clearTerminalCompletions(false);
     for (const id of previousIds) {
       if (!this.state.tabs.some((tab) => tab.id === id)) {
         this.terminalSessions.get(id)?.stop?.().catch?.(() => {});
@@ -221,6 +305,43 @@ export class AppController {
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
   }
 
+  async refreshMediaPermissions({ render = true } = {}) {
+    if (!this.backend.getMediaPermissions) return this.state.permissions;
+    const permissions = await this.backend.getMediaPermissions();
+    if (render) {
+      this.dispatch({ type: "PERMISSIONS_SET", payload: permissions }, { preserveInput: true });
+    } else {
+      this.state = reduceState(this.state, { type: "PERMISSIONS_SET", payload: permissions });
+    }
+    return this.state.permissions;
+  }
+
+  async requestMediaPermission(permission) {
+    if (!this.backend.requestMediaPermission) return this.state.permissions;
+    const permissions = await this.backend.requestMediaPermission(permission);
+    this.dispatch({ type: "PERMISSIONS_SET", payload: permissions }, { preserveInput: true });
+    const granted = this.state.permissions?.[permission] === "authorized";
+    this.view.showToast(
+      granted ? `${permission === "microphone" ? "Microphone" : "Screen recording"} access allowed` : "Complete permission access in System Settings, then return to Auri.",
+      granted ? "success" : "info"
+    );
+    return this.state.permissions;
+  }
+
+  async ensureMediaPermission(permission) {
+    if (!this.native) return true;
+    let current = this.state.permissions?.[permission];
+    if (!current || current === "unknown") {
+      const permissions = await this.refreshMediaPermissions({ render: false });
+      current = permissions?.[permission];
+    }
+    if (current === "authorized") return true;
+    const permissions = await this.requestMediaPermission(permission);
+    if (permissions?.[permission] === "authorized") return true;
+    const label = permission === "microphone" ? "Microphone" : "Screen recording";
+    throw new Error(`${label} access is required. Allow it in System Settings and try again.`);
+  }
+
   async initialize() {
     this.bindEvents();
     try {
@@ -229,6 +350,16 @@ export class AppController {
       this.webNavigationUnlisten = await this.backend.listen?.("auri-web-navigation", (payload) => this.handleWebNavigation(payload));
       this.browserOverlayUnlisten = await this.backend.listen?.("auri-browser-overlay-action", (payload) => this.handleBrowserOverlayAction(payload));
       const initialized = await this.backend.initialize();
+      await this.refreshMediaPermissions({ render: false });
+      try {
+        const shellHistory = await this.backend.readShellHistory?.();
+        this.state = reduceState(this.state, { type: "SHELL_HISTORY_SET", payload: { commands: shellHistory || [] } });
+      } catch (error) {
+        this.state = reduceState(this.state, {
+          type: "INFO_ADD",
+          payload: { level: "warning", title: "Shell history", message: error?.message || String(error) }
+        });
+      }
       const saved = this.native ? initialized?.configuration : localStorage.getItem("auri-settings");
       let restoredWorkspaces = false;
       if (saved) {
@@ -247,6 +378,16 @@ export class AppController {
           }
         } catch {
           // Ignore malformed preferences and keep safe defaults.
+        }
+      }
+      if (this.backend.setWakeShortcut) {
+        try {
+          await this.backend.setWakeShortcut(this.state.settings.wakeShortcut);
+        } catch (error) {
+          this.state = reduceState(this.state, {
+            type: "INFO_ADD",
+            payload: { level: "warning", title: "Wake shortcut", message: error?.message || String(error) }
+          });
         }
       }
       const root = initialized?.root || "~";
@@ -288,14 +429,28 @@ export class AppController {
     this.view.root.addEventListener("pointerdown", (event) => this.handleLiveRecordPointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
+    this.view.root.addEventListener("keyup", (event) => this.handleKeyup(event));
     this.view.root.addEventListener("beforeinput", (event) => this.handleBeforeInput(event));
     this.view.root.addEventListener("input", (event) => this.handleInput(event));
     this.view.root.addEventListener("change", (event) => this.handleChange(event));
+    this.view.root.addEventListener("scroll", (event) => this.handleScroll(event), true);
     this.view.root.addEventListener("submit", (event) => this.handleSubmit(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeydown(event));
     window.addEventListener("keyup", (event) => this.handleGlobalKeyup(event));
     window.addEventListener("pointerup", (event) => this.handleLiveRecordPointerEnd(event));
     window.addEventListener("pointercancel", (event) => this.handleLiveRecordPointerEnd(event));
+    window.addEventListener("focus", () => {
+      this.wakeLiveSession?.resume?.().catch?.(() => {});
+      this.refreshMediaPermissions().catch?.(() => {});
+    });
+    if (typeof document !== "undefined") {
+      document.addEventListener?.("visibilitychange", () => {
+        if (!document.hidden) {
+          this.wakeLiveSession?.resume?.().catch?.(() => {});
+          this.refreshMediaPermissions().catch?.(() => {});
+        }
+      });
+    }
     window.addEventListener("resize", () => {
       this.activeTerminalSession().resize?.();
       this.syncNativeWebview().catch((error) => this.reportError("Webview", error));
@@ -381,6 +536,11 @@ export class AppController {
           }
           await this.runInternal("live record toggle");
           break;
+        case "permission-request": {
+          const permission = target.dataset.permission === "screenRecording" ? "screen-recording" : "microphone";
+          await this.runInternal(`permission request ${permission}`);
+          break;
+        }
         case "tab-new":
           await this.runInternal("tab new");
           await this.refreshFolder();
@@ -395,6 +555,7 @@ export class AppController {
         case "subtab-select":
           await this.runInternal(`subtab select ${target.dataset.id}`);
           if (activeSubtab(this.state).type === "info") this.dispatch({ type: "INFO_READ", payload: {} });
+          if (activeSubtab(this.state).type === "settings") await this.runInternal("permission status");
           break;
         case "subtab-close":
           event.stopPropagation();
@@ -445,6 +606,15 @@ export class AppController {
           this.cancelFolderPathNavigation();
           await this.openFolderEntry(target.dataset.path, target.dataset.kind);
           break;
+        case "terminal-completion-select":
+          this.acceptTerminalCompletion(Number(target.dataset.index));
+          break;
+        case "custom-completions-save": {
+          const value = this.view.getCustomCompletions?.() || "";
+          await this.runInternal(`settings set customCompletions ${quoteArg(value)}`);
+          this.view.showToast("Custom completions saved", "success");
+          break;
+        }
         case "terminal-run":
           await this.submitTerminal("run");
           break;
@@ -486,6 +656,16 @@ export class AppController {
           break;
         case "info-clear":
           await this.runInternal("info clear");
+          this.dispatch({ type: "UI_SET", payload: { infoMediaPreview: null } }, { preserveInput: true });
+          break;
+        case "info-media-open": {
+          const infoItem = this.state.info.items.find((item) => item.id === target.dataset.infoId);
+          const media = infoItem?.details?.media?.find((item) => item.id === target.dataset.mediaId);
+          if (media) this.dispatch({ type: "UI_SET", payload: { infoMediaPreview: media } }, { preserveInput: true });
+          break;
+        }
+        case "info-media-close":
+          this.dispatch({ type: "UI_SET", payload: { infoMediaPreview: null } }, { preserveInput: true });
           break;
         case "clipboard-filter-pinned":
           this.dispatch({
@@ -652,6 +832,29 @@ export class AppController {
   }
 
   async handleKeydown(event) {
+    if (event.target?.id === "wake-shortcut-input") {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const input = event.target;
+      const previous = this.state.settings.wakeShortcut;
+      if (event.key === "Escape") {
+        input.value = previous;
+        input.blur?.();
+        return;
+      }
+      const shortcut = shortcutFromKeyboardEvent(event);
+      if (!shortcut) return;
+      input.value = shortcut;
+      try {
+        await this.runInternal(`settings set wakeShortcut ${quoteArg(shortcut)}`);
+        input.blur?.();
+        this.view.showToast("Wake shortcut saved", "success");
+      } catch (error) {
+        input.value = previous;
+        this.view.showToast(error?.message || String(error), "error");
+      }
+      return;
+    }
     if (event.target.id === "folder-create-input") {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -682,10 +885,43 @@ export class AppController {
         return;
       }
     }
-    if (event.target.id === "terminal-input" && event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-      event.preventDefault();
-      await this.submitTerminal("run");
-      return;
+    if (event.target.id === "terminal-input") {
+      const noModifier = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+      if (this.terminalCompletions.length && noModifier && !event.isComposing) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          this.moveTerminalCompletion(event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          this.acceptTerminalCompletion();
+          return;
+        }
+        if (event.key === "Enter") this.clearTerminalCompletions();
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.clearTerminalCompletions();
+          return;
+        }
+      }
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        await this.submitTerminal("run");
+        return;
+      }
+      if (event.key === "Enter" && noModifier && !event.isComposing) {
+        event.preventDefault();
+        if (event.repeat || this.terminalEnterHoldTimer || this.terminalEnterHeld) return;
+        this.terminalEnterHoldTimer = setTimeout(() => {
+          this.terminalEnterHoldTimer = null;
+          this.terminalEnterHeld = true;
+          Promise.resolve(this.submitTerminal("run")).catch((error) => {
+            this.view.showToast(error?.message || String(error), "error");
+          });
+        }, 2000);
+        return;
+      }
     }
     if (event.target.id === "web-url" && event.key === "Enter") {
       event.preventDefault();
@@ -714,6 +950,23 @@ export class AppController {
     }
   }
 
+  handleKeyup(event) {
+    if (event.target?.id !== "terminal-input" || event.key !== "Enter") return false;
+    const noModifier = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+    if (!noModifier) return false;
+    event.preventDefault?.();
+    if (this.terminalEnterHoldTimer) {
+      clearTimeout(this.terminalEnterHoldTimer);
+      this.terminalEnterHoldTimer = null;
+      if (!this.terminalEnterHeld) {
+        this.view.insertTerminalText?.("\n");
+        this.clearTerminalCompletions();
+      }
+    }
+    if (this.terminalEnterHeld) this.terminalEnterHeld = false;
+    return true;
+  }
+
   handleBeforeInput(event) {
     if (event.target.id !== "folder-path-input") return;
     if (event.inputType === "insertText" && isMacNavigationText(event.data)) event.preventDefault();
@@ -721,6 +974,14 @@ export class AppController {
 
   handleInput(event) {
     const input = event.target;
+    if (input.id === "terminal-input") {
+      this.refreshTerminalCompletions(input.value, input.selectionStart);
+      return;
+    }
+    if (input.id === "custom-completions") {
+      this.view.syncCustomCompletionLineNumbers?.(input.value);
+      return;
+    }
     if (input.id !== "folder-path-input") return;
     const originalValue = String(input.value ?? "");
     const cleanValue = stripMacNavigationText(originalValue);
@@ -733,6 +994,12 @@ export class AppController {
       input.setSelectionRange?.(cleanSelectionStart, cleanSelectionEnd);
     }
     this.scheduleFolderPathNavigation(input);
+  }
+
+  handleScroll(event) {
+    const target = event.target;
+    if (target.id !== "custom-completions") return;
+    this.view.syncCustomCompletionScroll?.(target);
   }
 
   cancelFolderPathNavigation() {
@@ -795,8 +1062,12 @@ export class AppController {
     }
     if (input.dataset.setting) {
       const key = input.dataset.setting;
+      if (key === "wakeShortcut") return;
       const value = this.view.getSettingValue(input);
       await this.runInternal(`settings set ${key} ${quoteArg(value)}`);
+      if (key === "liveDisconnectSeconds") {
+        this.wakeLiveSession?.setInactivitySeconds?.(this.state.settings.liveDisconnectSeconds);
+      }
       this.view.showToast("Setting saved", "success");
     }
   }
@@ -845,7 +1116,7 @@ export class AppController {
       }
       return;
     }
-    if (!this.native && event.altKey && event.code === "Space" && !event.repeat && !this.wakeTimer) {
+    if (!this.native && shortcutMatchesKeyboardEvent(event, this.state.settings.wakeShortcut) && !event.repeat && !this.wakeTimer) {
       event.preventDefault();
       this.wakeTimer = setTimeout(() => {
         this.wakeTimer = null;
@@ -855,7 +1126,7 @@ export class AppController {
   }
 
   handleGlobalKeyup(event) {
-    if (event.code === "Space" && this.wakeTimer) {
+    if (this.wakeTimer && shortcutKeyMatchesKeyboardEvent(event, this.state.settings.wakeShortcut)) {
       clearTimeout(this.wakeTimer);
       this.wakeTimer = null;
     }
@@ -873,9 +1144,19 @@ export class AppController {
     return true;
   }
 
-  async activateWakeSession(screenshot = null) {
+  async activateWakeSession(screenshot = null, { captureScreenshot = false } = {}) {
     try {
-      if (this.wakeLiveSession) await this.wakeLiveSession.cancel();
+      await this.ensureMediaPermission("microphone");
+      if (!screenshot && captureScreenshot && this.backend.captureScreenshot) {
+        try {
+          screenshot = await this.backend.captureScreenshot();
+        } catch (error) {
+          this.dispatch({
+            type: "INFO_ADD",
+            payload: { level: "warning", title: "Live screenshot", message: error?.message || String(error) }
+          }, { preserveInput: true });
+        }
+      }
 
       const model = this.state.models.find((item) => item.id === this.state.selectedModelId);
       if (!model || model.type !== "gemini-live") {
@@ -884,11 +1165,16 @@ export class AppController {
 
       this.openSingletonSubtab("terminal");
       this.dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } }, { preserveInput: true });
-      this.wakeStreamText = "";
-      this.wakeStreamStarted = false;
-      this.wakeStreamParser = null;
+      this.finalizeWakeStream();
       this.activeTerminalSession().printMessage("Voice", "Listening…", "33");
-      this.view.showToast("Listening…", "info");
+
+      if (this.wakeLiveSession && !this.wakeLiveSession.completed && this.wakeLiveSession.restart) {
+        await this.wakeLiveSession.restart({
+          screenshot,
+          inactivitySeconds: this.state.settings.liveDisconnectSeconds
+        });
+        return this.wakeLiveSession;
+      }
 
       this.wakeLiveSession = await this.backend.startWakeLiveSession({
         model,
@@ -897,13 +1183,31 @@ export class AppController {
         onStatus: (status) => this.handleWakeStatus(status),
         onText: (text) => this.handleWakeStreamText(text, model),
         onResult: (result) => this.finishWakeLiveResult(result, model),
+        onRequest: (request) => this.logAiRequest({ ...request, modelName: model.name }),
         onError: (error) => this.failWakeLiveSession(error)
       });
+      return this.wakeLiveSession;
     } catch (error) {
       this.wakeLiveSession = null;
       this.dispatch({ type: "UI_SET", payload: { liveConnected: false, liveRecording: false, liveStatus: "error" } }, { preserveInput: true });
       this.reportError("Live microphone", error);
+      return null;
     }
+  }
+
+  logAiRequest(request = {}) {
+    const media = Array.isArray(request.media) ? request.media.map(requestMediaPreview) : [];
+    const text = String(request.text || "");
+    const modelName = String(request.modelName || "Auri");
+    this.dispatch({
+      type: "INFO_ADD",
+      payload: {
+        level: "info",
+        title: `AI request · ${modelName}`,
+        message: text || (media.some((item) => item.kind === "audio") ? "Voice input" : "Media request"),
+        details: { type: "ai-request", text, modelName, media }
+      }
+    }, { preserveInput: true });
   }
 
   renderWakeStreamEvents(events = []) {
@@ -948,23 +1252,10 @@ export class AppController {
     if (status === "processing" || status === "error" || disconnected) liveRecording = false;
     this.dispatch({ type: "UI_SET", payload: { liveConnected, liveRecording, liveStatus: status } }, { preserveInput: true });
 
-    const messages = {
-      recording: "Listening…",
-      connecting: "Listening while Gemini Live connects…",
-      connected: "Live chat connected — listening…",
-      processing: "Gemini is responding…",
-      disconnecting: "Disconnecting Live chat after no reply…",
-      "disconnected-idle": "Live chat disconnected after inactivity.",
-      "disconnected-timeout": "Live chat disconnected — no reply before the configured timeout.",
-      disconnected: "Live chat disconnected."
-    };
-    const message = messages[status];
-    if (!message) return;
     if (disconnected) {
       this.wakeLiveSession = null;
       this.finalizeWakeStream();
     }
-    this.view.showToast(message, status === "connected" ? "success" : "info");
   }
 
   async stopWakeLiveRecording() {
@@ -1049,11 +1340,19 @@ export class AppController {
   async submitTerminal(mode) {
     const value = this.view.getTerminalInputValue().trim();
     if (!value) return;
+    this.clearTerminalCompletions();
     this.view.setTerminalInput("", false);
-    if (mode === "ask") await this.runInternal(`ai ask ${value}`);
-    else if (classifyTerminalInput(value) === "auri") await this.runInternal(value);
-    else if (this.native) await this.runNativeTerminalCommand(value);
-    else await this.runInternal(`terminal run ${value}`);
+    try {
+      if (mode === "run") {
+        this.dispatch({ type: "TERMINAL_COMMAND_REMEMBER", payload: { command: value } }, { preserveInput: true });
+      }
+      if (mode === "ask") await this.runInternal(`ai ask ${value}`);
+      else if (classifyTerminalInput(value) === "auri") await this.runInternal(value);
+      else if (this.native) await this.runNativeTerminalCommand(value);
+      else await this.runInternal(`terminal run ${value}`);
+    } finally {
+      this.view.setTerminalInput("", true);
+    }
   }
 
   async runNativeTerminalCommand(command) {
@@ -1080,10 +1379,6 @@ export class AppController {
     const entries = await this.backend.listDirectory(path);
     this.dispatch({ type: "WORKDIR_SET", payload: { workspaceId, path } });
     this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
-    const workspace = activeWorkspace(this.state);
-    if (workspace.id === workspaceId && activeSubtab(this.state).type === "terminal") {
-      scheduleFrame(() => this.terminalSessionFor(workspaceId).focus?.());
-    }
   }
 
   async changeDirectory(path, { echoInTerminal = false } = {}) {
@@ -1381,6 +1676,10 @@ export class AppController {
   async startRecording(kind) {
     const source = this.view.root.querySelector("#record-source")?.value;
     const includeMicrophone = Boolean(this.view.root.querySelector("#record-mic")?.checked);
+    const needsMicrophone = source === "microphone" || source === "camera" || includeMicrophone;
+    const needsScreenRecording = source === "screen" || source === "screen-audio";
+    if (needsMicrophone) await this.ensureMediaPermission("microphone");
+    if (needsScreenRecording) await this.ensureMediaPermission("screenRecording");
     await this.capture.start({
       kind,
       source,

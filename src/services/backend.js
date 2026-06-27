@@ -88,6 +88,42 @@ function base64ToBytes(value) {
   return bytes;
 }
 
+function mediaKindForMime(mime, fallback = "file") {
+  const value = String(mime || "");
+  if (value.startsWith("image/")) return "image";
+  if (value.startsWith("audio/")) return "audio";
+  if (value.startsWith("video/")) return "video";
+  return fallback || "file";
+}
+
+function nativeAssetUrl(path) {
+  if (!path || typeof window === "undefined") return null;
+  const convertFileSrc = window.__TAURI__?.core?.convertFileSrc || window.__TAURI_INTERNALS__?.convertFileSrc;
+  try { return convertFileSrc ? convertFileSrc(path) : null; } catch { return null; }
+}
+
+function objectUrlForBinary(item) {
+  if (!item?.base64 || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
+  try {
+    return URL.createObjectURL(new Blob([base64ToBytes(item.base64)], { type: item.mime || "application/octet-stream" }));
+  } catch {
+    return null;
+  }
+}
+
+function requestMediaDetail(item, index = 0) {
+  const mime = item?.mime || "application/octet-stream";
+  const kind = item?.kind || mediaKindForMime(mime);
+  return {
+    id: String(item?.id || `request-media-${Date.now()}-${index}`),
+    name: item?.name || `Attachment ${index + 1}`,
+    kind,
+    mime,
+    path: item?.path || null,
+    url: item?.url || item?.assetUrl || nativeAssetUrl(item?.path) || objectUrlForBinary(item)
+  };
+}
+
 function browserEntries(path) {
   const base = String(path || "~").replace(/\/$/, "");
   return [
@@ -218,6 +254,11 @@ export class Backend {
     return this.call("initialize_workspace");
   }
 
+  async readShellHistory() {
+    if (!this.invoke) return [];
+    return this.call("read_shell_history");
+  }
+
   async listDirectory(path) {
     if (!this.invoke) return browserEntries(path);
     return this.call("list_directory", { path });
@@ -307,7 +348,26 @@ export class Backend {
     return this.call("capture_screenshot");
   }
 
-  async askAi({ prompt, model, attachScreenshot, attachments = [] }) {
+  async getMediaPermissions() {
+    if (!this.invoke) {
+      return { microphone: "unavailable", screenRecording: "unavailable" };
+    }
+    return this.call("media_permission_status");
+  }
+
+  async requestMediaPermission(permission) {
+    if (!this.invoke) {
+      if (permission !== "microphone" || !navigator.mediaDevices?.getUserMedia) {
+        return this.getMediaPermissions();
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      for (const track of stream.getTracks()) track.stop();
+      return { microphone: "authorized", screenRecording: "unavailable" };
+    }
+    return this.call("request_media_permission", { permission });
+  }
+
+  async askAi({ prompt, model, attachScreenshot, attachments = [], onRequest }) {
     if (!model) throw new Error("Select an AI model in Settings.");
     if (!model.apiKey) throw new Error(`Add an API key for ${model.name} in Settings.`);
 
@@ -321,6 +381,8 @@ export class Backend {
     }
 
     const inlineAttachments = await this.prepareAttachments(attachments);
+    const sentMedia = [screenshot, ...inlineAttachments].filter(Boolean).map(requestMediaDetail);
+    await onRequest?.({ text: prompt, modelName: model.name, media: sentMedia });
     if (model.type === "openai" || model.type === "openai-live") {
       return this.askOpenAi({ prompt, model, screenshot, attachments: inlineAttachments, systemPrompt: model.type === "openai-live" ? LIVE_SYSTEM_PROMPT : SYSTEM_PROMPT });
     }
@@ -338,9 +400,9 @@ export class Backend {
   }
 
   async startWakeLiveSession(options) {
-    const { model, screenshot, inactivitySeconds, onStatus, onText, onResult, onError } = options;
+    const { model, screenshot, inactivitySeconds, onStatus, onText, onResult, onError, onRequest } = options;
     if (!model || model.type !== "gemini-live") throw new Error("Select a Gemini Live model.");
-    const session = new GeminiWakeSession({ model, systemPrompt: LIVE_SYSTEM_PROMPT, screenshot, inactivitySeconds, onStatus, onText, onResult, onError });
+    const session = new GeminiWakeSession({ model, systemPrompt: LIVE_SYSTEM_PROMPT, screenshot, inactivitySeconds, onStatus, onText, onResult, onError, onRequest });
     await session.start();
     return session;
   }
@@ -350,9 +412,18 @@ export class Backend {
     for (const item of attachments) {
       if (item.file || item.blob) {
         const source = item.file || item.blob;
-        output.push({ name: item.name, kind: item.kind, mime: item.mime || source.type || "application/octet-stream", base64: await blobToBase64(source) });
+        output.push({
+          id: item.id,
+          name: item.name,
+          kind: item.kind,
+          mime: item.mime || source.type || "application/octet-stream",
+          base64: await blobToBase64(source),
+          path: item.path || null,
+          url: item.url || item.assetUrl || (typeof URL !== "undefined" && URL.createObjectURL ? URL.createObjectURL(source) : null)
+        });
       } else if (item.path && this.invoke) {
-        output.push(await this.call("read_binary_file", { path: item.path }));
+        const binary = await this.call("read_binary_file", { path: item.path });
+        output.push({ ...binary, id: item.id, kind: item.kind || mediaKindForMime(binary.mime), url: item.url || item.assetUrl || nativeAssetUrl(item.path) });
       }
     }
     return output;
@@ -445,6 +516,11 @@ export class Backend {
       return this.decorateClipboardItems(this.browserClipboardHistory);
     }
     return this.decorateClipboardItems(await this.call("remove_clipboard_entry", { id }));
+  }
+
+  async setWakeShortcut(shortcut) {
+    if (!this.invoke) return { shortcut };
+    return this.call("set_wake_shortcut", { shortcut });
   }
 
   async saveSettings(settings) {

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createInitialState, reduceState } from "../src/model/state.js";
 import { renderSettings } from "../src/views/panels.js";
+import { captureSettingsScroll } from "../src/views/app-view.js";
 
 test("settings use a compact saved-model list without the preferences eyebrow", () => {
   const state = createInitialState();
@@ -78,4 +79,62 @@ test("saved models use one light list surface with inline overflow actions", asy
   assert.match(css, /\.model-row:not\(:last-child\)\s*\{[^}]*border-bottom:/s);
   assert.match(css, /\.model-row-actions\s*\{[^}]*position:\s*relative/s);
   assert.match(css, /\.model-menu\s*\{[^}]*position:\s*absolute[^}]*right:\s*0[^}]*z-index:\s*50/s);
+});
+
+
+test("wake shortcut is a readonly press-to-capture field", () => {
+  const html = renderSettings(createInitialState());
+
+  assert.match(html, /id="wake-shortcut-input"/);
+  assert.match(html, /data-setting="wakeShortcut"/);
+  assert.match(html, /readonly/);
+  assert.match(html, /Press the shortcut you want to use/);
+});
+
+test("settings expose a light numbered custom terminal completion editor", async () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "SETTING_SET",
+    payload: { key: "customCompletions", value: "git status\nnpm test" }
+  });
+  const html = renderSettings(state);
+  const css = await import("node:fs/promises").then(({ readFile }) => readFile("styles.css", "utf8"));
+
+  assert.equal(state.settings.customCompletions, "git status\nnpm test");
+  assert.match(html, /class="custom-completions-shell"/);
+  assert.match(html, /id="custom-completions-lines"[^>]*aria-hidden="true"[^>]*>1\n2<\/div>/);
+  assert.match(html, /<textarea[^>]*id="custom-completions"[^>]*rows="8"/);
+  assert.doesNotMatch(html, /id="custom-completions"[^>]*data-setting=/);
+  assert.match(html, />git status\nnpm test<\/textarea>/);
+  assert.match(html, /id="custom-completions-count"[^>]*>2 lines<\/small>/);
+  assert.match(html, /One command per line/);
+  assert.match(html, /data-action="custom-completions-save"/);
+  assert.match(html, />Save commands<\/button>/);
+  assert.match(css, /\.custom-completions-shell\s*\{[^}]*width:\s*90%/s);
+  assert.match(css, /\.custom-completions-shell\s*\{[^}]*grid-template-columns:\s*[^;]*minmax\(0,\s*1fr\)/s);
+  assert.match(css, /\.custom-completions-shell\s*\{[^}]*background:\s*rgba?\(/s);
+  assert.match(css, /\.custom-completions-gutter\s*\{[^}]*border-right:/s);
+});
+
+test("settings scroll position is retained across save-triggered re-renders", async () => {
+  const scroller = { scrollTop: 612 };
+  const root = { querySelector: (selector) => selector === ".settings-scroll" ? scroller : null };
+  assert.equal(captureSettingsScroll(root), 612);
+  assert.equal(captureSettingsScroll({ querySelector: () => null }), 0);
+
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile("src/views/app-view.js", "utf8"));
+  const capture = source.indexOf("const settingsScrollTop = captureSettingsScroll(this.root);");
+  const replace = source.indexOf("this.root.innerHTML =", capture);
+  const restore = source.indexOf("settings.scrollTop = settingsScrollTop", replace);
+  const frame = source.indexOf("requestAnimationFrame(() => {", restore);
+  assert.ok(capture >= 0 && capture < replace, "settings scroll must be captured before replacing the DOM");
+  assert.ok(restore > replace, "settings scroll must be restored after replacing the DOM");
+  assert.ok(frame > restore, "settings scroll must be restored synchronously before deferred work");
+});
+
+test("custom command line numbers update on input and follow textarea scrolling", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile("src/controllers/app-controller.js", "utf8"));
+  assert.match(source, /input\.id === "custom-completions"[\s\S]*syncCustomCompletionLineNumbers/);
+  assert.match(source, /addEventListener\("scroll",[^;]*true\)/);
+  assert.match(source, /target\.id !== "custom-completions"[\s\S]*syncCustomCompletionScroll/);
 });

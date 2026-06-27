@@ -70,6 +70,8 @@ auri record stop                                                               S
 auri media attach <audio|video>                                                Attach the latest recording to the prompt.
 auri settings open                                                             Open Settings.
 auri settings set <key> <value>                                                Update an application setting.
+auri permission status                                                         Refresh macOS media permission status.
+auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.

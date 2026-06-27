@@ -1,10 +1,21 @@
 pub mod core;
 
-use core::{capture, clipboard, files, ipc, lifecycle, shell, terminal, webview, workspace};
+use core::{
+    capture, clipboard, files, ipc, lifecycle, permissions, shell, terminal, webview, workspace,
+};
 use serde_json::Value;
+#[cfg(desktop)]
+use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 #[cfg(desktop)]
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+#[cfg(desktop)]
+const DEFAULT_WAKE_SHORTCUT: &str = "Alt+Space";
+
+#[cfg(desktop)]
+#[derive(Default)]
+struct WakeShortcutState(Mutex<Option<String>>);
 
 #[tauri::command]
 fn initialize_workspace() -> Result<workspace::InitResult, String> {
@@ -92,6 +103,20 @@ fn capture_screenshot() -> Result<files::BinaryFile, String> {
 }
 
 #[tauri::command]
+fn media_permission_status() -> permissions::MediaPermissions {
+    permissions::status()
+}
+
+#[tauri::command]
+async fn request_media_permission(
+    permission: String,
+) -> Result<permissions::MediaPermissions, String> {
+    tauri::async_runtime::spawn_blocking(move || permissions::request(&permission))
+        .await
+        .map_err(|error| format!("Permission request task failed: {error}"))?
+}
+
+#[tauri::command]
 fn read_clipboard_history() -> Result<Vec<clipboard::ClipboardEntry>, String> {
     clipboard::read_history()
 }
@@ -119,8 +144,60 @@ fn remove_clipboard_entry(id: String) -> Result<Vec<clipboard::ClipboardEntry>, 
 }
 
 #[tauri::command]
+fn read_shell_history() -> Result<Vec<String>, String> {
+    workspace::read_shell_history()
+}
+
+#[tauri::command]
 fn save_settings(settings: Value) -> Result<(), String> {
     workspace::save_configuration(&settings)
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn set_wake_shortcut(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WakeShortcutState>,
+    shortcut: String,
+) -> Result<(), String> {
+    let shortcut = shortcut.trim();
+    if shortcut.is_empty() {
+        return Err("Wake shortcut cannot be empty.".into());
+    }
+
+    let mut current = state
+        .0
+        .lock()
+        .map_err(|_| "Wake shortcut state is unavailable.".to_string())?;
+    if current
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(shortcut))
+    {
+        return Ok(());
+    }
+
+    let manager = app.global_shortcut();
+    manager
+        .register(shortcut)
+        .map_err(|error| format!("Could not register wake shortcut {shortcut}: {error}"))?;
+
+    if let Some(previous) = current.as_deref() {
+        if let Err(error) = manager.unregister(previous) {
+            let _ = manager.unregister(shortcut);
+            return Err(format!(
+                "Could not replace the previous wake shortcut {previous}: {error}"
+            ));
+        }
+    }
+
+    *current = Some(shortcut.to_string());
+    Ok(())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+fn set_wake_shortcut(_shortcut: String) -> Result<(), String> {
+    Err("Global wake shortcuts are available only in the desktop build.".into())
 }
 
 #[tauri::command]
@@ -213,12 +290,11 @@ pub fn run() {
 
             #[cfg(desktop)]
             {
+                app.manage(WakeShortcutState::default());
                 app.handle().plugin(
                     tauri_plugin_global_shortcut::Builder::new()
-                        .with_handler(|app, shortcut, event| {
-                            if event.state == ShortcutState::Pressed
-                                && shortcut.matches(Modifiers::ALT, Code::Space)
-                            {
+                        .with_handler(|app, _shortcut, event| {
+                            if event.state == ShortcutState::Pressed {
                                 let app = app.clone();
                                 std::thread::spawn(move || {
                                     let screenshot = capture::screenshot().ok();
@@ -231,10 +307,12 @@ pub fn run() {
                         .build(),
                 )?;
 
-                if let Err(error) = app.global_shortcut().register("alt+space") {
+                if let Err(error) = app.global_shortcut().register(DEFAULT_WAKE_SHORTCUT) {
                     eprintln!(
-                        "Alt+Space is already owned by another application or Auri instance: {error}"
+                        "{DEFAULT_WAKE_SHORTCUT} is already owned by another application or Auri instance: {error}"
                     );
+                } else if let Ok(mut current) = app.state::<WakeShortcutState>().0.lock() {
+                    *current = Some(DEFAULT_WAKE_SHORTCUT.to_string());
                 }
             }
 
@@ -268,11 +346,15 @@ pub fn run() {
             terminal_stop,
             window_start_dragging,
             capture_screenshot,
+            media_permission_status,
+            request_media_permission,
             read_clipboard_history,
             paste_clipboard_entry,
             set_clipboard_pinned,
             remove_clipboard_entry,
+            read_shell_history,
             save_settings,
+            set_wake_shortcut,
             save_media_file,
             open_external,
             open_external_url,

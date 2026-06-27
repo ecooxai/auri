@@ -53,6 +53,8 @@ export const COMMANDS = Object.freeze([
   ["media attach <audio|video>", "Attach the latest recording to the prompt."],
   ["settings open", "Open Settings."],
   ["settings set <key> <value>", "Update an application setting."],
+  ["permission status", "Refresh macOS media permission status."],
+  ["permission request <microphone|screen-recording>", "Request or open macOS settings for a media permission."],
   ["info show", "Open the Info subtab."],
   ["info clear", "Clear notifications and errors."],
   ["help", "Show all available commands."]

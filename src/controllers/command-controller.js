@@ -2,6 +2,7 @@ import { commandHelp, parseCommand, extractCommandTail, extractActionTail } from
 import { shellQuote } from "../model/path.js";
 import { activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
 import { defaultBookmarkName, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
+import { normalizeShortcut } from "../model/shortcut.js";
 
 const SUBTAB_ALIASES = Object.freeze({
   "recorder-audio": "audio",
@@ -41,6 +42,30 @@ function snapshotAttachments(attachments = []) {
     url: item.url || item.assetUrl || null,
     path: item.path || null
   }));
+}
+
+function addAiRequestInfo(dispatch, request = {}, fallbackModelName = "Auri") {
+  const text = String(request.text ?? "");
+  const modelName = String(request.modelName || fallbackModelName || "Auri");
+  const media = Array.isArray(request.media)
+    ? request.media.map((item, index) => ({
+        id: String(item?.id || `request-media-${Date.now()}-${index}`),
+        name: String(item?.name || `Attachment ${index + 1}`),
+        kind: String(item?.kind || "file"),
+        mime: String(item?.mime || "application/octet-stream"),
+        url: item?.url || item?.assetUrl || null,
+        path: item?.path || null
+      }))
+    : [];
+  dispatch({
+    type: "INFO_ADD",
+    payload: {
+      level: "info",
+      title: `AI request · ${modelName}`,
+      message: text || (media.some((item) => item.kind === "audio") ? "Voice input" : "Media request"),
+      details: { type: "ai-request", text, modelName, media }
+    }
+  });
 }
 
 function appendOutput(dispatch, output) {
@@ -234,7 +259,14 @@ export async function executeCommand(input, context) {
         dispatch({ type: "ATTACHMENTS_CLEAR", payload: {} });
         dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } });
         dispatch({ type: "TERMINAL_RUNNING_SET", payload: { value: true } });
-        const result = await backend.askAi({ prompt, model, cwd: workspace.terminal.cwd, attachScreenshot: state.settings.alwaysAttachScreenshot, attachments });
+        const result = await backend.askAi({
+          prompt,
+          model,
+          cwd: workspace.terminal.cwd,
+          attachScreenshot: state.settings.alwaysAttachScreenshot,
+          attachments,
+          onRequest: (request) => addAiRequestInfo(dispatch, request, model?.name)
+        });
         const audioUrl = prepareAssistantAudio(result.audioBlob);
         const assistantAudio = audioUrl ? {
           name: `${model?.name || "Auri"} response`,
@@ -494,10 +526,31 @@ export async function executeCommand(input, context) {
     if (domain === "settings" && action === "set") {
       const key = args.shift();
       if (!key) throw new Error("Choose a setting key.");
-      const value = parseSettingValue(args.join(" "));
+      let value = parseSettingValue(args.join(" "));
+      if (key === "wakeShortcut") {
+        const shortcut = normalizeShortcut(value);
+        if (!shortcut) throw new Error("Press a valid wake shortcut.");
+        await backend.setWakeShortcut?.(shortcut);
+        value = shortcut;
+      }
       dispatch({ type: "SETTING_SET", payload: { key, value } });
       await persistConfiguration(backend, getState());
       return { key, value };
+    }
+
+    if (domain === "permission") {
+      if (action === "status") {
+        if (!actions.refreshMediaPermissions) throw new Error("Media permission status is unavailable in this runtime.");
+        return actions.refreshMediaPermissions();
+      }
+      if (action === "request") {
+        const requested = args[0];
+        const permission = requested === "screen-recording" ? "screenRecording" : requested;
+        if (!["microphone", "screenRecording"].includes(permission)) throw new Error("Permission must be microphone or screen-recording.");
+        if (!actions.requestMediaPermission) throw new Error("Media permission requests are unavailable in this runtime.");
+        return actions.requestMediaPermission(permission);
+      }
+      throw new Error(`Unknown permission action: ${action}`);
     }
 
     if (domain === "info") {

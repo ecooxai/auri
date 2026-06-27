@@ -120,6 +120,29 @@ function describeEvent(value, fallback) {
   return fallback;
 }
 
+export function hasLiveReplyActivity(message) {
+  if (String(message?.text || "").trim()) return true;
+  const content = message?.serverContent;
+  if (String(content?.outputTranscription?.text || "").trim()) return true;
+  return (content?.modelTurn?.parts || []).some((part) =>
+    Boolean(String(part?.text || "").trim() || part?.inlineData?.data)
+  );
+}
+
+function liveResponseTimeoutMs(value) {
+  const seconds = Number(value);
+  return Math.max(1, Number.isFinite(seconds) ? seconds : 60) * 1000;
+}
+
+const LIVE_INPUT_ACTIVITY_POWER = 0.000025;
+
+function hasAudibleLiveInput(samples) {
+  if (!samples?.length) return false;
+  let energy = 0;
+  for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
+  return energy / samples.length >= LIVE_INPUT_ACTIVITY_POWER;
+}
+
 function liveConfig(systemPrompt) {
   return {
     responseModalities: [Modality.AUDIO],
@@ -262,7 +285,10 @@ class PcmStreamPlayer {
   }
 
   async ensureContext() {
-    if (this.context) return this.context;
+    if (this.context) {
+      if (this.context.state === "suspended") await this.context.resume();
+      return this.context;
+    }
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error("Web Audio playback is unavailable.");
     this.context = new AudioContextClass({ sampleRate: this.sampleRate });
@@ -299,7 +325,7 @@ class PcmStreamPlayer {
 }
 
 export class GeminiWakeSession {
-  constructor({ model, systemPrompt, screenshot = null, inactivitySeconds = 60, onStatus, onText, onResult, onError, createClient = (options) => new GoogleGenAI(options) }) {
+  constructor({ model, systemPrompt, screenshot = null, inactivitySeconds = 60, onStatus, onText, onResult, onError, onWarning, onRequest, createClient = (options) => new GoogleGenAI(options) }) {
     this.model = model;
     this.systemPrompt = systemPrompt;
     this.screenshot = screenshot;
@@ -307,6 +333,8 @@ export class GeminiWakeSession {
     this.onText = onText;
     this.onResult = onResult;
     this.onError = onError;
+    this.onWarning = onWarning;
+    this.onRequest = onRequest;
     this.createClient = createClient;
     this.audioQueue = [];
     this.session = null;
@@ -317,19 +345,48 @@ export class GeminiWakeSession {
     this.silenceNode = null;
     this.accumulator = createLiveAccumulator();
     this.player = new PcmStreamPlayer(24000);
-    this.responseTimeoutMs = Math.max(10, Number(inactivitySeconds) || 60) * 1000;
+    this.responseTimeoutMs = liveResponseTimeoutMs(inactivitySeconds);
     this.responseTimer = null;
+    this.responseDeadline = 0;
+    this.responseActivityAt = 0;
     this.stopped = false;
     this.completed = false;
+    this.connectPromise = null;
+    this.turnScreenshot = screenshot;
+    this.inputAudioChunks = [];
   }
 
-  armResponseTimeout() {
+  setInactivitySeconds(value) {
+    this.responseTimeoutMs = liveResponseTimeoutMs(value);
+    if (this.completed || !this.responseActivityAt) return;
+    this.scheduleResponseTimeout();
+  }
+
+  scheduleResponseTimeout() {
     clearTimeout(this.responseTimer);
-    if (this.completed || !this.stopped) return;
+    if (this.completed) {
+      this.responseDeadline = 0;
+      return;
+    }
+    if (!this.responseActivityAt) this.responseActivityAt = Date.now();
+    this.responseDeadline = this.responseActivityAt + this.responseTimeoutMs;
+    const remainingMs = Math.max(0, this.responseDeadline - Date.now());
     this.responseTimer = setTimeout(() => {
       this.onStatus?.("disconnecting");
       this.cancel("timeout").catch(() => {});
-    }, this.responseTimeoutMs);
+    }, remainingMs);
+    this.responseTimer?.unref?.();
+  }
+
+  armResponseTimeout() {
+    this.responseActivityAt = Date.now();
+    this.scheduleResponseTimeout();
+  }
+
+  noteInputActivity(samples) {
+    if (!hasAudibleLiveInput(samples)) return false;
+    this.armResponseTimeout();
+    return true;
   }
 
   async start() {
@@ -337,8 +394,46 @@ export class GeminiWakeSession {
     this.onStatus?.("recording");
     await this.player.ensureContext();
     await this.startMicrophone();
-    this.connect().catch((error) => this.fail(error));
+    this.connectPromise = this.connect().catch((error) => this.fail(error));
     return this;
+  }
+
+  async restart({ screenshot = null, inactivitySeconds } = {}) {
+    if (this.completed) throw new Error("This Live session has already closed.");
+    clearTimeout(this.responseTimer);
+    this.responseDeadline = 0;
+    this.responseActivityAt = 0;
+    this.stopped = false;
+    if (inactivitySeconds !== undefined) this.setInactivitySeconds(inactivitySeconds);
+    this.accumulator = createLiveAccumulator();
+    this.inputAudioChunks = [];
+    this.turnScreenshot = screenshot;
+    await this.player.ensureContext();
+    if (this.session && screenshot?.base64) this.sendScreenshot(screenshot);
+    this.onStatus?.("recording");
+    if (!this.stream) await this.startMicrophone();
+    if (!this.session && !this.connectPromise) this.connectPromise = this.connect().catch((error) => this.fail(error));
+    return this;
+  }
+
+  sendScreenshot(screenshot = this.turnScreenshot) {
+    if (!this.session || !screenshot?.base64) return false;
+    this.session.sendRealtimeInput({
+      video: { data: screenshot.base64, mimeType: screenshot.mime || "image/jpeg" }
+    });
+    return true;
+  }
+
+  async resume() {
+    if (this.completed) return false;
+    if (this.responseDeadline && Date.now() >= this.responseDeadline) {
+      this.onStatus?.("disconnecting");
+      await this.cancel("timeout");
+      return false;
+    }
+    await this.player.ensureContext();
+    if (this.audioContext?.state === "suspended") await this.audioContext.resume();
+    return true;
   }
 
   async startMicrophone() {
@@ -355,10 +450,10 @@ export class GeminiWakeSession {
     this.processorNode.onaudioprocess = (event) => {
       if (this.stopped) return;
       const floatSamples = event.inputBuffer.getChannelData(0);
-      let energy = 0;
-      for (let index = 0; index < floatSamples.length; index += 1) energy += floatSamples[index] * floatSamples[index];
+      this.noteInputActivity(floatSamples);
       const pcmBytes = floatToPcm16(floatSamples, this.audioContext.sampleRate, 16000);
       const chunk = { data: bytesToBase64(pcmBytes), mimeType: "audio/pcm;rate=16000" };
+      this.inputAudioChunks.push(chunk.data);
       if (this.session) this.session.sendRealtimeInput({ audio: chunk });
       else this.audioQueue.push(chunk);
     };
@@ -379,12 +474,16 @@ export class GeminiWakeSession {
           this.onStatus?.(this.stopped ? "processing" : "connected");
         },
         onmessage: (message) => {
-          this.armResponseTimeout();
+          if (hasLiveReplyActivity(message)) this.armResponseTimeout();
           this.accumulator.accept(message);
           const partial = this.accumulator.finish();
           if (partial.text) this.onText?.(partial.text);
           for (const part of message?.serverContent?.modelTurn?.parts || []) {
-            if (part.inlineData?.data) this.player.enqueue(part.inlineData.data).catch((error) => this.fail(error));
+            if (part.inlineData?.data) {
+              this.player.enqueue(part.inlineData.data).catch((error) => {
+                this.onWarning?.(error instanceof Error ? error : new Error(String(error)));
+              });
+            }
           }
           if (message?.serverContent?.turnComplete) this.finishTurn(modelName);
         },
@@ -395,14 +494,7 @@ export class GeminiWakeSession {
       }
     });
 
-    if (this.screenshot?.base64) {
-      this.session.sendRealtimeInput({
-        video: {
-          data: this.screenshot.base64,
-          mimeType: this.screenshot.mime || "image/jpeg"
-        }
-      });
-    }
+    this.sendScreenshot(this.turnScreenshot);
 
     for (const chunk of this.audioQueue.splice(0)) this.session.sendRealtimeInput({ audio: chunk });
     if (this.stopped) this.endAudioInput();
@@ -416,6 +508,19 @@ export class GeminiWakeSession {
     if (this.stopped) return;
     this.stopped = true;
     await this.stopMicrophone();
+    const media = [];
+    if (this.turnScreenshot) media.push({ ...this.turnScreenshot, kind: "image" });
+    if (this.inputAudioChunks.length) {
+      const wavBytes = pcm16ChunksToWav(this.inputAudioChunks, 16000);
+      media.push({
+        id: `live-audio-${Date.now()}`,
+        name: "Live microphone input.wav",
+        kind: "audio",
+        mime: "audio/wav",
+        blob: new Blob([wavBytes], { type: "audio/wav" })
+      });
+    }
+    await this.onRequest?.({ text: "", media });
     this.endAudioInput();
     this.onStatus?.("processing");
     this.armResponseTimeout();
@@ -426,6 +531,8 @@ export class GeminiWakeSession {
     this.stopped = true;
     this.completed = true;
     clearTimeout(this.responseTimer);
+    this.responseDeadline = 0;
+    this.responseActivityAt = 0;
     await this.stopMicrophone();
     await this.player.close();
     try { this.session?.close(); } catch {}
@@ -450,7 +557,6 @@ export class GeminiWakeSession {
     const result = resultFromAccumulator(this.accumulator, modelName);
     this.accumulator = createLiveAccumulator();
     this.onResult?.({ ...result, streamedAudio: true });
-    this.armResponseTimeout();
   }
 
   async fail(error) {
@@ -458,6 +564,8 @@ export class GeminiWakeSession {
     this.completed = true;
     this.stopped = true;
     clearTimeout(this.responseTimer);
+    this.responseDeadline = 0;
+    this.responseActivityAt = 0;
     await this.stopMicrophone();
     await this.player.close();
     this.onError?.(error instanceof Error ? error : new Error(String(error)));

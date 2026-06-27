@@ -387,7 +387,7 @@ test("typed terminal cd synchronizes the folder pane without a printf probe", as
   assert.equal(controller.state.tabs[0].folder.entries[0].name, "src");
 });
 
-test("terminal keeps focus after cwd synchronization updates the folder", async () => {
+test("cwd synchronization does not steal focus from the composer", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   let focusCalls = 0;
   const session = {
@@ -407,7 +407,7 @@ test("terminal keeps focus after cwd synchronization updates the folder", async 
   };
   const controller = new AppController({ view, backend, terminalSessionFactory: () => session });
   await controller.syncDirectory("/tmp/project");
-  assert.equal(focusCalls, 1);
+  assert.equal(focusCalls, 0);
 });
 
 test("inactive workspace cwd synchronization does not steal terminal focus", async () => {
@@ -873,4 +873,168 @@ test("folder Home uses an unquoted tilde while normal paths stay safely quoted",
   await controller.changeDirectory("/tmp/project");
 
   assert.deepEqual(commands, ["cd ~", "cd '/tmp/project'"]);
+});
+
+test("every AI request adds sanitized text and sent media details to Info", async () => {
+  const h = harness();
+  h.backend.askAi = async ({ prompt, onRequest }) => {
+    await onRequest({
+      text: prompt,
+      modelName: "Gemini Live",
+      media: [
+        { id: "screen-1", name: "screen.jpg", kind: "image", mime: "image/jpeg", url: "asset://screen.jpg", path: "/tmp/screen.jpg" },
+        { id: "audio-1", name: "voice.wav", kind: "audio", mime: "audio/wav", url: "blob:voice" }
+      ]
+    });
+    return { text: "done" };
+  };
+
+  await executeCommand("ai ask inspect this", h);
+
+  const item = h.state().info.items[0];
+  assert.equal(item.title, "AI request · Gemini Live");
+  assert.equal(item.message, "inspect this");
+  assert.equal(item.details.type, "ai-request");
+  assert.equal(item.details.text, "inspect this");
+  assert.deepEqual(item.details.media.map((media) => media.kind), ["image", "audio"]);
+  assert.equal("apiKey" in item.details, false);
+});
+
+
+test("wake shortcut settings replace the registered native accelerator before persisting", async () => {
+  const h = harness();
+  const registrations = [];
+  const saved = [];
+  h.backend.setWakeShortcut = async (shortcut) => registrations.push(shortcut);
+  h.backend.saveSettings = async (configuration) => saved.push(configuration);
+
+  await executeCommand('settings set wakeShortcut "Control+Shift+K"', h);
+
+  assert.deepEqual(registrations, ["Control+Shift+K"]);
+  assert.equal(h.state().settings.wakeShortcut, "Control+Shift+K");
+  assert.equal(saved.at(-1).settings.wakeShortcut, "Control+Shift+K");
+});
+
+test("failed wake shortcut registration leaves the previous setting intact", async () => {
+  const h = harness();
+  let saveCount = 0;
+  h.backend.setWakeShortcut = async () => { throw new Error("shortcut unavailable"); };
+  h.backend.saveSettings = async () => { saveCount += 1; };
+
+  await assert.rejects(() => executeCommand('settings set wakeShortcut "Command+K"', h), /shortcut unavailable/);
+
+  assert.equal(h.state().settings.wakeShortcut, "Alt+Space");
+  assert.equal(saveCount, 0);
+});
+
+test("wake shortcut field captures the pressed combination instead of typed text", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const registrations = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: false,
+      setWakeShortcut: async (shortcut) => registrations.push(shortcut),
+      saveSettings: async () => {}
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  let prevented = false;
+  let stopped = false;
+  let blurred = false;
+  const input = {
+    id: "wake-shortcut-input",
+    dataset: { setting: "wakeShortcut" },
+    value: "Alt+Space",
+    blur() { blurred = true; }
+  };
+
+  await controller.handleKeydown({
+    target: input,
+    code: "KeyJ",
+    key: "j",
+    metaKey: true,
+    ctrlKey: false,
+    altKey: true,
+    shiftKey: false,
+    preventDefault() { prevented = true; },
+    stopPropagation() { stopped = true; }
+  });
+
+  assert.equal(input.value, "Command+Alt+J");
+  assert.equal(controller.state.settings.wakeShortcut, "Command+Alt+J");
+  assert.deepEqual(registrations, ["Command+Alt+J"]);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(blurred, true);
+});
+
+test("browser preview wake listener follows the configured shortcut", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const controller = new AppController({
+    view: { root: {}, render() {}, showToast() {} },
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state.settings.wakeShortcut = "Control+Shift+J";
+  controller.state.settings.wakeHoldSeconds = 30;
+  const custom = {
+    code: "KeyJ", key: "j", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, repeat: false,
+    preventDefault() {}
+  };
+
+  await controller.handleGlobalKeydown({ code: "Space", key: " ", altKey: true, ctrlKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault() {} });
+  assert.equal(controller.wakeTimer, null);
+
+  await controller.handleGlobalKeydown(custom);
+  assert.notEqual(controller.wakeTimer, null);
+  controller.handleGlobalKeyup({ code: "KeyJ", key: "j" });
+  assert.equal(controller.wakeTimer, null);
+});
+
+test("native startup applies the restored wake shortcut", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const previousWindow = globalThis.window;
+  const previousAnimationFrame = globalThis.requestAnimationFrame;
+  globalThis.window = { addEventListener() {} };
+  globalThis.requestAnimationFrame = (callback) => callback();
+  const registrations = [];
+  const controller = new AppController({
+    view: { root: { addEventListener() {}, querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: true,
+      listenForCommands: async () => {},
+      listen: async () => {},
+      initialize: async () => ({ root: "~", configuration: { settings: { wakeShortcut: "Command+Shift+U" } } }),
+      setWakeShortcut: async (shortcut) => registrations.push(shortcut),
+      listDirectory: async () => [],
+      readShellHistory: async () => [],
+      readClipboardHistory: async () => [],
+      mediaPermissionStatus: async () => ({ microphone: "authorized", screenRecording: "authorized" })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => true, mount: async () => {} })
+  });
+
+  try {
+    await controller.initialize();
+    assert.deepEqual(registrations, ["Command+Shift+U"]);
+  } finally {
+    if (controller.clipboardPollTimer) clearInterval(controller.clipboardPollTimer);
+    globalThis.window = previousWindow;
+    globalThis.requestAnimationFrame = previousAnimationFrame;
+  }
+});
+
+test("native wake handler is dynamic instead of matching Alt+Space", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) => readFile("src-tauri/src/lib.rs", "utf8"));
+  assert.match(source, /fn set_wake_shortcut/);
+  assert.match(source, /unregister/);
+  assert.doesNotMatch(source, /shortcut\.matches\(Modifiers::ALT, Code::Space\)/);
+  assert.match(source, /set_wake_shortcut,/);
 });

@@ -163,6 +163,27 @@ function renderFolderMenu(sortBy) {
   </div>`;
 }
 
+function renderLiveStatus(status) {
+  const messages = {
+    recording: "Listening…",
+    connecting: "Listening while Gemini Live connects…",
+    connected: "Live chat connected — listening…",
+    processing: "Gemini is responding…",
+    disconnecting: "Disconnecting Live chat after no reply…",
+    "disconnected-idle": "Live chat disconnected after inactivity.",
+    "disconnected-timeout": "Live chat disconnected — no reply before the configured timeout.",
+    disconnected: "Live chat disconnected."
+  };
+  const message = messages[status];
+  if (!message) return "";
+  const tone = status === "connected"
+    ? "connected"
+    : status.startsWith("disconnected")
+      ? "disconnected"
+      : status;
+  return `<div class="live-status-banner is-${tone}" role="status" aria-live="polite"><span aria-hidden="true"></span>${message}</div>`;
+}
+
 export function renderTerminal(state) {
   const tab = activeWorkspace(state);
   return `
@@ -174,9 +195,11 @@ export function renderTerminal(state) {
       </div>
       <div class="terminal-history" id="terminal-history"><div id="terminal-emulator" class="terminal-emulator" data-workspace-id="${escapeHtml(tab.id)}"></div></div>
       <div class="terminal-input-zone">
-      <div class="composer-wrap">
-        ${state.media.attachments.length ? `<div class="attachment-row">${state.media.attachments.map((item) => `<span class="attachment-chip">${item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : "▷"} ${escapeHtml(item.name)}<button type="button" data-action="attachment-remove" data-id="${item.id}">×</button></span>`).join("")}</div>` : ""}
-        <textarea id="terminal-input" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · ⌘/Ctrl + Enter runs"></textarea>
+        <div id="terminal-completion" class="terminal-completion" role="listbox" aria-label="Terminal completion suggestions" hidden></div>
+        <div class="composer-wrap">
+          ${renderLiveStatus(state.ui.liveStatus)}
+          ${state.media.attachments.length ? `<div class="attachment-row">${state.media.attachments.map((item) => `<span class="attachment-chip">${item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : "▷"} ${escapeHtml(item.name)}<button type="button" data-action="attachment-remove" data-id="${item.id}">×</button></span>`).join("")}</div>` : ""}
+          <textarea id="terminal-input" rows="3" role="combobox" aria-autocomplete="list" aria-controls="terminal-completion" aria-expanded="false" aria-haspopup="listbox" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · hold Enter 2s or ⌘/Ctrl + Enter runs"></textarea>
         <div class="composer-actions">
           <label class="model-select-wrap ${state.ui.liveConnected ? "is-live-connected" : ""}" title="Select AI model">
             <select id="terminal-model-select" class="model-select" aria-label="AI model">
@@ -185,12 +208,12 @@ export function renderTerminal(state) {
           </label>
           <div class="composer-buttons">
             <label class="icon-button attach-button" title="Attach files" aria-label="Attach files">＋<input id="file-attachment" type="file" multiple hidden></label>
-            <button type="button" class="icon-button live-mic-button${state.ui.liveConnected && state.ui.liveRecording ? " is-recording" : ""}" data-action="live-record" aria-label="${state.ui.liveConnected && state.ui.liveRecording ? "Recording — release to send or click to disconnect" : "Click to connect or hold one second to talk"}" title="${state.ui.liveConnected && state.ui.liveRecording ? "Recording — release to send or click to disconnect" : "Click to connect or hold one second to talk"}" aria-pressed="${state.ui.liveConnected && state.ui.liveRecording}">${state.ui.liveConnected && state.ui.liveRecording ? '<span class="live-recording-glyph" aria-hidden="true"><i></i><i></i><i></i></span>' : '<span class="live-mic-glyph" aria-hidden="true">🎙</span>'}</button>
+            <button type="button" class="icon-button live-mic-button${state.ui.liveConnected && state.ui.liveRecording ? " is-recording" : ""}" data-action="live-record" aria-label="${state.ui.liveConnected && state.ui.liveRecording ? "Recording — release to send or click to disconnect" : "Click to connect or hold one second to talk"}" title="${state.ui.liveConnected && state.ui.liveRecording ? "Recording — release to send or click to disconnect" : "Click to connect or hold one second to talk"}" aria-pressed="${state.ui.liveConnected && state.ui.liveRecording}">${state.ui.liveConnected && state.ui.liveRecording ? '<span class="live-recording-glyph" aria-hidden="true"><i></i><i></i><i></i></span>' : '<svg class="live-mic-glyph" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Zm-6 9a6 6 0 0 0 12 0M12 18v3M9 21h6"/></svg>'}</button>
             <button type="button" class="action-button primary" data-action="terminal-ask"><span>✦</span>Ask</button>
             <button type="button" class="action-button secondary" data-action="terminal-run"><span>▶</span>Run</button>
           </div>
+          </div>
         </div>
-      </div>
       </div>
     </section>`;
 }
@@ -318,8 +341,30 @@ export function renderWebview(state, { native = false } = {}) {
   </section>`;
 }
 
-function renderInfoDetails(details) {
+function renderAiRequestDetails(details, infoId) {
+  const text = String(details.text || "");
+  const media = Array.isArray(details.media) ? details.media : [];
+  const cards = media.map((item, index) => {
+    const id = escapeHtml(item.id || `media-${index}`);
+    const name = escapeHtml(item.name || `Attachment ${index + 1}`);
+    const url = escapeHtml(item.url || "");
+    const kind = item.kind || "file";
+    let preview = `<span class="ai-request-file-glyph" aria-hidden="true">◇</span>`;
+    if (kind === "image" && url) {
+      preview = `<button class="ai-request-image" type="button" data-action="info-media-open" data-info-id="${escapeHtml(infoId)}" data-media-id="${id}" aria-label="View ${name}"><img src="${url}" alt="${name}"></button>`;
+    } else if (kind === "audio" && url) {
+      preview = `<audio controls preload="metadata" src="${url}" aria-label="Play ${name}"></audio>`;
+    } else if (kind === "video" && url) {
+      preview = `<video controls preload="metadata" src="${url}" aria-label="Play ${name}"></video>`;
+    }
+    return `<div class="ai-request-media-card is-${escapeHtml(kind)}">${preview}<div><strong>${name}</strong><small>${escapeHtml(item.mime || kind)}</small></div></div>`;
+  }).join("");
+  return `<div class="ai-request-details">${text ? `<pre class="ai-request-text">${escapeHtml(text)}</pre>` : ""}${cards ? `<div class="ai-request-media-grid">${cards}</div>` : `<small class="ai-request-no-media">No media attached.</small>`}</div>`;
+}
+
+function renderInfoDetails(details, infoId = "") {
   if (!details) return "";
+  if (details.type === "ai-request") return renderAiRequestDetails(details, infoId);
   const permissions = details.permissions || {};
   const access = [permissions.read ? "Read" : null, permissions.write ? "Write" : null, permissions.execute ? "Execute" : null].filter(Boolean).join(" · ") || "None";
   const rows = [
@@ -334,9 +379,23 @@ function renderInfoDetails(details) {
   return `<dl class="info-details">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
 }
 
+function renderInfoMediaViewer(state) {
+  const media = state.ui.infoMediaPreview;
+  if (!media?.url) return "";
+  const name = escapeHtml(media.name || "AI request media");
+  const url = escapeHtml(media.url);
+  const content = media.kind === "audio"
+    ? `<audio controls autoplay src="${url}"></audio>`
+    : media.kind === "video"
+      ? `<video controls autoplay src="${url}"></video>`
+      : `<img src="${url}" alt="${name}">`;
+  return `<div class="info-media-viewer" data-action="info-media-close"><section role="dialog" aria-modal="true" aria-label="${name}" onclick="event.stopPropagation()"><header><strong>${name}</strong><button type="button" data-action="info-media-close" aria-label="Close media viewer">×</button></header>${content}</section></div>`;
+}
+
 export function renderInfo(state) {
   return `<section class="info-panel"><header class="panel-title"><div><span>ⓘ</span><div><small>ACTIVITY</small><h2>Info</h2></div></div>${button("⌫", "Clear messages", "info-clear")}</header>
-    <div class="info-list">${state.info.items.length ? state.info.items.map((item) => `<article class="info-item ${item.level || "info"}"><span>${item.level === "error" ? "!" : item.level === "success" ? "✓" : "i"}</span><div><div><strong>${escapeHtml(item.title || "Auri")}</strong><time>${new Date(item.at).toLocaleString()}</time></div><p>${escapeHtml(item.message)}</p>${renderInfoDetails(item.details)}</div></article>`).join("") : `<div class="empty-state"><span>✓</span><h2>All clear</h2><p>Errors, network notices, and rendering fallbacks appear here.</p></div>`}</div>
+    <div class="info-list">${state.info.items.length ? state.info.items.map((item) => `<article class="info-item ${item.level || "info"}"><span>${item.level === "error" ? "!" : item.level === "success" ? "✓" : "i"}</span><div><div><strong>${escapeHtml(item.title || "Auri")}</strong><time>${new Date(item.at).toLocaleString()}</time></div><p>${escapeHtml(item.message)}</p>${renderInfoDetails(item.details, item.id)}</div></article>`).join("") : `<div class="empty-state"><span>✓</span><h2>All clear</h2><p>Errors, network notices, and rendering fallbacks appear here.</p></div>`}</div>
+    ${renderInfoMediaViewer(state)}
   </section>`;
 }
 
@@ -405,6 +464,51 @@ function renderModelEditor(model) {
   </form>`;
 }
 
+export function customCompletionLineNumbers(value = "") {
+  const lineCount = Math.max(1, String(value ?? "").split("\n").length);
+  return Array.from({ length: lineCount }, (_, index) => index + 1).join("\n");
+}
+
+function customCompletionCountLabel(value = "") {
+  const count = Math.max(1, String(value ?? "").split("\n").length);
+  return `${count} ${count === 1 ? "line" : "lines"}`;
+}
+
+function renderPermissionRow(permission, label, status) {
+  const value = String(status || "unknown");
+  const allowed = value === "authorized";
+  const unavailable = value === "unavailable";
+  const statusLabel = allowed
+    ? "Allowed"
+    : value === "notDetermined" || value === "unknown"
+      ? "Not requested"
+      : value === "restricted"
+        ? "Restricted"
+        : unavailable
+          ? "Unavailable"
+          : "Not allowed";
+  const actionLabel = value === "notDetermined" || value === "unknown" ? "Request" : "Open Settings";
+  return `<div class="permission-row" data-permission="${permission}">
+    <span class="permission-copy"><strong>${label}</strong><small>${statusLabel}</small></span>
+    ${allowed
+      ? '<span class="permission-check" aria-label="Allowed" title="Allowed">✓</span>'
+      : unavailable
+        ? '<span class="permission-unavailable">Unavailable</span>'
+        : `<button class="action-button secondary permission-action" type="button" data-action="permission-request" data-permission="${permission}">${actionLabel}</button>`}
+  </div>`;
+}
+
+function renderMediaPermissions(state) {
+  const permissions = state.permissions || {};
+  return `<section class="setting-section permission-section">
+    <div class="section-copy"><h3>Privacy permissions</h3><p>Auri needs these macOS permissions for voice, screenshots, and system-audio capture.</p></div>
+    <div class="permission-card">
+      ${renderPermissionRow("microphone", "Microphone", permissions.microphone)}
+      ${renderPermissionRow("screenRecording", "Screen &amp; System Audio Recording", permissions.screenRecording)}
+    </div>
+  </section>`;
+}
+
 export function renderSettings(state) {
   const editingModel = state.models.find((model) => model.id === state.ui.editingModelId);
   const models = state.models.length
@@ -435,10 +539,12 @@ export function renderSettings(state) {
 
   return `<section class="settings-panel"><header class="panel-title"><div><span>⚙</span><h2>Settings</h2></div></header>
     <div class="settings-scroll">
+      ${renderMediaPermissions(state)}
       <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div><div class="model-list">${models}</div>${renderModelEditor(editingModel)}
       <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type">${renderModelTypeOptions("gemini")}</select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" placeholder="Optional"></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label><label><span>Terminal retained lines<small>Oldest lines are discarded · 100–100,000</small></span><input data-setting="terminalMaxLines" type="number" min="100" max="100000" step="100" value="${state.settings.terminalMaxLines}"></label></div></section>
-      <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Long press to open</small></span><input data-setting="wakeShortcut" value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>No-reply disconnect<small>Seconds after audio input stops or reply activity</small></span><input data-setting="liveDisconnectSeconds" type="number" min="10" max="600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
+      <section class="setting-section"><div class="section-copy"><h3>Terminal completion</h3><p>Recent shell commands are loaded from zsh and bash history.</p></div><div class="settings-card terminal-completion-card"><div class="settings-textarea-row"><label class="settings-field-heading" for="custom-completions"><span>Custom commands<small>One command per line · available in every workspace</small></span></label><div class="custom-completions-shell"><div class="custom-completions-gutter" id="custom-completions-lines" aria-hidden="true">${customCompletionLineNumbers(state.settings.customCompletions)}</div><textarea id="custom-completions" rows="8" spellcheck="false" placeholder="git status&#10;npm test">${escapeHtml(state.settings.customCompletions || "")}</textarea></div><div class="custom-completions-footer"><small id="custom-completions-count">${customCompletionCountLabel(state.settings.customCompletions)}</small><button class="action-button secondary settings-save-button" type="button" data-action="custom-completions-save">Save commands</button></div></div></div></section>
+      <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Press the shortcut you want to use</small></span><input id="wake-shortcut-input" class="shortcut-capture" data-setting="wakeShortcut" type="text" readonly autocomplete="off" spellcheck="false" aria-label="Wake shortcut. Focus this field and press a key combination." value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>No-reply disconnect<small>Seconds after audio input stops or reply activity</small></span><input data-setting="liveDisconnectSeconds" type="number" min="1" max="3600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>
     </div>
   </section>`;

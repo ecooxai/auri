@@ -42,6 +42,31 @@ test("terminal composer places a hold-to-talk microphone immediately before Ask"
   assert.match(html, /aria-pressed="false"/);
 });
 
+test("Gemini Live status renders at the top of the input composer without covering its controls", () => {
+  const state = createInitialState();
+  state.ui.liveStatus = "connected";
+
+  const connected = renderTerminal(state);
+  const statusIndex = connected.indexOf('class="live-status-banner is-connected"');
+  const inputIndex = connected.indexOf('id="terminal-input"');
+  const micIndex = connected.indexOf('data-action="live-record"');
+  const askIndex = connected.indexOf('data-action="terminal-ask"');
+
+  assert.notEqual(statusIndex, -1);
+  assert.match(connected, /Live chat connected — listening…/);
+  assert.ok(statusIndex < inputIndex);
+  assert.ok(statusIndex < micIndex);
+  assert.ok(statusIndex < askIndex);
+
+  state.ui.liveStatus = "disconnected";
+  const disconnected = renderTerminal(state);
+  assert.match(disconnected, /class="live-status-banner is-disconnected"/);
+  assert.match(disconnected, /Live chat disconnected\./);
+
+  state.ui.liveStatus = "idle";
+  assert.doesNotMatch(renderTerminal(state), /live-status-banner/);
+});
+
 test("microphone renders a recording indicator only while Live is connected and recording", () => {
   const state = createInitialState();
   state.ui.liveConnected = true;
@@ -154,5 +179,72 @@ test("click toggle disconnects an existing Live session and reports disconnected
   assert.equal(controller.wakeLiveSession, null);
   assert.equal(controller.state.ui.liveConnected, false);
   assert.equal(controller.state.ui.liveRecording, false);
-  assert.match(toasts.at(-1), /Live chat disconnected/i);
+  assert.equal(controller.state.ui.liveStatus, "disconnected");
+  assert.deepEqual(toasts, []);
+  assert.match(renderTerminal(controller.state), /Live chat disconnected\./);
+});
+
+test("saving the no-reply setting updates an active Live session immediately", async () => {
+  const controller = controllerHarness();
+  let applied = null;
+  controller.view.getSettingValue = () => 5;
+  controller.runInternal = async () => {
+    controller.state = reduceState(controller.state, {
+      type: "SETTING_SET",
+      payload: { key: "liveDisconnectSeconds", value: 5 }
+    });
+  };
+  controller.wakeLiveSession = {
+    setInactivitySeconds(value) { applied = value; }
+  };
+
+  await controller.handleChange({ target: { dataset: { setting: "liveDisconnectSeconds" } } });
+
+  assert.equal(applied, 5);
+});
+
+
+test("Alt+Space activation reuses an existing Live connection with the new screenshot and timeout", async () => {
+  const controller = controllerHarness();
+  const restarts = [];
+  let cancelled = false;
+  controller.state.settings.liveDisconnectSeconds = 5;
+  controller.activeTerminalSession = () => ({ printMessage() {} });
+  controller.wakeLiveSession = {
+    completed: false,
+    restart: async (options) => { restarts.push(options); },
+    cancel: async () => { cancelled = true; }
+  };
+  const fresh = { name: "wake.jpg", base64: "ZnJlc2g=", mime: "image/jpeg" };
+
+  await controller.activateWakeSession(fresh);
+
+  assert.equal(cancelled, false);
+  assert.deepEqual(restarts, [{ screenshot: fresh, inactivitySeconds: 5 }]);
+  assert.equal(controller.wakeLiveSession.completed, false);
+});
+
+test("long-press Live activation captures a fresh screenshot before reusing the connection", async () => {
+  const controller = controllerHarness();
+  const toasts = [];
+  controller.view.showToast = (message) => toasts.push(message);
+  const fresh = { name: "mic.jpg", base64: "bWlj", mime: "image/jpeg" };
+  let restartedWith = null;
+  controller.backend.captureScreenshot = async () => fresh;
+  controller.activeTerminalSession = () => ({ printMessage() {} });
+  controller.wakeLiveSession = {
+    completed: false,
+    restart: async (options) => { restartedWith = options.screenshot; }
+  };
+
+  await controller.context().actions.startLiveRecording();
+
+  assert.equal(restartedWith, fresh);
+  assert.deepEqual(toasts, []);
+});
+
+test("microphone idle icon is a simple vector instead of an emoji", () => {
+  const html = renderTerminal(createInitialState());
+  assert.match(html, /<svg[^>]*class="live-mic-glyph"/);
+  assert.doesNotMatch(html, /🎙/);
 });

@@ -1,3 +1,4 @@
+use super::util::recent_shell_history_commands;
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
@@ -87,4 +88,20 @@ pub fn save_configuration(configuration: &Value) -> Result<(), String> {
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, format!("{json}\n")).map_err(|error| error.to_string())?;
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
+}
+
+
+pub fn read_shell_history() -> Result<Vec<String>, String> {
+    let home = home_dir()?;
+    let mut histories = Vec::new();
+    for path in [home.join(".zsh_history"), home.join(".bash_history")] {
+        match fs::read(&path) {
+            Ok(bytes) => histories.push(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("Could not read {}: {error}", display_path(&path)));
+            }
+        }
+    }
+    Ok(recent_shell_history_commands(&histories, 500))
 }

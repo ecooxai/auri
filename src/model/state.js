@@ -31,7 +31,7 @@ export function createWorkspace(title = "Home") {
     activeSubtabId: terminal.id,
     subtabs: [terminal, createSubtab("clipboard"), createSubtab("info")],
     folder: { visible: true, path: "~", entries: [], selectedPath: null, selectedCount: 0, sortBy: "name" },
-    terminal: { cwd: "~", history: [], draft: "", running: false },
+    terminal: { cwd: "~", history: [], commandHistory: [], draft: "", running: false },
     viewer: { path: null, metadata: null, mode: "empty" }
   };
 }
@@ -44,6 +44,8 @@ export function createInitialState() {
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
     browser: { bookmarks: [], history: [] },
+    completion: { shellHistory: [] },
+    permissions: { microphone: "unknown", screenRecording: "unknown" },
     models: [
       { id: "gemini-live-default", name: "Gemini Live", type: "gemini-live", model: "gemini-2.5-flash-native-audio", url: "", apiKey: "", enabled: true }
     ],
@@ -58,10 +60,12 @@ export function createInitialState() {
       alwaysAttachScreenshot: true,
       screenshotFormat: "jpg",
       audioFormat: "m4a",
-      audioBitrateKbps: 64
+      audioBitrateKbps: 64,
+      customCompletions: "",
+      commandUsage: []
     },
     media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", assistantActions: [], assistantTranscripts: [] }
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [] }
   };
 }
 
@@ -77,10 +81,16 @@ export function serializeWorkspaceSession(state) {
   const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.id === state?.activeTabId));
   return {
     activeIndex,
-    items: tabs.map((tab, index) => ({
-      title: String(tab?.title || (index === 0 ? "Home" : `Space ${index + 1}`)),
-      path: String(tab?.folder?.path || tab?.terminal?.cwd || "~")
-    }))
+    items: tabs.map((tab, index) => {
+      const commandHistory = Array.isArray(tab?.terminal?.commandHistory)
+        ? tab.terminal.commandHistory.filter((item) => typeof item === "string" && item.trim()).slice(0, 200)
+        : [];
+      return {
+        title: String(tab?.title || (index === 0 ? "Home" : `Space ${index + 1}`)),
+        path: String(tab?.folder?.path || tab?.terminal?.cwd || "~"),
+        ...(commandHistory.length ? { commandHistory } : {})
+      };
+    })
   };
 }
 
@@ -92,7 +102,13 @@ function workspaceFromSession(item, index) {
   return {
     ...workspace,
     folder: { ...workspace.folder, path },
-    terminal: { ...workspace.terminal, cwd: path }
+    terminal: {
+      ...workspace.terminal,
+      cwd: path,
+      commandHistory: Array.isArray(item?.commandHistory)
+        ? item.commandHistory.filter((entry) => typeof entry === "string" && entry.trim()).slice(0, 200)
+        : []
+    }
   };
 }
 
@@ -172,6 +188,40 @@ export function reduceState(state, event) {
       }));
     case "TERMINAL_DRAFT_SET":
       return updateActiveTab(state, (tab) => ({ ...tab, terminal: { ...tab.terminal, draft: event.payload.value } }));
+    case "SHELL_HISTORY_SET": {
+      const commands = Array.isArray(event.payload?.commands)
+        ? event.payload.commands.filter((item) => typeof item === "string" && item.trim()).slice(0, 500)
+        : [];
+      return { ...state, completion: { ...state.completion, shellHistory: commands } };
+    }
+    case "TERMINAL_COMMAND_REMEMBER": {
+      const command = String(event.payload?.command ?? "").trim();
+      if (!command) return state;
+      const withHistory = updateActiveTab(state, (tab) => {
+        const previous = Array.isArray(tab.terminal.commandHistory) ? tab.terminal.commandHistory : [];
+        const commandHistory = [command, ...previous.filter((item) => item !== command)].slice(0, 200);
+        return { ...tab, terminal: { ...tab.terminal, commandHistory } };
+      });
+      const previousUsage = Array.isArray(state.settings.commandUsage) ? state.settings.commandUsage : [];
+      const previousEntry = previousUsage.find((item) => item?.command === command);
+      const count = Math.max(0, Number(previousEntry?.count) || 0) + 1;
+      const commandUsage = [
+        { command, count },
+        ...previousUsage.filter((item) => item?.command !== command)
+      ].slice(0, 500);
+      const customLines = String(state.settings.customCompletions || "")
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const hasCustom = customLines.some((item) => item.toLocaleLowerCase() === command.toLocaleLowerCase());
+      const customCompletions = count >= 5 && !hasCustom
+        ? [...customLines, command].join("\n")
+        : String(state.settings.customCompletions || "");
+      return {
+        ...withHistory,
+        settings: { ...withHistory.settings, commandUsage, customCompletions }
+      };
+    }
     case "TERMINAL_OUTPUT_ADD":
       return updateActiveTab(state, (tab) => ({
         ...tab,
@@ -190,12 +240,20 @@ export function reduceState(state, event) {
       return { ...state, info: { unread: 0, items: [] } };
     case "INFO_READ":
       return { ...state, info: { ...state.info, unread: 0 } };
+    case "PERMISSIONS_SET":
+      return {
+        ...state,
+        permissions: { ...state.permissions, ...(event.payload || {}) }
+      };
     case "SETTING_SET": {
       let value = event.payload.value;
       if (event.payload.key === "fontSize") {
         value = Math.min(30, Math.max(14, Number(value) || 20));
       } else if (event.payload.key === "terminalMaxLines") {
         value = Math.min(100000, Math.max(100, Number(value) || 4000));
+      } else if (event.payload.key === "liveDisconnectSeconds") {
+        const seconds = Number(value);
+        value = Number.isFinite(seconds) ? Math.min(3600, Math.max(1, seconds)) : 60;
       }
       return { ...state, settings: { ...state.settings, [event.payload.key]: value } };
     }

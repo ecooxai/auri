@@ -147,3 +147,14 @@ test("workspace sessions preserve all open folder paths and the active workspace
   ]);
   assert.equal(restored.activeTabId, restored.tabs[0].id);
 });
+
+
+test("Live disconnect seconds preserve user values and clamp unsafe input", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "liveDisconnectSeconds", value: 3 } });
+  assert.equal(state.settings.liveDisconnectSeconds, 3);
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "liveDisconnectSeconds", value: 0 } });
+  assert.equal(state.settings.liveDisconnectSeconds, 1);
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "liveDisconnectSeconds", value: 5000 } });
+  assert.equal(state.settings.liveDisconnectSeconds, 3600);
+});

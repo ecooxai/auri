@@ -104,3 +104,37 @@ fn focus_only_ipc_requests_are_not_dispatched_as_commands() {
     );
     assert!(ipc::parse_request("   ").is_err());
 }
+
+#[test]
+fn shell_history_parser_handles_zsh_extended_and_bash_timestamp_lines() {
+    assert_eq!(
+        util::shell_history_command(": 1712345678:0;git status"),
+        Some("git status".to_string())
+    );
+    assert_eq!(
+        util::shell_history_command("npm test"),
+        Some("npm test".to_string())
+    );
+    assert_eq!(util::shell_history_command("#1712345678"), None);
+    assert_eq!(util::shell_history_command("   "), None);
+}
+
+#[test]
+fn recent_shell_history_is_newest_first_deduplicated_and_bounded() {
+    let histories = vec![
+        "old command
+: 1712345678:0;git status
+npm test
+git status".to_string(),
+        "cargo check
+npm test".to_string(),
+    ];
+    assert_eq!(
+        util::recent_shell_history_commands(&histories, 3),
+        vec![
+            "git status".to_string(),
+            "npm test".to_string(),
+            "old command".to_string()
+        ]
+    );
+}

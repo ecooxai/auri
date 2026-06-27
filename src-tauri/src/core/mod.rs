@@ -3,6 +3,7 @@ pub mod clipboard;
 pub mod files;
 pub mod ipc;
 pub mod lifecycle;
+pub mod permissions;
 pub mod shell;
 pub mod util;
 pub mod workspace;

@@ -166,3 +166,39 @@ fn quote_command_argument(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }
+
+pub fn shell_history_command(line: &str) -> Option<String> {
+    let value = line.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with('#') && value[1..].chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    let command = if value.starts_with(": ") {
+        value.split_once(';').map(|(_, command)| command).unwrap_or(value)
+    } else {
+        value
+    };
+    let command = command.trim();
+    (!command.is_empty()).then(|| command.to_string())
+}
+
+pub fn recent_shell_history_commands(histories: &[String], limit: usize) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut commands = Vec::new();
+    for history in histories {
+        for line in history.lines().rev() {
+            let Some(command) = shell_history_command(line) else {
+                continue;
+            };
+            if seen.insert(command.clone()) {
+                commands.push(command);
+                if commands.len() >= limit {
+                    return commands;
+                }
+            }
+        }
+    }
+    commands
+}

@@ -32,7 +32,7 @@ Implemented now:
 - Terminal composer where Enter inserts a newline and Command/Ctrl+Enter runs.
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
 - Assistant replies can expose allowlisted shell-command and input-ready actions in a floating panel, with Run, Insert, and Copy controls.
-- Local model/settings management and an Info tab for errors and notices.
+- Local model/settings management and an Info tab for errors, notices, and sanitized AI request details with text plus playable image/audio previews.
 - Clipboard text history with the 100 + 100 character long-text preview rule.
 - Audio/video recording through the WebView media APIs, with native persistence under `~/auri/media`.
 - Native screenshot capture, workspace creation, local configuration, file access, and external file opening.
@@ -43,7 +43,8 @@ Not complete yet:
 
 - The terminal backend is process-based, not a PTY. Interactive full-screen programs such as `top`, `htop`, editors, and password prompts need a PTY session layer.
 - The Alt+Space hold gesture works while Auri receives keyboard events; OS-global shortcut registration is not yet implemented.
-- Gemini Live and OpenAI Live model types are configurable, but true bidirectional realtime audio streaming is not yet implemented; current AI requests use the normal HTTP completion/generation paths.
+- Gemini Live wake sessions support persistent multi-turn voice interaction. Repeated Alt+Space activation or hold-to-talk reuses the active connection, sends a fresh screenshot, resumes suspended audio after app switching, and uses the configured no-reply timeout before disconnecting.
+- OpenAI Live remains configurable but does not yet provide a native bidirectional realtime session; its requests currently use the normal completion path.
 - Clipboard persistence captures text and images through native polling. Event-driven clipboard monitoring and broader cross-platform deduplication remain to be added.
 - Recording prefers MP4/M4A when the WebView supports it and falls back to WebM. Guaranteed 64 kbps M4A transcoding requires a native encoder/transcode stage.
 - Linux screenshot capture expects `gnome-screenshot` or `grim`; JPEG conversion uses `ffmpeg` when available.
@@ -225,6 +226,8 @@ auri record stop                                                               S
 auri media attach <audio|video>                                                Attach the latest recording to the prompt.
 auri settings open                                                             Open Settings.
 auri settings set <key> <value>                                                Update an application setting.
+auri permission status                                                         Refresh macOS media permission status.
+auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.

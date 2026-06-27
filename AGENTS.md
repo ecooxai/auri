@@ -84,6 +84,8 @@ auri record stop                                                               S
 auri media attach <audio|video>                                                Attach the latest recording to the prompt.
 auri settings open                                                             Open Settings.
 auri settings set <key> <value>                                                Update an application setting.
+auri permission status                                                         Refresh macOS media permission status.
+auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.
@@ -133,6 +135,8 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - Clipboard text longer than 150 characters renders the first 100 and last 50 characters only.
 - Unrenderable content and network errors also appear in Info.
 - Assistant reply actions recognize only the two allowlisted command and input-ready markers. Escape every extracted value and never render arbitrary assistant HTML.
+- Reuse an active Gemini Live wake connection for later shortcut or hold-to-talk turns. Refresh the screenshot and microphone input without reconnecting, and honor `liveDisconnectSeconds` exactly within its validated range.
+- Record sanitized AI request metadata in Info after media preparation. Never store API keys or base64 payloads there; expose only text, names, MIME types, safe paths, and preview URLs.
 
 ## Completion checklist
 

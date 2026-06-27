@@ -135,6 +135,41 @@ test("wake session disconnects when no reply arrives for the configured seconds"
   assert.deepEqual(statuses.slice(-2), ["disconnecting", "disconnected-timeout"]);
 });
 
+test("persistent Live input activity starts the configured no-reply disconnect deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const statuses = [];
+  let closed = false;
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    inactivitySeconds: 5,
+    onStatus: (status) => statuses.push(status)
+  });
+  session.stopMicrophone = async () => {};
+  session.player.close = async () => {};
+  session.session = {
+    sendRealtimeInput() {},
+    close() { closed = true; }
+  };
+
+  assert.equal(session.noteInputActivity(new Float32Array([0, 0, 0, 0])), false);
+  t.mock.timers.tick(5000);
+  await Promise.resolve();
+  assert.equal(closed, false);
+
+  assert.equal(session.noteInputActivity(new Float32Array([0.02, -0.02, 0.015, -0.015])), true);
+  t.mock.timers.tick(4999);
+  await Promise.resolve();
+  assert.equal(closed, false);
+
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(closed, true);
+  assert.deepEqual(statuses.slice(-2), ["disconnecting", "disconnected-timeout"]);
+});
+
+
 test("wake session primes reply audio playback before asynchronous microphone setup", async () => {
   const order = [];
   const session = new GeminiWakeSession({ model: { apiKey: "test" } });
@@ -148,4 +183,227 @@ test("wake session primes reply audio playback before asynchronous microphone se
   await session.start();
 
   assert.deepEqual(order, ["player", "microphone", "connect"]);
+});
+
+test("wake session honors configured disconnect values below the old ten-second floor", () => {
+  const session = new GeminiWakeSession({ model: { apiKey: "test" }, inactivitySeconds: 3 });
+  assert.equal(session.responseTimeoutMs, 3000);
+});
+
+test("wake session restart applies the latest configured no-reply timeout", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const statuses = [];
+  let closed = false;
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    inactivitySeconds: 60,
+    onStatus: (status) => statuses.push(status)
+  });
+  session.session = {
+    sendRealtimeInput() {},
+    close() { closed = true; }
+  };
+  session.stopped = true;
+  session.player.ensureContext = async () => {};
+  session.player.close = async () => {};
+  session.startMicrophone = async () => { session.stream = {}; };
+  session.stopMicrophone = async () => { session.stream = null; };
+
+  await session.restart({ inactivitySeconds: 5 });
+  await session.stop();
+  t.mock.timers.tick(4999);
+  await Promise.resolve();
+  assert.equal(closed, false);
+
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(closed, true);
+  assert.equal(session.responseTimeoutMs, 5000);
+  assert.deepEqual(statuses.slice(-2), ["disconnecting", "disconnected-timeout"]);
+});
+
+
+test("changing the no-reply setting updates an already pending deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let closed = false;
+  const session = new GeminiWakeSession({ model: { apiKey: "test" }, inactivitySeconds: 60 });
+  session.session = { sendRealtimeInput() {}, close() { closed = true; } };
+  session.stopMicrophone = async () => {};
+  session.player.close = async () => {};
+
+  await session.stop();
+  session.responseActivityAt = Date.now() - 4000;
+  session.setInactivitySeconds(5);
+  t.mock.timers.tick(999);
+  await Promise.resolve();
+  assert.equal(closed, false);
+
+  t.mock.timers.tick(1);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(closed, true);
+});
+
+
+test("wake session reuses its connection and sends a fresh screenshot for a new turn", async () => {
+  const statuses = [];
+  const inputs = [];
+  let microphoneStarts = 0;
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    onStatus: (status) => statuses.push(status)
+  });
+  const connectedSession = {
+    sendRealtimeInput: (input) => inputs.push(input),
+    close() {}
+  };
+  session.session = connectedSession;
+  session.stopped = true;
+  session.player.ensureContext = async () => {};
+  session.startMicrophone = async () => { microphoneStarts += 1; session.stream = {}; };
+
+  await session.restart({
+    screenshot: { name: "fresh.jpg", path: "/tmp/fresh.jpg", base64: "ZnJlc2g=", mime: "image/jpeg" }
+  });
+
+  assert.equal(session.session, connectedSession);
+  assert.equal(session.stopped, false);
+  assert.equal(microphoneStarts, 1);
+  assert.deepEqual(inputs, [{ video: { data: "ZnJlc2g=", mimeType: "image/jpeg" } }]);
+  assert.equal(statuses.at(-1), "recording");
+});
+
+test("wake session reports the screenshot and playable microphone audio actually sent", async () => {
+  const requests = [];
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    onRequest: (request) => requests.push(request)
+  });
+  session.session = { sendRealtimeInput() {}, close() {} };
+  session.stopMicrophone = async () => {};
+  session.turnScreenshot = { name: "screen.jpg", path: "/tmp/screen.jpg", base64: "aW1hZ2U=", mime: "image/jpeg" };
+  session.inputAudioChunks = ["AQI="];
+
+  await session.stop();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].text, "");
+  assert.equal(requests[0].media[0].kind, "image");
+  assert.equal(requests[0].media[0].path, "/tmp/screen.jpg");
+  assert.equal(requests[0].media[1].kind, "audio");
+  assert.equal(requests[0].media[1].mime, "audio/wav");
+  assert.ok(requests[0].media[1].blob instanceof Blob);
+  await session.cancel();
+});
+
+
+test("wake session resumes suspended audio after the app regains focus", async () => {
+  const calls = [];
+  const session = new GeminiWakeSession({ model: { apiKey: "test" } });
+  session.player.ensureContext = async () => { calls.push("reply"); };
+  session.audioContext = {
+    state: "suspended",
+    resume: async () => { calls.push("microphone"); }
+  };
+
+  const resumed = await session.resume();
+
+  assert.equal(resumed, true);
+  assert.deepEqual(calls, ["reply", "microphone"]);
+});
+
+
+test("wake session resumes an existing suspended reply audio context after app switching", async () => {
+  const calls = [];
+  const session = new GeminiWakeSession({ model: { apiKey: "test" } });
+  session.player.context = {
+    state: "suspended",
+    resume: async () => { calls.push("reply"); }
+  };
+  session.audioContext = {
+    state: "suspended",
+    resume: async () => { calls.push("microphone"); }
+  };
+
+  const resumed = await session.resume();
+
+  assert.equal(resumed, true);
+  assert.deepEqual(calls, ["reply", "microphone"]);
+});
+
+
+test("non-reply Live packets do not postpone the configured no-reply disconnect", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const statuses = [];
+  let callbacks;
+  let closed = false;
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    inactivitySeconds: 10,
+    onStatus: (status) => statuses.push(status),
+    createClient: () => ({
+      live: {
+        connect: async (options) => {
+          callbacks = options.callbacks;
+          return {
+            sendRealtimeInput() {},
+            close() { closed = true; }
+          };
+        }
+      }
+    })
+  });
+  session.stopped = true;
+  session.stopMicrophone = async () => {};
+  session.player.close = async () => {};
+
+  await session.connect();
+  session.armResponseTimeout();
+  t.mock.timers.tick(5000);
+  callbacks.onmessage({ setupComplete: {} });
+  t.mock.timers.tick(5000);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(closed, true);
+  assert.deepEqual(statuses.slice(-2), ["disconnecting", "disconnected-timeout"]);
+});
+
+
+test("reply audio playback failures do not disconnect the Live API session", async () => {
+  const warnings = [];
+  let callbacks;
+  let closed = false;
+  const session = new GeminiWakeSession({
+    model: { apiKey: "test" },
+    onWarning: (error) => warnings.push(error.message),
+    createClient: () => ({
+      live: {
+        connect: async (options) => {
+          callbacks = options.callbacks;
+          return {
+            sendRealtimeInput() {},
+            close() { closed = true; }
+          };
+        }
+      }
+    })
+  });
+  session.player.enqueue = async () => { throw new Error("Audio context suspended"); };
+
+  await session.connect();
+  callbacks.onmessage({
+    serverContent: {
+      modelTurn: { parts: [{ inlineData: { data: "AQI=", mimeType: "audio/pcm;rate=24000" } }] }
+    }
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(session.completed, false);
+  assert.equal(closed, false);
+  assert.deepEqual(warnings, ["Audio context suspended"]);
+  await session.cancel();
 });

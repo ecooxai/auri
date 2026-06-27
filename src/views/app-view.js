@@ -1,5 +1,5 @@
 import { activeWorkspace } from "../model/state.js";
-import { renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderWebOverlay } from "./panels.js";
+import { customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -16,6 +16,11 @@ export function captureFolderScroll(root, nextPath) {
 export function captureClipboardScroll(root) {
   const grid = root && root.querySelector ? root.querySelector(".clipboard-grid") : null;
   return grid ? grid.scrollTop : 0;
+}
+
+export function captureSettingsScroll(root) {
+  const scroller = root && root.querySelector ? root.querySelector(".settings-scroll") : null;
+  return scroller ? scroller.scrollTop : 0;
 }
 
 export class AppView {
@@ -58,6 +63,7 @@ export class AppView {
     const folderCreateValue = state.ui.folderCreateKind ? this.getFolderCreateName() : "";
     const folderScrollTop = captureFolderScroll(this.root, tab.folder.path);
     const clipboardScrollTop = captureClipboardScroll(this.root);
+    const settingsScrollTop = captureSettingsScroll(this.root);
     this.root.innerHTML = `
       <div class="auri-shell">
         ${renderMainTabs(state)}
@@ -83,6 +89,8 @@ export class AppView {
     if (folder) folder.scrollTop = folderScrollTop;
     const clipboard = this.root.querySelector(".clipboard-grid");
     if (clipboard) clipboard.scrollTop = clipboardScrollTop;
+    const settings = this.root.querySelector(".settings-scroll");
+    if (settings) settings.scrollTop = settingsScrollTop;
     requestAnimationFrame(() => {
       const history = this.root.querySelector("#terminal-history");
       if (history) history.scrollTop = history.scrollHeight;
@@ -121,16 +129,79 @@ export class AppView {
     }
   }
 
+  setTerminalCompletions(items = [], selectedIndex = -1) {
+    const popup = this.root.querySelector("#terminal-completion");
+    const input = this.getTerminalInput();
+    if (!popup || !input) return;
+
+    popup.replaceChildren();
+    if (!items.length) {
+      popup.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+      return;
+    }
+
+    const documentRef = popup.ownerDocument || this.root.ownerDocument || globalThis.document;
+    const safeIndex = Math.min(items.length - 1, Math.max(0, selectedIndex));
+    items.forEach((item, index) => {
+      const option = documentRef.createElement("button");
+      option.type = "button";
+      option.id = `terminal-completion-option-${index}`;
+      option.className = "terminal-completion-option";
+      option.dataset.action = "terminal-completion-select";
+      option.dataset.index = String(index);
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(index === safeIndex));
+      option.tabIndex = -1;
+
+      const glyph = documentRef.createElement("span");
+      glyph.className = `terminal-completion-glyph is-${item.kind || "history"}`;
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.textContent = item.kind === "directory"
+        ? "▸"
+        : item.kind === "file"
+          ? "◇"
+          : item.kind === "custom"
+            ? "+"
+            : item.kind === "shell"
+              ? "↺"
+              : "⌘";
+      const label = documentRef.createElement("span");
+      label.className = "terminal-completion-label";
+      label.textContent = item.label || item.value;
+      const detail = documentRef.createElement("span");
+      detail.className = "terminal-completion-detail";
+      detail.textContent = item.detail || (item.kind === "history" ? "History" : "Current folder");
+      option.title = item.value;
+      option.append(glyph, label, detail);
+      popup.append(option);
+    });
+
+    popup.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    input.setAttribute("aria-activedescendant", `terminal-completion-option-${safeIndex}`);
+    popup.children[safeIndex]?.scrollIntoView?.({ block: "nearest" });
+  }
+
+  replaceTerminalInputRange(start, end, value, focus = true) {
+    const input = this.getTerminalInput();
+    if (!input) return false;
+    const safeStart = Math.min(input.value.length, Math.max(0, Number(start) || 0));
+    const safeEnd = Math.min(input.value.length, Math.max(safeStart, Number(end) || safeStart));
+    input.value = `${input.value.slice(0, safeStart)}${value}${input.value.slice(safeEnd)}`;
+    const cursor = safeStart + String(value).length;
+    if (focus) input.focus();
+    input.setSelectionRange(cursor, cursor);
+    return true;
+  }
+
   insertTerminalText(value) {
     const input = this.getTerminalInput();
     if (!input) return false;
     const start = input.selectionStart ?? input.value.length;
     const end = input.selectionEnd ?? input.value.length;
-    input.value = `${input.value.slice(0, start)}${value}${input.value.slice(end)}`;
-    input.focus();
-    const cursor = start + value.length;
-    input.setSelectionRange(cursor, cursor);
-    return true;
+    return this.replaceTerminalInputRange(start, end, value);
   }
 
   getFolderCreateName() {
@@ -146,6 +217,27 @@ export class AppView {
     if (input.type === "checkbox") return input.checked;
     if (input.type === "number") return Number(input.value);
     return input.value;
+  }
+
+  getCustomCompletions() {
+    return this.root.querySelector("#custom-completions")?.value || "";
+  }
+
+  syncCustomCompletionLineNumbers(value = this.getCustomCompletions()) {
+    const lineNumbers = customCompletionLineNumbers(value);
+    const gutter = this.root.querySelector("#custom-completions-lines");
+    if (gutter) gutter.textContent = lineNumbers;
+    const count = lineNumbers.split("\n").length;
+    const countLabel = this.root.querySelector("#custom-completions-count");
+    if (countLabel) countLabel.textContent = `${count} ${count === 1 ? "line" : "lines"}`;
+    return count;
+  }
+
+  syncCustomCompletionScroll(input = this.root.querySelector("#custom-completions")) {
+    const gutter = this.root.querySelector("#custom-completions-lines");
+    if (!gutter || !input) return 0;
+    gutter.scrollTop = input.scrollTop || 0;
+    return gutter.scrollTop;
   }
 
   showToast(message, level = "info") {

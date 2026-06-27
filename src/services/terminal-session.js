@@ -351,7 +351,6 @@ export class TerminalSession {
   async run(command) {
     await this.write(`${command}\r`);
     this.scheduleCwdRefresh();
-    this.focus();
   }
 
   printMedia(items = []) {
