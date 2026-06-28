@@ -1642,12 +1642,29 @@ export class AppController {
           resolution: data.resolution || "native"
         });
         post({ type: "convert-result", id, ok: true, path, result });
-        await this.refreshFolder().catch(() => {});
-        this.view.showToast?.(`Converted ${result.name || "media"}`, "success");
         return result;
       } catch (error) {
         post({ type: "convert-result", id, ok: false, path, error: error?.message || String(error) });
         this.reportError("Media conversion", error);
+        return false;
+      }
+    }
+
+    if (data.type === "save-converted-media") {
+      const id = String(data.id || "");
+      try {
+        const result = await this.backend.saveConvertedMediaFile({
+          sourcePath: path,
+          tempPath: String(data.tempPath || ""),
+          name: String(data.name || "")
+        });
+        post({ type: "save-converted-result", id, ok: true, path, result });
+        await this.refreshFolder().catch(() => {});
+        this.view.showToast?.(`Saved ${result.name || "media"}`, "success");
+        return result;
+      } catch (error) {
+        post({ type: "save-converted-result", id, ok: false, path, error: error?.message || String(error) });
+        this.reportError("Media save", error);
         return false;
       }
     }

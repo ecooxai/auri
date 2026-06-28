@@ -66,7 +66,7 @@ export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet
 <title>${safeTitle}</title>
 <style>
 :root{color-scheme:light;--bg:#f6f8fb;--panel:rgba(255,255,255,.88);--panel-strong:#fff;--line:rgba(25,34,51,.1);--text:#182033;--muted:#687284;--soft:#eef2f7;--accent:#2f6fed;--shadow:0 18px 60px rgba(24,32,51,.12)}
-*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at top left,#fff 0,#f6f8fb 46%,#eef3f8 100%);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.75);backdrop-filter:blur(18px);position:relative;z-index:5}.file-dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#95b8ff,#dfe8ff);box-shadow:0 0 0 4px #eef4ff}.title{min-width:0;flex:1}.title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.title small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.pill{font-size:11px;color:#41516c;background:var(--soft);border:1px solid var(--line);padding:5px 8px;border-radius:999px}.icon-button,.clean-button{border:1px solid var(--line);background:var(--panel-strong);color:var(--text);border-radius:10px;min-height:32px;padding:0 11px;font:inherit;box-shadow:0 1px 0 rgba(255,255,255,.9);cursor:pointer}.icon-button{width:32px;padding:0;font-size:18px;line-height:1}.icon-button:hover,.clean-button:hover,.convert-menu button:hover{background:#f9fbff}.stage{min-height:0;overflow:auto;display:grid;place-items:center;padding:24px}.card{width:min(980px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.message-card{padding:34px;text-align:center;display:grid;gap:12px}.message-card span{font-size:38px}.message-card p{margin:0;color:var(--muted)}.message-card .clean-button{justify-self:center}.image-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 92px);object-fit:contain;border-radius:16px;box-shadow:var(--shadow)}.video-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 132px);background:#0f172a;border-radius:16px;box-shadow:var(--shadow)}.pdf-shell,.doc-shell{width:min(1100px,calc(100vw - 48px));height:calc(100vh - 100px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.viewer-toolbar{display:flex;align-items:center;gap:8px;min-height:46px;padding:8px 10px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.7)}.viewer-toolbar small{color:var(--muted);margin-left:auto}.pdf-pages,.doc-content{overflow:auto;padding:18px}.pdf-pages canvas{display:block;max-width:100%;height:auto;margin:0 auto 18px;background:white;border-radius:12px;box-shadow:0 10px 28px rgba(24,32,51,.1)}.doc-content{background:white}.doc-content article{max-width:760px;margin:0 auto;color:#172033}.editor-shell{width:min(1200px,calc(100vw - 36px));height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.editor-status{margin-left:auto;color:var(--muted);font-size:12px}.editor-host,.cm-editor,.cm-scroller{min-height:0;height:100%}.cm-editor{font-size:13px;background:#fbfcff}.fallback-editor{width:100%;height:100%;border:0;resize:none;padding:18px;background:#fbfcff;color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}.audio-card{width:min(860px,calc(100vw - 48px));display:grid;gap:18px;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow)}.audio-hero{display:flex;align-items:center;gap:14px}.audio-badge{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#edf3ff;color:var(--accent);font-size:24px}.muted{color:var(--muted);margin:.1rem 0 0}.wave-wrap{position:relative;padding:10px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fbfdff,#f1f5fb)}#waveform{display:block;width:100%;height:148px;touch-action:none;cursor:crosshair}.loop-pill{position:absolute;right:18px;bottom:16px;padding:5px 9px;border-radius:999px;background:rgba(47,111,237,.1);color:#2457bc;font-size:12px}.media-controls{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:10px;align-items:center}.media-controls input[type=range]{width:100%}.time-readout{color:var(--muted);font-variant-numeric:tabular-nums;min-width:112px;text-align:right}.speed-select{border:1px solid var(--line);background:white;border-radius:10px;height:32px;padding:0 8px}.convert-menu{position:absolute;right:12px;top:46px;display:grid;gap:4px;width:210px;padding:8px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.convert-menu[hidden],.convert-panel[hidden]{display:none!important}.convert-menu button{border:0;background:white;text-align:left;padding:9px 10px;border-radius:10px;color:var(--text);font:inherit;cursor:pointer}.convert-panel{position:fixed;right:18px;top:66px;width:min(360px,calc(100vw - 36px));display:grid;gap:12px;padding:14px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:10}.convert-panel h2{font-size:14px;margin:0}.convert-panel label{display:grid;gap:5px;color:var(--muted);font-size:12px}.convert-panel input,.convert-panel select{height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fbfcff;color:var(--text)}.convert-actions{display:flex;gap:8px;justify-content:flex-end}.progress{height:8px;border-radius:999px;background:#edf1f6;overflow:hidden}.progress i{display:block;height:100%;width:0;background:var(--accent)}.result-link{color:var(--accent);text-decoration:none;font-weight:600}.result-path{display:block;color:var(--text);overflow-wrap:anywhere;margin-top:4px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:760px){.stage{padding:12px}.media-controls{grid-template-columns:1fr 1fr 1fr}.time-readout{text-align:left}.pill{display:none}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at top left,#fff 0,#f6f8fb 46%,#eef3f8 100%);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.75);backdrop-filter:blur(18px);position:relative;z-index:5}.file-dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#95b8ff,#dfe8ff);box-shadow:0 0 0 4px #eef4ff}.title{min-width:0;flex:1}.title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.title small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.pill{font-size:11px;color:#41516c;background:var(--soft);border:1px solid var(--line);padding:5px 8px;border-radius:999px}.icon-button,.clean-button{border:1px solid var(--line);background:var(--panel-strong);color:var(--text);border-radius:10px;min-height:32px;padding:0 11px;font:inherit;box-shadow:0 1px 0 rgba(255,255,255,.9);cursor:pointer}.icon-button{width:32px;padding:0;font-size:18px;line-height:1}.icon-button:hover,.clean-button:hover,.convert-menu button:hover{background:#f9fbff}.stage{min-height:0;overflow:auto;display:grid;place-items:center;padding:24px}.card{width:min(980px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.message-card{padding:34px;text-align:center;display:grid;gap:12px}.message-card span{font-size:38px}.message-card p{margin:0;color:var(--muted)}.message-card .clean-button{justify-self:center}.image-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 92px);object-fit:contain;border-radius:16px;box-shadow:var(--shadow)}.video-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 132px);background:#0f172a;border-radius:16px;box-shadow:var(--shadow)}.pdf-shell,.doc-shell{width:min(1100px,calc(100vw - 48px));height:calc(100vh - 100px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.viewer-toolbar{display:flex;align-items:center;gap:8px;min-height:46px;padding:8px 10px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.7)}.viewer-toolbar small{color:var(--muted);margin-left:auto}.pdf-pages,.doc-content{overflow:auto;padding:18px}.pdf-pages canvas{display:block;max-width:100%;height:auto;margin:0 auto 18px;background:white;border-radius:12px;box-shadow:0 10px 28px rgba(24,32,51,.1)}.doc-content{background:white}.doc-content article{max-width:760px;margin:0 auto;color:#172033}.editor-shell{width:min(1200px,calc(100vw - 36px));height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.editor-status{margin-left:auto;color:var(--muted);font-size:12px}.editor-host,.cm-editor,.cm-scroller{min-height:0;height:100%}.cm-editor{font-size:13px;background:#fbfcff}.fallback-editor{width:100%;height:100%;border:0;resize:none;padding:18px;background:#fbfcff;color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}.audio-card{width:min(860px,calc(100vw - 48px));display:grid;gap:18px;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow)}.audio-hero{display:flex;align-items:center;gap:14px}.audio-badge{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#edf3ff;color:var(--accent);font-size:24px}.muted{color:var(--muted);margin:.1rem 0 0}.wave-wrap{position:relative;padding:10px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fbfdff,#f1f5fb)}#waveform{display:block;width:100%;height:148px;touch-action:none;cursor:crosshair}.loop-pill{position:absolute;right:18px;bottom:16px;padding:5px 9px;border-radius:999px;background:rgba(47,111,237,.1);color:#2457bc;font-size:12px}.media-controls{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:10px;align-items:center}.media-controls input[type=range]{width:100%}.time-readout{color:var(--muted);font-variant-numeric:tabular-nums;min-width:112px;text-align:right}.speed-select{border:1px solid var(--line);background:white;border-radius:10px;height:32px;padding:0 8px}.convert-menu{position:absolute;right:12px;top:46px;display:grid;gap:4px;width:210px;padding:8px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.convert-menu[hidden],.convert-panel[hidden]{display:none!important}.convert-menu button{border:0;background:white;text-align:left;padding:9px 10px;border-radius:10px;color:var(--text);font:inherit;cursor:pointer}.convert-panel{position:fixed;right:18px;top:66px;width:min(360px,calc(100vw - 36px));display:grid;gap:12px;padding:14px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:10}.convert-panel h2{font-size:14px;margin:0}.convert-status{display:grid;gap:8px;color:var(--muted);font-size:12px}.convert-panel label{display:grid;gap:5px;color:var(--muted);font-size:12px}.convert-panel input,.convert-panel select{height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fbfcff;color:var(--text)}.convert-actions{display:flex;gap:8px;justify-content:flex-end}.progress{height:8px;border-radius:999px;background:#edf1f6;overflow:hidden}.progress i{display:block;height:100%;width:0;background:var(--accent)}.result-link{color:var(--accent);text-decoration:none;font-weight:600}.result-path{display:block;color:var(--text);overflow-wrap:anywhere;margin-top:4px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:760px){.stage{padding:12px}.media-controls{grid-template-columns:1fr 1fr 1fr}.time-readout{text-align:left}.pill{display:none}}
 </style>
 </head>
 <body>
@@ -137,16 +137,27 @@ window.addEventListener('message', (event) => {
   if (data.type === 'convert-result') {
     const pending = pendingConversions.get(data.id);
     if (!pending) return;
-    pendingConversions.delete(data.id);
-    pending.button.disabled = false;
     if (data.ok) {
       pending.bar.style.width = '100%';
-      const result = data.result || {};
-      pending.status.innerHTML = 'Converted successfully.<span class="result-path">' + escapeText(result.path || result.name || 'Done') + '</span>';
+      showConvertedSaveUi(pending, data.result || {});
     } else {
+      pending.button.disabled = false;
+      pendingConversions.delete(data.id);
       pending.bar.style.width = '0';
       pending.status.innerHTML = 'Native conversion failed: ' + escapeText(data.error || 'Unknown error') + '<br><button id="wasm-fallback" class="clean-button" type="button">Try ffmpeg.wasm fallback</button>';
       document.getElementById('wasm-fallback')?.addEventListener('click', () => runWasmConversion(pending));
+    }
+  }
+  if (data.type === 'save-converted-result') {
+    const pending = pendingConversions.get(data.id);
+    if (!pending) return;
+    if (data.ok) {
+      pendingConversions.delete(data.id);
+      const result = data.result || {};
+      pending.status.innerHTML = 'Saved.<span class="result-path">' + escapeText(result.path || result.name || 'Done') + '</span>';
+      pending.bar.style.width = '100%';
+    } else {
+      pending.status.textContent = 'Save failed: ' + (data.error || 'Unknown error');
     }
   }
 });
@@ -263,29 +274,55 @@ function renderVideo(){
   attachMediaMenu(video);
 }
 function renderImage(){ setStage('<img class="image-viewer" src="' + file.resourceUrl + '" alt="' + escapeText(file.title) + '">'); }
-function outputName(format){ const base = (file.title || 'converted').replace(/\.[^.]+$/, ''); return base + '.' + (format === 'mp4_h264' || format === 'mp4_h265' ? 'mp4' : format); }
+function outputExtension(format){ return format === 'mp4_h264' || format === 'mp4_h265' ? 'mp4' : format; }
+function originalBaseName(){ return (file.title || 'media').replace(/\.[^.]+$/, '') || 'media'; }
+function defaultConvertedName(format){ const base = originalBaseName(); return 'converted_' + base + '.' + outputExtension(format); }
+function outputName(format){ return defaultConvertedName(format); }
+function isAudioTargetFormat(format){ return format === 'mp3' || format === 'wav' || format === 'm4a'; }
 function audioRateArgs(value){ return value && value !== 'original' ? ['-ar', value] : []; }
 function resolutionArgs(value){ if (value === 'native') return []; const height = Number(value) || 720; return ['-vf', 'scale=-2:' + height]; }
+function waveformSizeForResolution(value){ if (value === '480' || value === '480p') return '854x480'; if (value === '1080' || value === '1080p') return '1920x1080'; if (value === '1440' || value === '2k' || value === '2K') return '2560x1440'; return '1280x720'; }
 function conversionArgs(format, bitrate, resolution, sampleRate, isAudioOnly){
   const output = outputName(format);
   if (format === 'mp3') return { output, args: ['-i','input','-vn','-b:a', bitrate + 'k',...audioRateArgs(sampleRate),output] };
   if (format === 'wav') return { output, args: ['-i','input','-vn',...audioRateArgs(sampleRate),output] };
   if (format === 'm4a') return { output, args: ['-i','input','-vn','-c:a','aac','-b:a', bitrate + 'k',...audioRateArgs(sampleRate),output] };
   const videoCodec = format === 'mp4_h265' ? 'libx265' : 'libx264';
-  if (isAudioOnly) return { output, args: ['-i','input','-filter_complex','showwaves=s=1280x720:mode=cline:colors=white[v]','-map','[v]','-map','0:a','-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k',...audioRateArgs(sampleRate),'-shortest',output] };
-  return { output, args: ['-i','input',...resolutionArgs(resolution),'-c:v',videoCodec,'-c:a','aac','-b:a',bitrate + 'k',output] };
+  if (isAudioOnly) return { output, args: ['-i','input','-filter_complex','[0:a]showwaves=s=' + waveformSizeForResolution(resolution) + ':mode=cline:colors=white,format=yuv420p[v]','-map','[v]','-map','0:a:0','-c:v',videoCodec,'-b:v',bitrate + 'k','-c:a','aac','-b:a','128k','-shortest',output] };
+  return { output, args: ['-i','input',...resolutionArgs(resolution),'-c:v',videoCodec,'-b:v',bitrate + 'k','-c:a','aac','-b:a','128k',output] };
 }
 function sampleRateField(){
   return '<label>Sample rate<select id="convert-sample-rate"><option value="original" selected>Original</option><option value="16000">16k</option><option value="24000">24k (CD)</option><option value="48000">48k</option></select></label>';
 }
 function resolutionField(){
-  return '<label>Resolution<select id="convert-resolution"><option value="native" selected>Native</option><option value="480">480p</option><option value="720">720p</option></select></label>';
+  return '<label>Resolution<select id="convert-resolution"><option value="native" selected>Native</option><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option><option value="1440">2K</option></select></label>';
+}
+function audioBitrateField(){
+  return '<label>Audio bitrate<select id="convert-bitrate"><option value="96">96 kbps</option><option value="128" selected>128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></label>';
+}
+function videoBitrateField(){
+  return '<label>Video bitrate<select id="convert-bitrate"><option value="500">500 kbps</option><option value="1000" selected>1 Mbps</option><option value="2500">2.5 Mbps</option><option value="5000">5 Mbps</option><option value="8000">8 Mbps</option></select></label>';
+}
+function showConvertedSaveUi(pending, result){
+  const tempPath = result.path || result.tempPath || '';
+  const defaultName = result.name || defaultConvertedName(pending.format);
+  pending.result = result;
+  pending.status.innerHTML = '<label>Save converted file<input id="converted-name" value="' + escapeText(defaultName) + '" aria-label="Converted file name"></label><span class="result-path">Ready to save: ' + escapeText(defaultName) + '</span><div class="convert-actions"><button id="converted-save" class="clean-button" type="button">OK</button></div>';
+  const input = document.getElementById('converted-name');
+  const button = document.getElementById('converted-save');
+  input?.focus(); input?.select?.();
+  button?.addEventListener('click', () => {
+    const name = (input?.value || defaultName).trim() || defaultName;
+    button.disabled = true;
+    pending.button.disabled = true;
+    pending.status.querySelector('.result-path').textContent = 'Saving…';
+    postToAuri({ type: 'save-converted-media', id: pending.id, tempPath, name });
+  });
 }
 function showConvertPanel(format, mediaElement){
   document.getElementById('convert-panel')?.remove();
   const panel = document.createElement('section'); panel.id = 'convert-panel'; panel.className = 'convert-panel';
-  const isAudioSource = file.kind === 'audio';
-  panel.innerHTML = '<h2>Convert to ' + escapeText(format.replace("_", " ").toUpperCase()) + '</h2><label>Audio bitrate<select id="convert-bitrate"><option value="96">96 kbps</option><option value="128" selected>128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></label>' + (isAudioSource ? sampleRateField() : resolutionField()) + '<div class="progress"><i id="convert-progress"></i></div><small id="convert-status">Ready</small><div class="convert-actions"><button id="convert-cancel" class="clean-button" type="button">Cancel</button><button id="convert-start" class="clean-button" type="button">Convert</button></div>';
+  panel.innerHTML = '<h2>Convert to ' + escapeText(format.replace("_", " ").toUpperCase()) + '</h2>' + (isAudioTargetFormat(format) ? audioBitrateField() : videoBitrateField()) + (isAudioTargetFormat(format) ? sampleRateField() : resolutionField()) + '<div class="progress"><i id="convert-progress"></i></div><div id="convert-status" class="convert-status">Ready</div><div class="convert-actions"><button id="convert-cancel" class="clean-button" type="button">Cancel</button><button id="convert-start" class="clean-button" type="button">Convert</button></div>';
   document.body.appendChild(panel);
   document.getElementById('convert-cancel').addEventListener('click', () => panel.remove());
   document.getElementById('convert-start').addEventListener('click', () => {
@@ -321,7 +358,11 @@ async function runWasmConversion(pending){
     const data = await ffmpeg.readFile(output);
     const blob = new Blob([data.buffer], { type: output.endsWith('.mp4') ? 'video/mp4' : output.endsWith('.wav') ? 'audio/wav' : output.endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg' });
     const url = URL.createObjectURL(blob);
-    pending.status.innerHTML = '<a class="result-link" download="' + escapeText(output) + '" href="' + url + '">Download ' + escapeText(output) + '</a>';
+    pending.status.innerHTML = '<label>Save converted file<input id="converted-name" value="' + escapeText(output) + '" aria-label="Converted file name"></label><div class="convert-actions"><button id="converted-save" class="clean-button" type="button">OK</button></div>';
+    document.getElementById('converted-save')?.addEventListener('click', () => {
+      const name = (document.getElementById('converted-name')?.value || output).trim() || output;
+      pending.status.innerHTML = '<a class="result-link" download="' + escapeText(name) + '" href="' + url + '">Download ' + escapeText(name) + '</a>';
+    });
     pending.bar.style.width = '100%';
   } catch (error) {
     pending.status.textContent = 'ffmpeg.wasm fallback failed: ' + (error?.message || error || 'unknown error');

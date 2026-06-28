@@ -37,3 +37,23 @@ test("native folder bridge exposes creation, metadata, modification dates, and r
   assert.match(lib, /folder_info,/);
   assert.match(lib, /convert_media_file,/);
 });
+
+
+test("audio-to-video ffmpeg uses video bitrate and explicitly binds showwaves to the source audio", async () => {
+  const files = await readFile("src-tauri/src/core/files.rs", "utf8");
+
+  assert.match(files, /video_bitrate = bitrate_kbps\.unwrap_or\(1000\)\.clamp\(250, 20_000\)/);
+  assert.match(files, /\[0:a\]showwaves=s=\{\}:mode=cline:colors=white,format=yuv420p\[v\]/);
+  assert.match(files, /command\.args\(\["-map", "\[v\]", "-map", "0:a:0"\]\)/);
+  assert.match(files, /command\.args\(\["-c:v", codec, "-b:v", &format!\("\{video_bitrate\}k"\)\]\)/);
+});
+
+
+test("mp4 conversion resolution supports full hd and 2k output", async () => {
+  const files = await readFile("src-tauri/src/core/files.rs", "utf8");
+
+  assert.match(files, /"1080" \| "1080p" => Some\("1080"\)/);
+  assert.match(files, /"1440" \| "2k" \| "2K" => Some\("1440"\)/);
+  assert.match(files, /Some\("1080"\) => "1920x1080"/);
+  assert.match(files, /Some\("1440"\) => "2560x1440"/);
+});

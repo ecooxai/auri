@@ -86,6 +86,19 @@ async fn convert_media_file(
 }
 
 #[tauri::command]
+async fn save_converted_media_file(
+    source_path: String,
+    temp_path: String,
+    name: String,
+) -> Result<files::ConvertedMedia, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        files::save_converted_media_file(&source_path, &temp_path, &name)
+    })
+    .await
+    .map_err(|error| format!("Save converted media task failed: {error}"))?
+}
+
+#[tauri::command]
 async fn run_command(command: String, cwd: String) -> Result<shell::CommandResult, String> {
     tauri::async_runtime::spawn_blocking(move || shell::run(&command, &cwd))
         .await
@@ -366,6 +379,7 @@ pub fn run() {
             read_binary_file,
             write_text_file,
             convert_media_file,
+            save_converted_media_file,
             run_command,
             terminal_start,
             terminal_write,

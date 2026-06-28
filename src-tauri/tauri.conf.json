@@ -38,7 +38,14 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$HOME/auri/**"
+          "$HOME/auri/**",
+          "$HOME/Desktop/**",
+          "$HOME/Downloads/**",
+          "$HOME/Documents/**",
+          "$HOME/Movies/**",
+          "$HOME/Music/**",
+          "$HOME/Pictures/**",
+          "$TEMP/**"
         ]
       }
     }

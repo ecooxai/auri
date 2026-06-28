@@ -8,7 +8,7 @@ use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -89,6 +89,8 @@ pub struct ConvertedMedia {
     pub name: String,
     pub mime: String,
     pub size: u64,
+    pub pending: bool,
+    pub original_name: Option<String>,
 }
 
 pub fn list_directory(path: &str) -> Result<Vec<FileEntry>, String> {
@@ -562,23 +564,58 @@ fn converted_extension(format: &str) -> Option<&'static str> {
     }
 }
 
-fn unique_converted_path(source: &Path, format: &str) -> Result<PathBuf, String> {
+fn default_converted_name(source: &Path, format: &str) -> Result<String, String> {
     let extension =
         converted_extension(format).ok_or_else(|| "Unsupported conversion format.".to_string())?;
-    let parent = source
-        .parent()
-        .ok_or_else(|| "Could not determine the source folder.".to_string())?;
     let stem = source
         .file_stem()
         .and_then(|value| value.to_str())
-        .unwrap_or("converted");
+        .filter(|value| !value.is_empty())
+        .unwrap_or("media");
+    Ok(format!("converted_{stem}.{extension}"))
+}
+
+fn temporary_converted_path(source: &Path, format: &str) -> Result<PathBuf, String> {
+    let extension =
+        converted_extension(format).ok_or_else(|| "Unsupported conversion format.".to_string())?;
+    let stem = source
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("media");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let directory = std::env::temp_dir().join("auri-conversions");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    Ok(directory.join(format!("{stem}-{}-{nonce}.{extension}", std::process::id())))
+}
+
+fn unique_final_converted_path(source: &Path, requested_name: &str) -> Result<PathBuf, String> {
+    use super::util::safe_file_name;
+    let parent = source
+        .parent()
+        .ok_or_else(|| "Could not determine the source folder.".to_string())?;
+    let safe_name = safe_file_name(requested_name);
+    let requested = Path::new(&safe_name);
+    let stem = requested
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("converted_media");
+    let extension = requested
+        .extension()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("bin");
     for index in 0..1000 {
-        let suffix = if index == 0 {
-            format!("-converted.{extension}")
+        let name = if index == 0 {
+            format!("{stem}.{extension}")
         } else {
-            format!("-converted-{index}.{extension}")
+            format!("{stem}-{index}.{extension}")
         };
-        let candidate = parent.join(format!("{stem}{suffix}"));
+        let candidate = parent.join(name);
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -599,7 +636,18 @@ fn normalized_resolution(resolution: Option<&str>) -> Option<&'static str> {
     match resolution.unwrap_or("native") {
         "480" | "480p" => Some("480"),
         "720" | "720p" => Some("720"),
+        "1080" | "1080p" => Some("1080"),
+        "1440" | "2k" | "2K" => Some("1440"),
         _ => None,
+    }
+}
+
+fn waveform_size_for_resolution(resolution: Option<&str>) -> &'static str {
+    match normalized_resolution(resolution) {
+        Some("480") => "854x480",
+        Some("1080") => "1920x1080",
+        Some("1440") => "2560x1440",
+        _ => "1280x720",
     }
 }
 
@@ -620,8 +668,10 @@ pub fn convert_media_file(
     if kind != "audio" && kind != "video" {
         return Err("Only audio and video files can be converted.".to_string());
     }
-    let destination = unique_converted_path(&source, format)?;
-    let bitrate = bitrate_kbps.unwrap_or(128).clamp(32, 512).to_string();
+    let destination = temporary_converted_path(&source, format)?;
+    let default_name = default_converted_name(&source, format)?;
+    let audio_bitrate = bitrate_kbps.unwrap_or(128).clamp(32, 512).to_string();
+    let video_bitrate = bitrate_kbps.unwrap_or(1000).clamp(250, 20_000).to_string();
     let sample_rate_value = normalized_sample_rate(sample_rate);
     let video_codec = match format {
         "mp4_h264" => Some("libx264"),
@@ -633,7 +683,7 @@ pub fn convert_media_file(
     command.arg("-y").arg("-i").arg(&source);
     match format {
         "mp3" => {
-            command.args(["-vn", "-b:a", &format!("{bitrate}k")]);
+            command.args(["-vn", "-b:a", &format!("{audio_bitrate}k")]);
             if let Some(rate) = sample_rate_value.as_deref() {
                 command.args(["-ar", rate]);
             }
@@ -645,7 +695,7 @@ pub fn convert_media_file(
             }
         }
         "m4a" => {
-            command.args(["-vn", "-c:a", "aac", "-b:a", &format!("{bitrate}k")]);
+            command.args(["-vn", "-c:a", "aac", "-b:a", &format!("{audio_bitrate}k")]);
             if let Some(rate) = sample_rate_value.as_deref() {
                 command.args(["-ar", rate]);
             }
@@ -655,38 +705,20 @@ pub fn convert_media_file(
             if kind == "audio" {
                 command.args([
                     "-filter_complex",
-                    "showwaves=s=1280x720:mode=cline:colors=white[v]",
-                    "-map",
-                    "[v]",
-                    "-map",
-                    "0:a",
-                    "-c:v",
-                    codec,
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    &format!("{bitrate}k"),
-                    "-shortest",
-                    "-pix_fmt",
-                    "yuv420p",
+                    &format!(
+                        "[0:a]showwaves=s={}:mode=cline:colors=white,format=yuv420p[v]",
+                        waveform_size_for_resolution(resolution)
+                    ),
                 ]);
-                if let Some(rate) = sample_rate_value.as_deref() {
-                    command.args(["-ar", rate]);
-                }
+                command.args(["-map", "[v]", "-map", "0:a:0"]);
+                command.args(["-c:v", codec, "-b:v", &format!("{video_bitrate}k")]);
+                command.args(["-c:a", "aac", "-b:a", "128k", "-shortest"]);
             } else {
                 if let Some(height) = normalized_resolution(resolution) {
                     command.args(["-vf", &format!("scale=-2:{height}")]);
                 }
-                command.args([
-                    "-c:v",
-                    codec,
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    &format!("{bitrate}k"),
-                    "-pix_fmt",
-                    "yuv420p",
-                ]);
+                command.args(["-c:v", codec, "-b:v", &format!("{video_bitrate}k")]);
+                command.args(["-c:a", "aac", "-b:a", "128k", "-pix_fmt", "yuv420p"]);
                 if format == "mp4_h265" {
                     command.args(["-tag:v", "hvc1"]);
                 }
@@ -712,6 +744,40 @@ pub fn convert_media_file(
         .len();
     let display = display_path(&destination);
     Ok(ConvertedMedia {
+        name: default_name,
+        mime: mime_type(&display).to_string(),
+        path: display,
+        size,
+        pending: true,
+        original_name: source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_string()),
+    })
+}
+
+pub fn save_converted_media_file(
+    source_path: &str,
+    temp_path: &str,
+    name: &str,
+) -> Result<ConvertedMedia, String> {
+    let source = expand_path(source_path)?;
+    let temporary = expand_path(temp_path)?;
+    let metadata = fs::metadata(&temporary).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("The converted artifact is not a file.".to_string());
+    }
+    let destination = unique_final_converted_path(&source, name)?;
+    fs::rename(&temporary, &destination).or_else(|_| {
+        fs::copy(&temporary, &destination)
+            .and_then(|_| fs::remove_file(&temporary))
+            .map(|_| ())
+    }).map_err(|error| error.to_string())?;
+    let size = fs::metadata(&destination)
+        .map_err(|error| error.to_string())?
+        .len();
+    let display = display_path(&destination);
+    Ok(ConvertedMedia {
         name: destination
             .file_name()
             .and_then(|value| value.to_str())
@@ -720,6 +786,8 @@ pub fn convert_media_file(
         mime: mime_type(&display).to_string(),
         path: display,
         size,
+        pending: false,
+        original_name: None,
     })
 }
 

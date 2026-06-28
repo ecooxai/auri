@@ -38,10 +38,12 @@ test("media conversion menu is hidden by default and uses the host conversion br
   assert.match(html, /Converting with native ffmpeg/);
   assert.match(html, /480p/);
   assert.match(html, /720p/);
+  assert.match(html, /1080p/);
+  assert.match(html, /2K/);
   assert.match(html, /Native/);
 });
 
-test("audio conversion uses sample rate choices instead of resolution", () => {
+test("conversion options follow the target format instead of the source media kind", () => {
   const html = fileViewerPageHtml({
     resourceUrl: "blob:audio-resource",
     mime: "audio/wav",
@@ -49,13 +51,52 @@ test("audio conversion uses sample rate choices instead of resolution", () => {
     path: "/tmp/voice.wav"
   });
 
+  assert.match(html, /function isAudioTargetFormat\(format\)/);
+  assert.match(html, /isAudioTargetFormat\(format\) \? sampleRateField\(\) : resolutionField\(\)/);
+  assert.match(html, /isAudioTargetFormat\(format\) \? audioBitrateField\(\) : videoBitrateField\(\)/);
+  assert.doesNotMatch(html, /isAudioSource \? sampleRateField\(\) : resolutionField\(\)/);
   assert.match(html, /Sample rate/);
-  assert.match(html, /Original/);
-  assert.match(html, /16k/);
-  assert.match(html, /24k \(CD\)/);
-  assert.match(html, /48k/);
-  assert.match(html, /isAudioSource \? sampleRateField\(\) : resolutionField\(\)/);
+  assert.match(html, /Resolution/);
+  assert.match(html, /Audio bitrate/);
+  assert.match(html, /Video bitrate/);
+  assert.match(html, /value="1000" selected>1 Mbps/);
+  assert.match(html, /showwaves=s=' \+ waveformSizeForResolution\(resolution\) \+ '/);
+  assert.match(html, /value="1080">1080p/);
+  assert.match(html, /value="1440">2K/);
+  assert.match(html, /value === '1080' \|\| value === '1080p'/);
+  assert.match(html, /value === '1440' \|\| value === '2k'/);
 });
+
+test("target video conversion sends video bitrate defaults instead of audio bitrate labels", () => {
+  const html = fileViewerPageHtml({
+    resourceUrl: "blob:audio-resource",
+    mime: "audio/wav",
+    title: "voice.wav",
+    path: "/tmp/voice.wav"
+  });
+
+  assert.match(html, /function videoBitrateField\(\)/);
+  assert.match(html, /const bitrate = document.getElementById\('convert-bitrate'\)\.value/);
+  assert.match(html, /postToAuri\(\{ type: 'convert-media', id, format, bitrateKbps: Number\(bitrate\), sampleRate, resolution \}\)/);
+  assert.doesNotMatch(html, /showwaves=s=.*'-b:a',bitrate \+ 'k'/);
+});
+
+test("successful conversion shows a save-as UI before finalizing the converted file", () => {
+  const html = fileViewerPageHtml({
+    resourceUrl: "blob:audio-resource",
+    mime: "audio/wav",
+    title: "voice.wav",
+    path: "/tmp/voice.wav"
+  });
+
+  assert.match(html, /Save converted file/);
+  assert.match(html, /id="converted-name"/);
+  assert.match(html, /defaultConvertedName\(pending\.format\)/);
+  assert.match(html, /converted_' \+ base \+ '\.' \+ outputExtension\(format\)/);
+  assert.match(html, /type: 'save-converted-media'/);
+  assert.match(html, /Save failed:/);
+});
+
 
 test("ffmpeg.wasm remains available only as a bounded fallback", () => {
   const html = fileViewerPageHtml({
@@ -69,7 +110,7 @@ test("ffmpeg.wasm remains available only as a bounded fallback", () => {
   assert.match(html, /withTimeout/);
   assert.match(html, /@ffmpeg\/ffmpeg/);
   assert.match(html, /@ffmpeg\/core/);
-  assert.match(html, /showwaves=s=1280x720/);
+  assert.match(html, /waveformSizeForResolution\(resolution\)/);
 });
 
 test("text files render an editable CodeMirror-backed viewer", () => {

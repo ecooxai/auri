@@ -341,6 +341,14 @@ export class Backend {
       return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "text" };
     }
 
+    const streamedKind = viewerKindForFile(path, firstMime);
+    const streamedUrl = (streamedKind === "audio" || streamedKind === "video") ? nativeAssetUrl(path) : null;
+    if (streamedUrl) {
+      const title = metadata.name || titleForPath(path);
+      const url = this.createFileViewPage({ resourceUrl: streamedUrl, mime: firstMime, title, path, autoplay });
+      return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: streamedKind };
+    }
+
     const file = await this.call("read_binary_file", { path });
     const mime = previewMimeForPath(path, file.mime);
     const mediaBlob = new Blob([base64ToBytes(file.base64)], { type: mime });
@@ -380,6 +388,11 @@ export class Backend {
       sampleRate: normalizedSampleRate,
       resolution: resolution || "native"
     });
+  }
+
+  async saveConvertedMediaFile({ sourcePath, tempPath, name }) {
+    if (!this.invoke) throw new Error("Saving converted media needs the native Tauri build.");
+    return this.call("save_converted_media_file", { sourcePath, tempPath, name });
   }
 
   async runCommand(command, cwd) {

@@ -221,16 +221,18 @@ test("file viewer open-as-text messages replace the active file viewer", async (
   assert.equal(posted[0].message.ok, true);
 });
 
-test("file viewer conversion messages run native conversion through the backend", async () => {
+test("file viewer conversion messages stage native conversion without final folder save", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const calls = [];
   const posted = [];
+  const toasts = [];
+  let refreshed = false;
   const controller = new AppController({
-    view: { root: { querySelector: () => null }, render() {}, showToast() {} },
+    view: { root: { querySelector: () => null }, render() {}, showToast(message, tone) { toasts.push({ message, tone }); } },
     backend: {
       isNative: true,
-      convertMediaFile: async (payload) => { calls.push(payload); return { path: "/tmp/song-converted.mp3", name: "song-converted.mp3" }; },
-      listDirectory: async () => []
+      convertMediaFile: async (payload) => { calls.push(payload); return { path: "/tmp/.auri-convert/song.tmp.mp3", name: "converted_song.mp3", pending: true, originalName: "song.wav" }; },
+      listDirectory: async () => { refreshed = true; return []; }
     },
     terminalSessionFactory: () => ({ initialize: async () => {} })
   });
@@ -243,10 +245,43 @@ test("file viewer conversion messages run native conversion through the backend"
   });
 
   assert.deepEqual(calls, [{ path: "/tmp/song.wav", format: "mp3", bitrateKbps: 192, sampleRate: "48000", resolution: "native" }]);
-  assert.equal(result.name, "song-converted.mp3");
+  assert.equal(result.name, "converted_song.mp3");
+  assert.equal(result.pending, true);
   assert.equal(posted[0].message.type, "convert-started");
   assert.equal(posted[1].message.type, "convert-result");
   assert.equal(posted[1].message.ok, true);
+  assert.equal(refreshed, false);
+  assert.deepEqual(toasts, []);
+});
+
+test("file viewer save-converted-media messages finalize the renamed converted artifact", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const calls = [];
+  const posted = [];
+  const toasts = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, showToast(message, tone) { toasts.push({ message, tone }); } },
+    backend: {
+      isNative: true,
+      saveConvertedMediaFile: async (payload) => { calls.push(payload); return { path: "/tmp/renamed.mp3", name: "renamed.mp3", size: 42 }; },
+      listDirectory: async () => []
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state.tabs[0].folder.path = "/tmp";
+
+  const result = await controller.handleFileViewerMessage({
+    origin: "blob://viewer",
+    data: { source: "auri-file-viewer", type: "save-converted-media", id: "c1", path: "/tmp/song.wav", tempPath: "/tmp/.auri-convert/song.tmp.mp3", name: "renamed.mp3" },
+    source: { postMessage: (message, origin) => posted.push({ message, origin }) }
+  });
+
+  assert.deepEqual(calls, [{ sourcePath: "/tmp/song.wav", tempPath: "/tmp/.auri-convert/song.tmp.mp3", name: "renamed.mp3" }]);
+  assert.equal(result.name, "renamed.mp3");
+  assert.equal(posted[0].message.type, "save-converted-result");
+  assert.equal(posted[0].message.ok, true);
+  assert.equal(toasts[0].message, "Saved renamed.mp3");
+  assert.equal(toasts[0].tone, "success");
 });
 
 test("AI requests add the user message before the assistant reply", async () => {
