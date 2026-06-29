@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Retro Neon Snake</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0d0e15;
+            --container-bg: rgba(20, 22, 37, 0.7);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --neon-green: #39ff14;
+            --neon-red: #ff3131;
+            --neon-gold: #ffd700;
+            --neon-blue: #00d2ff;
+            --text-color: #f3f4f6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at center, #1b1d30 0%, var(--bg-color) 100%);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .container {
+            background: var(--container-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5),
+                        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            max-width: 90vw;
+        }
+
+        header {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 800;
+            background: linear-gradient(45deg, var(--neon-green), var(--neon-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-shadow: 0 0 20px rgba(57, 255, 20, 0.2);
+        }
+
+        .scoreboard {
+            display: flex;
+            gap: 20px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 20px;
+        }
+
+        .score-box {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .score-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #6b7280;
+            margin-bottom: 2px;
+        }
+
+        .score-val {
+            font-weight: bold;
+            color: var(--neon-green);
+            text-shadow: 0 0 10px rgba(57, 255, 20, 0.5);
+        }
+
+        #highScoreVal {
+            color: var(--neon-gold);
+            text-shadow: 0 0 10px rgba(255, 215, 0, 0.5);
+        }
+
+        .canvas-wrapper {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid var(--border-color);
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+        }
+
+        canvas {
+            display: block;
+            background-color: #05060b;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(13, 14, 21, 0.85);
+            backdrop-filter: blur(4px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+        }
+
+        .overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .overlay-title {
+            font-size: 32px;
+            font-weight: 800;
+            color: var(--neon-red);
+            text-shadow: 0 0 20px rgba(255, 49, 49, 0.6);
+            text-transform: uppercase;
+            letter-spacing: 3px;
+        }
+
+        .overlay-desc {
+            font-size: 14px;
+            color: #9ca3af;
+            text-align: center;
+            max-width: 80%;
+            line-height: 1.5;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+            border: 1px solid var(--border-color);
+            color: #f3f4f6;
+            padding: 12px 28px;
+            font-size: 14px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            border-color: var(--neon-green);
+            box-shadow: 0 0 15px rgba(57, 255, 20, 0.4);
+            color: #fff;
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .controls-info {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px solid var(--border-color);
+            padding-top: 15px;
+        }
+
+        .controls-list {
+            display: flex;
+            gap: 15px;
+        }
+
+        .control-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .key {
+            background: #1f2937;
+            border: 1px solid #374151;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            color: #d1d5db;
+        }
+
+        .hud {
+            display: flex;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>NEON SNAKE</h1>
+        <div class="scoreboard">
+            <div class="score-box">
+                <span class="score-label">Score</span>
+                <span class="score-val" id="scoreVal">000</span>
+            </div>
+            <div class="score-box">
+                <span class="score-label">Hi-Score</span>
+                <span class="score-val" id="highScoreVal">000</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="canvas-wrapper">
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+        <div class="overlay active" id="gameOverlay">
+            <div class="overlay-title" id="overlayTitle">SNAKE GAME</div>
+            <div class="overlay-desc" id="overlayDesc">Press Start to begin your neon journey. Use Arrow Keys or WASD to navigate.</div>
+            <button class="btn" id="startBtn">Start Game</button>
+        </div>
+    </div>
+
+    <div class="controls-info">
+        <span>Controls:</span>
+        <div class="controls-list">
+            <div class="control-item"><span class="key">▲</span><span class="key">▼</span><span class="key">◄</span><span class="key">►</span> or <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> to move</div>
+            <div class="control-item"><span class="key">Space</span> to pause</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreVal = document.getElementById('scoreVal');
+    const highScoreVal = document.getElementById('highScoreVal');
+    const gameOverlay = document.getElementById('gameOverlay');
+    const overlayTitle = document.getElementById('overlayTitle');
+    const overlayDesc = document.getElementById('overlayDesc');
+    const startBtn = document.getElementById('startBtn');
+
+    const GRID_SIZE = 20;
+    const TILE_COUNT = canvas.width / GRID_SIZE;
+    
+    let snake = [];
+    let food = {};
+    let specialFood = null;
+    let dx = GRID_SIZE;
+    let dy = 0;
+    let score = 0;
+    let highScore = localStorage.getItem('snakeHighScore') || 0;
+    let gameInterval = null;
+    let isPaused = false;
+    let isGameOver = false;
+    let speed = 100; // ms
+    let specialFoodTimeout = null;
+
+    highScoreVal.textContent = String(highScore).padStart(3, '0');
+
+    // Button controls
+    startBtn.addEventListener('click', () => {
+        if (isGameOver || snake.length === 0) {
+            initGame();
+        } else {
+            resumeGame();
+        }
+    });
+
+    // Keyboard controls
+    document.addEventListener('keydown', handleKeyDown);
+
+    function handleKeyDown(e) {
+        const key = e.key.toLowerCase();
+        
+        // Prevent default scrolling keys
+        if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(e.key)) {
+            e.preventDefault();
+        }
+
+        if (key === ' ' || e.key === 'Spacebar') {
+            togglePause();
+            return;
+        }
+
+        if (isPaused || isGameOver) return;
+
+        const goingUp = dy === -GRID_SIZE;
+        const goingDown = dy === GRID_SIZE;
+        const goingRight = dx === GRID_SIZE;
+        const goingLeft = dx === -GRID_SIZE;
+
+        if ((key === 'arrowup' || key === 'w') && !goingDown) {
+            dx = 0;
+            dy = -GRID_SIZE;
+        }
+        if ((key === 'arrowdown' || key === 's') && !goingUp) {
+            dx = 0;
+            dy = GRID_SIZE;
+        }
+        if ((key === 'arrowleft' || key === 'a') && !goingRight) {
+            dx = -GRID_SIZE;
+            dy = 0;
+        }
+        if ((key === 'arrowright' || key === 'd') && !goingLeft) {
+            dx = GRID_SIZE;
+            dy = 0;
+        }
+    }
+
+    function initGame() {
+        snake = [
+            {x: 6 * GRID_SIZE, y: 10 * GRID_SIZE},
+            {x: 5 * GRID_SIZE, y: 10 * GRID_SIZE},
+            {x: 4 * GRID_SIZE, y: 10 * GRID_SIZE}
+        ];
+        dx = GRID_SIZE;
+        dy = 0;
+        score = 0;
+        speed = 100;
+        isPaused = false;
+        isGameOver = false;
+        specialFood = null;
+        if (specialFoodTimeout) clearTimeout(specialFoodTimeout);
+        
+        scoreVal.textContent = '000';
+        scoreVal.style.color = 'var(--neon-green)';
+        
+        generateFood();
+        
+        gameOverlay.classList.remove('active');
+        
+        if (gameInterval) clearInterval(gameInterval);
+        gameInterval = setInterval(gameLoop, speed);
+    }
+
+    function gameLoop() {
+        if (isPaused || isGameOver) return;
+
+        moveSnake();
+        checkCollision();
+        
+        if (isGameOver) {
+            handleGameOver();
+            return;
+        }
+        
+        draw();
+    }
+
+    function moveSnake() {
+        const head = {x: snake[0].x + dx, y: snake[0].y + dy};
+        
+        // Wrap-around screen bounds
+        if (head.x < 0) head.x = canvas.width - GRID_SIZE;
+        if (head.x >= canvas.width) head.x = 0;
+        if (head.y < 0) head.y = canvas.height - GRID_SIZE;
+        if (head.y >= canvas.height) head.y = 0;
+
+        snake.unshift(head);
+
+        // Check if snake ate normal food
+        const ateFood = head.x === food.x && head.y === food.y;
+        // Check if snake ate special food
+        const ateSpecialFood = specialFood && head.x === specialFood.x && head.y === specialFood.y;
+
+        if (ateFood) {
+            score += 10;
+            scoreVal.textContent = String(score).padStart(3, '0');
+            generateFood();
+            adjustSpeed();
+            
+            // 20% chance to spawn golden special food
+            if (!specialFood && Math.random() < 0.25) {
+                spawnSpecialFood();
+            }
+        } else if (ateSpecialFood) {
+            score += 30;
+            scoreVal.textContent = String(score).padStart(3, '0');
+            specialFood = null;
+            if (specialFoodTimeout) clearTimeout(specialFoodTimeout);
+            flashScoreEffect();
+        } else {
+            snake.pop();
+        }
+    }
+
+    function generateFood() {
+        while (true) {
+            food = {
+                x: Math.floor(Math.random() * TILE_COUNT) * GRID_SIZE,
+                y: Math.floor(Math.random() * TILE_COUNT) * GRID_SIZE
+            };
+            // Ensure food is not generated on top of the snake
+            let onSnake = false;
+            for (let part of snake) {
+                if (part.x === food.x && part.y === food.y) {
+                    onSnake = true;
+                    break;
+                }
+            }
+            if (!onSnake) break;
+        }
+    }
+
+    function spawnSpecialFood() {
+        while (true) {
+            specialFood = {
+                x: Math.floor(Math.random() * TILE_COUNT) * GRID_SIZE,
+                y: Math.floor(Math.random() * TILE_COUNT) * GRID_SIZE
+            };
+            let occupied = false;
+            for (let part of snake) {
+                if (part.x === specialFood.x && part.y === specialFood.y) occupied = true;
+            }
+            if (food.x === specialFood.x && food.y === specialFood.y) occupied = true;
+            if (!occupied) break;
+        }
+
+        // Special food only lasts 6 seconds
+        specialFoodTimeout = setTimeout(() => {
+            specialFood = null;
+        }, 6000);
+    }
+
+    function checkCollision() {
+        const head = snake[0];
+        // Self-collision (skip index 0)
+        for (let i = 1; i < snake.length; i++) {
+            if (head.x === snake[i].x && head.y === snake[i].y) {
+                isGameOver = true;
+                break;
+            }
+        }
+    }
+
+    function adjustSpeed() {
+        // Gradually increase speed as score grows
+        if (score % 50 === 0 && speed > 50) {
+            speed -= 5;
+            clearInterval(gameInterval);
+            gameInterval = setInterval(gameLoop, speed);
+        }
+    }
+
+    function flashScoreEffect() {
+        scoreVal.style.color = 'var(--neon-gold)';
+        setTimeout(() => {
+            scoreVal.style.color = 'var(--neon-green)';
+        }, 1000);
+    }
+
+    function togglePause() {
+        if (isGameOver || snake.length === 0) return;
+        
+        isPaused = !isPaused;
+        if (isPaused) {
+            overlayTitle.textContent = "PAUSED";
+            overlayTitle.style.color = "var(--neon-blue)";
+            overlayDesc.textContent = "Game is paused. Press space or resume button to continue.";
+            startBtn.textContent = "Resume";
+            gameOverlay.classList.add('active');
+        } else {
+            resumeGame();
+        }
+    }
+
+    function resumeGame() {
+        isPaused = false;
+        gameOverlay.classList.remove('active');
+    }
+
+    function handleGameOver() {
+        clearInterval(gameInterval);
+        
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('snakeHighScore', highScore);
+            highScoreVal.textContent = String(highScore).padStart(3, '0');
+        }
+        
+        overlayTitle.textContent = "GAME OVER";
+        overlayTitle.style.color = "var(--neon-red)";
+        overlayDesc.textContent = `You crashed! Final Score: ${score}. Try again to beat the high score.`;
+        startBtn.textContent = "Play Again";
+        gameOverlay.classList.add('active');
+    }
+
+    function draw() {
+        // Clear canvas
+        ctx.fillStyle = '#05060b';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw grid lines subtly
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.02)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < TILE_COUNT; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * GRID_SIZE, 0);
+            ctx.lineTo(i * GRID_SIZE, canvas.height);
+            ctx.stroke();
+            
+            ctx.beginPath();
+            ctx.moveTo(0, i * GRID_SIZE);
+            ctx.lineTo(canvas.width, i * GRID_SIZE);
+            ctx.stroke();
+        }
+
+        // Draw normal food (glowing red circle)
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = 'var(--neon-red)';
+        ctx.fillStyle = 'var(--neon-red)';
+        ctx.beginPath();
+        ctx.arc(food.x + GRID_SIZE/2, food.y + GRID_SIZE/2, GRID_SIZE/2 - 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Draw special food if active (glowing gold star/circle)
+        if (specialFood) {
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = 'var(--neon-gold)';
+            ctx.fillStyle = 'var(--neon-gold)';
+            ctx.beginPath();
+            ctx.arc(specialFood.x + GRID_SIZE/2, specialFood.y + GRID_SIZE/2, GRID_SIZE/2 - 1, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Draw Snake
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = 'var(--neon-green)';
+        
+        snake.forEach((part, index) => {
+            // Head has a slightly different style or color
+            if (index === 0) {
+                ctx.fillStyle = '#ffffff';
+            } else {
+                // Gradient effect down the tail
+                const opacity = 1 - (index / snake.length) * 0.6;
+                ctx.fillStyle = `rgba(57, 255, 20, ${opacity})`;
+            }
+            
+            ctx.beginPath();
+            // Rounded corners for snake segments
+            const radius = 4;
+            ctx.roundRect(part.x + 1, part.y + 1, GRID_SIZE - 2, GRID_SIZE - 2, radius);
+            ctx.fill();
+        });
+        
+        // Reset shadow for performance
+        ctx.shadowBlur = 0;
+    }
+</script>
+</body>
+</html>
