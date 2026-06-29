@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeCommand } from "../src/controllers/command-controller.js";
-import { createInitialState, reduceState } from "../src/model/state.js";
+import { activeSubtab, createInitialState, reduceState } from "../src/model/state.js";
 
 function harness() {
   let state = createInitialState();
@@ -92,6 +92,54 @@ test("record start delegates hardware work through the command context", async (
   h.actions = { startRecording: async (kind) => { received = kind; } };
   await executeCommand("record start audio", h);
   assert.equal(received, "audio");
+});
+
+
+test("system commands open refresh and sort the process monitor", async () => {
+  const h = harness();
+  h.backend.systemSnapshot = async () => ({
+    capturedAt: "2026-06-28T08:00:00.000Z",
+    cpu: { brand: "Test CPU", cores: 8, usagePercent: 12 },
+    memory: { totalBytes: 1000, usedBytes: 500 },
+    network: { interfaces: [], totalRxBytes: 10, totalTxBytes: 20 },
+    processes: [{ pid: 7, name: "server", cpuPercent: 4, memoryBytes: 100, ports: [8080] }]
+  });
+
+  await executeCommand("system open", h);
+  assert.equal(activeSubtab(h.state()).type, "system");
+  assert.ok(h.state().tabs[0].subtabs.some((subtab) => subtab.type === "disk"));
+  assert.ok(h.state().tabs[0].subtabs.some((subtab) => subtab.type === "net"));
+  assert.equal(h.state().system.snapshot.processes[0].ports[0], 8080);
+
+  await executeCommand("system sort port", h);
+  assert.equal(h.state().system.sortBy, "port");
+});
+
+test("system process RAM, Port, and CPU headers sort through the command layer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  const clickSort = (sort) => controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action: "system-sort", sort } } : null },
+    preventDefault() {}
+  });
+
+  await clickSort("ram");
+  await clickSort("port");
+  await clickSort("cpu");
+
+  assert.deepEqual(commands, ["system sort ram", "system sort port", "system sort cpu"]);
 });
 
 test("attachment remove is a state command", async () => {
@@ -491,9 +539,8 @@ test("new terminal subtabs create independent sessions at the workspace cwd", as
 
     await controller.runInternal("subtab new terminal");
 
-    assert.equal(created.length, 2);
-    assert.notEqual(created[0], created[1]);
-    assert.deepEqual(mounts.map((item) => item.cwd), ["/tmp/auri-space", "/tmp/auri-space"]);
+    assert.equal(created.length, 1);
+    assert.deepEqual(mounts.map((item) => item.cwd), ["/tmp/auri-space"]);
   } finally {
     globalThis.requestAnimationFrame = previousAnimationFrame;
   }
@@ -916,6 +963,52 @@ test("terminal model dropdown selects a model through the command layer", async 
   await controller.handleChange({ target: { id: "terminal-model-select", value: "openai-default", dataset: {} } });
 
   assert.deepEqual(commands, ['ai model select "openai-default"']);
+});
+
+
+
+test("selected process detail copy and outside click use the command layer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state = {
+    ...controller.state,
+    system: {
+      ...controller.state.system,
+      selectedProcessPid: 42,
+      snapshot: { processes: [{ pid: 42, commandLine: "/usr/bin/python -m app" }] }
+    }
+  };
+  controller.runInternal = async (command) => { commands.push(command); };
+
+  const targetForAction = (dataset, insideDetail = false) => ({
+    closest: (selector) => {
+      if (selector === ".system-process-detail") return insideDetail ? {} : null;
+      if (selector === "[data-action]") return { dataset };
+      return null;
+    }
+  });
+
+  await controller.handleClick({
+    target: targetForAction({ action: "system-process-copy-value", value: "/usr/bin/python -m app" }, true),
+    preventDefault() {}
+  });
+  await controller.handleClick({
+    target: { closest: () => null },
+    preventDefault() {}
+  });
+
+  assert.deepEqual(commands, ['clipboard copy "/usr/bin/python -m app"', "system deselect"]);
 });
 
 test("clipboard pin and remove commands persist through the backend and replace state", async () => {

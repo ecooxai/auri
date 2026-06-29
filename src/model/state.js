@@ -9,6 +9,9 @@ const labels = {
   audio: "Audio",
   video: "Video",
   settings: "Settings",
+  system: "System",
+  disk: "Disk",
+  net: "Net",
   info: "Info"
 };
 
@@ -23,13 +26,17 @@ export function createSubtab(type = "terminal", extra = {}) {
   };
 }
 
-export function createWorkspace(title = "Home") {
+export function createWorkspace(title = "Home", options = {}) {
   const terminal = createSubtab("terminal");
+  const system = createSubtab("system");
+  const subtabs = options.includeSystem
+    ? [terminal, system, createSubtab("clipboard"), createSubtab("info")]
+    : [terminal, createSubtab("clipboard"), createSubtab("info")];
   return {
     id: id("tab"),
     title,
-    activeSubtabId: terminal.id,
-    subtabs: [terminal, createSubtab("clipboard"), createSubtab("info")],
+    activeSubtabId: options.activeSubtabType === "system" ? system.id : terminal.id,
+    subtabs,
     folder: { visible: true, path: "~", entries: [], selectedPath: null, selectedCount: 0, sortBy: "name" },
     terminal: { cwd: "~", history: [], commandHistory: [], draft: "", running: false },
     viewer: { path: null, metadata: null, mode: "empty" }
@@ -37,12 +44,13 @@ export function createWorkspace(title = "Home") {
 }
 
 export function createInitialState() {
-  const workspace = createWorkspace();
+  const workspace = createWorkspace("Home", { includeSystem: true, activeSubtabType: "system" });
   return {
     activeTabId: workspace.id,
     tabs: [workspace],
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
+    system: { status: "idle", error: null, sortBy: "cpu", selectedProcessPid: null, snapshot: null },
     browser: { bookmarks: [], history: [] },
     completion: { shellHistory: [] },
     permissions: { microphone: "unknown", screenRecording: "unknown" },
@@ -284,6 +292,14 @@ export function reduceState(state, event) {
     }
     case "CLIPBOARD_SET":
       return { ...state, clipboard: { items: event.payload.items } };
+    case "SYSTEM_STATUS_SET":
+      return { ...state, system: { ...state.system, status: event.payload.status, error: event.payload.error || null } };
+    case "SYSTEM_SNAPSHOT_SET":
+      return { ...state, system: { ...state.system, status: "ready", error: null, snapshot: event.payload.snapshot } };
+    case "SYSTEM_SORT_SET":
+      return { ...state, system: { ...state.system, sortBy: event.payload.sortBy || "cpu" } };
+    case "SYSTEM_PROCESS_SELECT":
+      return { ...state, system: { ...state.system, selectedProcessPid: Number(event.payload.pid) || null } };
     case "BROWSER_RESTORE":
       return {
         ...state,

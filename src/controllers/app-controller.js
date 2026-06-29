@@ -1,5 +1,6 @@
 import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
+import { normalizeSystemSnapshot } from "../model/system.js";
 import { classifyTerminalInput } from "../model/presentation.js";
 import { MediaCapture } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
@@ -120,6 +121,8 @@ export class AppController {
     this.nativeWebviewUrls = new Map();
     this.clipboardPollTimer = null;
     this.clipboardPolling = false;
+    this.systemMonitorTimer = null;
+    this.systemMonitorRefreshing = false;
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
     this.configurationReady = false;
@@ -160,7 +163,8 @@ export class AppController {
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
-        showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio)
+        showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
+        refreshSystemMonitor: () => this.refreshSystemMonitor()
       }
     };
   }
@@ -333,6 +337,49 @@ export class AppController {
       }
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
+    this.syncSystemMonitorPolling();
+    if (this.backend.systemSnapshot && activeSubtab(this.state)?.type === "system" && this.state.system.status === "idle") {
+      scheduleFrame(() => this.refreshSystemMonitor().catch((error) => this.reportError("System", error)));
+    }
+  }
+
+  hasSystemSubtab(state = this.state) {
+    return state.tabs.some((tab) => tab.subtabs.some((subtab) => ["system", "disk", "net"].includes(subtab.type)));
+  }
+
+  syncSystemMonitorPolling() {
+    if (this.backend.systemSnapshot && this.hasSystemSubtab()) {
+      if (!this.systemMonitorTimer) {
+        this.systemMonitorTimer = setInterval(() => {
+          this.refreshSystemMonitor({ quiet: true }).catch((error) => this.reportError("System", error));
+        }, 5000);
+        this.systemMonitorTimer.unref?.();
+      }
+      return;
+    }
+    if (this.systemMonitorTimer) {
+      clearInterval(this.systemMonitorTimer);
+      this.systemMonitorTimer = null;
+    }
+  }
+
+  async refreshSystemMonitor({ quiet = false } = {}) {
+    if (this.systemMonitorRefreshing) return this.state.system.snapshot;
+    if (!this.backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
+    this.systemMonitorRefreshing = true;
+    if (!quiet && !this.state.system.snapshot) {
+      this.dispatch({ type: "SYSTEM_STATUS_SET", payload: { status: "loading" } }, { preserveInput: true });
+    }
+    try {
+      const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot());
+      this.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { preserveInput: true });
+      return snapshot;
+    } catch (error) {
+      this.dispatch({ type: "SYSTEM_STATUS_SET", payload: { status: "error", error: error?.message || String(error) } }, { preserveInput: true });
+      throw error;
+    } finally {
+      this.systemMonitorRefreshing = false;
+    }
   }
 
   async refreshMediaPermissions({ render = true } = {}) {
@@ -562,14 +609,25 @@ export class AppController {
     this.backend.startWindowDragging().catch((error) => this.reportError("Window drag", error));
   }
 
+  scrollProcessTableToTop() {
+    const table = this.view.root.querySelector?.(".process-table");
+    if (!table) return;
+    if (typeof table.scrollTo === "function") table.scrollTo({ top: 0, left: table.scrollLeft || 0, behavior: "auto" });
+    else table.scrollTop = 0;
+  }
+
   async handleClick(event) {
     const insideAssistantPopup = event.target?.closest?.(".assistant-action-popup");
+    const insideProcessDetail = event.target?.closest?.(".system-process-detail");
     const target = event.target?.closest?.("[data-action]");
     if (hasAssistantActionPopup(this.state) && !insideAssistantPopup) {
       await this.runInternal("transcript dismiss");
     }
+    const action = target?.dataset?.action || "";
+    if (this.state.system.selectedProcessPid && !insideProcessDetail && action !== "system-process-select") {
+      await this.runInternal("system deselect");
+    }
     if (!target) return;
-    const action = target.dataset.action;
     event.preventDefault();
 
     try {
@@ -601,6 +659,7 @@ export class AppController {
           await this.runInternal(`subtab select ${target.dataset.id}`);
           if (activeSubtab(this.state).type === "info") this.dispatch({ type: "INFO_READ", payload: {} });
           if (activeSubtab(this.state).type === "settings") await this.runInternal("permission status");
+          if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
           break;
         case "subtab-close":
           event.stopPropagation();
@@ -612,6 +671,30 @@ export class AppController {
         case "subtab-new":
           this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } });
           await this.runInternal(`subtab new ${target.dataset.type}`);
+          if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
+          break;
+        case "system-refresh":
+          await this.runInternal("system refresh");
+          break;
+        case "system-sort":
+          await this.runInternal(`system sort ${target.dataset.sort || "cpu"}`);
+          break;
+        case "system-process-select":
+          await this.runInternal(`system select ${target.dataset.pid || ""}`);
+          break;
+        case "system-process-kill":
+          await this.runInternal(`system kill ${this.state.system.selectedProcessPid || ""}`);
+          break;
+        case "system-process-open-path":
+          await this.runInternal(`system open-path ${this.state.system.selectedProcessPid || ""}`);
+          break;
+        case "system-process-copy-value": {
+          const value = target.dataset.value || "";
+          if (value) await this.runInternal(`clipboard copy ${quoteArg(value)}`);
+          break;
+        }
+        case "system-process-detail-close":
+          await this.runInternal("system deselect");
           break;
         case "folder-home":
           this.cancelFolderPathNavigation();

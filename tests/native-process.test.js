@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
+import path from "node:path";
 import {
   RELEASE_ICON_PATHS,
   bundleIdentifierForBuild,
@@ -50,6 +51,44 @@ test("native watch starts an isolated process without replacing another watcher 
   const manifest = await readFile("src-tauri/Cargo.toml", "utf8");
   assert.match(manifest, /name = "auri-dev"/);
   await access("src-tauri/src/bin/auri-dev.rs");
+});
+
+
+test("npm run app builds the release app and launches it in the terminal session", async () => {
+  const pkg = JSON.parse(await readFile("package.json", "utf8"));
+  assert.equal(pkg.scripts.app, "node scripts/app.mjs");
+
+  const { releaseAppPath, releaseBuildArgs, releaseLaunchCommand } = await import("../scripts/app.mjs");
+
+  assert.equal(
+    releaseAppPath({ platform: "darwin", productName: "Auri", binaryName: "auri-desktop" }),
+    path.join("src-tauri", "target", "release", "bundle", "macos", "Auri.app")
+  );
+  assert.equal(
+    releaseAppPath({ platform: "linux", productName: "Auri", binaryName: "auri-desktop" }),
+    path.join("src-tauri", "target", "release", "auri-desktop")
+  );
+
+  assert.deepEqual(releaseBuildArgs({ platform: "darwin", extraArgs: [] }), ["--bundles", "app"]);
+  assert.deepEqual(releaseBuildArgs({ platform: "linux", extraArgs: [] }), []);
+  assert.deepEqual(releaseBuildArgs({ platform: "darwin", extraArgs: ["--debug"] }), [
+    "--bundles",
+    "app",
+    "--debug"
+  ]);
+  assert.deepEqual(releaseBuildArgs({ platform: "darwin", extraArgs: ["--no-bundle"] }), ["--no-bundle"]);
+
+  assert.deepEqual(
+    releaseLaunchCommand({ platform: "darwin", appPath: "Built.app", binaryName: "auri-desktop" }),
+    {
+      command: path.join("Built.app", "Contents", "MacOS", "auri-desktop"),
+      args: []
+    }
+  );
+  assert.deepEqual(releaseLaunchCommand({ platform: "linux", appPath: "./auri-desktop", binaryName: "auri-desktop" }), {
+    command: "./auri-desktop",
+    args: []
+  });
 });
 
 test("packaged builds use the isolated Tauri build wrapper", async () => {

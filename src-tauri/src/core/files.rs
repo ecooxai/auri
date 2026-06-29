@@ -768,11 +768,13 @@ pub fn save_converted_media_file(
         return Err("The converted artifact is not a file.".to_string());
     }
     let destination = unique_final_converted_path(&source, name)?;
-    fs::rename(&temporary, &destination).or_else(|_| {
-        fs::copy(&temporary, &destination)
-            .and_then(|_| fs::remove_file(&temporary))
-            .map(|_| ())
-    }).map_err(|error| error.to_string())?;
+    fs::rename(&temporary, &destination)
+        .or_else(|_| {
+            fs::copy(&temporary, &destination)
+                .and_then(|_| fs::remove_file(&temporary))
+                .map(|_| ())
+        })
+        .map_err(|error| error.to_string())?;
     let size = fs::metadata(&destination)
         .map_err(|error| error.to_string())?
         .len();

@@ -2,10 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createInitialState, reduceState, serializeWorkspaceSession } from "../src/model/state.js";
 
-test("initial workspace focuses terminal and includes folder pane", () => {
+test("initial workspace focuses system monitor and includes folder pane", () => {
   const state = createInitialState();
   assert.equal(state.tabs.length, 1);
-  assert.equal(state.tabs[0].activeSubtabId, state.tabs[0].subtabs[0].id);
+  assert.equal(state.tabs[0].activeSubtabId, state.tabs[0].subtabs.find((item) => item.type === "system").id);
   assert.equal(state.tabs[0].subtabs[0].type, "terminal");
   assert.equal(state.tabs[0].folder.visible, true);
 });
@@ -97,11 +97,11 @@ test("folder creation UI opens and closes without changing folder contents", () 
   assert.equal(state.ui.folderCreateKind, null);
 });
 
-test("new workspaces open only Terminal, Clipboard, and Info with Terminal active", () => {
+test("initial workspace opens Terminal, System, Clipboard, and Info with System active", () => {
   const state = createInitialState();
   const workspace = state.tabs[0];
-  assert.deepEqual(workspace.subtabs.map((item) => item.type), ["terminal", "clipboard", "info"]);
-  assert.equal(workspace.activeSubtabId, workspace.subtabs[0].id);
+  assert.deepEqual(workspace.subtabs.map((item) => item.type), ["terminal", "system", "clipboard", "info"]);
+  assert.equal(workspace.activeSubtabId, workspace.subtabs[1].id);
 });
 
 test("terminal line retention defaults to 4000 and rejects unsafe values", () => {

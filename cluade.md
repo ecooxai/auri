@@ -20,7 +20,7 @@ This file is the implementation contract for contributors and coding agents work
 auri tab new [title]                                                           Create and focus a new main workspace tab.
 auri tab close [id]                                                            Close a main tab (the active tab by default).
 auri tab select <id>                                                           Focus a main tab.
-auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|info>  Create and focus a horizontal subtab.
+auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|system|info>  Create and focus a horizontal subtab.
 auri subtab close [id]                                                         Close a horizontal subtab.
 auri subtab select <id>                                                        Focus a horizontal subtab.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
@@ -72,6 +72,12 @@ auri settings open                                                             O
 auri settings set <key> <value>                                                Update an application setting.
 auri permission status                                                         Refresh macOS media permission status.
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
+auri system open                                                              Open the System monitor.
+auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system refresh                                                           Refresh System monitor statistics.
+auri system select <pid>                                                    Select a System monitor process.
+auri system kill <pid>                                                      Kill the selected System monitor process.
+auri system open-path <pid>                                                 Open the selected process path externally.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.

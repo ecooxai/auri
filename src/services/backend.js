@@ -153,6 +153,23 @@ function requestMediaDetail(item, index = 0) {
   };
 }
 
+function browserSystemSnapshot() {
+  const memory = typeof performance !== "undefined" && performance.memory
+    ? { totalBytes: performance.memory.jsHeapSizeLimit || 0, usedBytes: performance.memory.usedJSHeapSize || 0, freeBytes: Math.max(0, (performance.memory.jsHeapSizeLimit || 0) - (performance.memory.usedJSHeapSize || 0)), swapTotalBytes: 0, swapUsedBytes: 0, swapFreeBytes: 0, swapUsagePercent: null }
+    : { totalBytes: 0, usedBytes: 0, freeBytes: 0, swapTotalBytes: 0, swapUsedBytes: 0, swapFreeBytes: 0, swapUsagePercent: null };
+  const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 0 : 0;
+  const platform = typeof navigator !== "undefined" ? navigator.platform || "Browser" : "Browser";
+  return {
+    capturedAt: new Date().toISOString(),
+    host: { os: platform, arch: "browser", hostname: "browser-preview", uptimeSeconds: Math.round((typeof performance !== "undefined" && performance.now ? performance.now() : 0) / 1000) },
+    cpu: { brand: platform, cores, usagePercent: null },
+    memory,
+    network: { interfaces: [{ name: "browser", ip: "Unavailable in browser preview", status: "preview", rxBytes: 0, txBytes: 0 }], downloadBytesPerSecond: null, uploadBytesPerSecond: null, totalRxBytes: 0, totalTxBytes: 0 },
+    disk: { mounts: [], totalBytes: 0, usedBytes: 0, freeBytes: 0, usagePercent: null, readBytesPerSecond: null, writeBytesPerSecond: null },
+    processes: []
+  };
+}
+
 function browserEntries(path) {
   const base = String(path || "~").replace(/\/$/, "");
   return [
@@ -287,6 +304,16 @@ export class Backend {
   async readShellHistory() {
     if (!this.invoke) return [];
     return this.call("read_shell_history");
+  }
+
+  async systemSnapshot() {
+    if (!this.invoke) return browserSystemSnapshot();
+    return this.call("system_snapshot");
+  }
+
+  async killProcess(pid) {
+    if (!this.invoke) throw new Error("Killing processes needs the native Tauri build.");
+    return this.call("kill_process", { pid: Number(pid) });
   }
 
   async listDirectory(path) {

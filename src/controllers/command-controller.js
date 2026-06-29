@@ -1,6 +1,7 @@
 import { commandHelp, parseCommand, extractCommandTail, extractActionTail } from "../model/commands.js";
 import { shellQuote } from "../model/path.js";
 import { activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
+import { normalizeSystemSnapshot, normalizeSystemSort } from "../model/system.js";
 import { defaultBookmarkName, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
 import { normalizeShortcut } from "../model/shortcut.js";
 
@@ -553,6 +554,70 @@ export async function executeCommand(input, context) {
         return actions.requestMediaPermission(permission);
       }
       throw new Error(`Unknown permission action: ${action}`);
+    }
+
+
+    if (domain === "system") {
+      if (action === "open") {
+        openSubtab("system", context);
+        openSubtab("disk", context);
+        openSubtab("net", context);
+        openSubtab("system", context);
+        if (actions.refreshSystemMonitor) {
+          await actions.refreshSystemMonitor();
+        } else if (backend.systemSnapshot) {
+          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
+          dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
+        }
+        return { ok: true };
+      }
+      if (action === "sort") {
+        const sortBy = normalizeSystemSort(args[0]);
+        dispatch({ type: "SYSTEM_SORT_SET", payload: { sortBy } });
+        return { sortBy };
+      }
+      if (action === "refresh") {
+        if (!backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
+        const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
+        dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
+        return snapshot;
+      }
+      if (action === "select") {
+        const pid = Number(args[0]);
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("Choose a process PID.");
+        dispatch({ type: "SYSTEM_PROCESS_SELECT", payload: { pid } });
+        return { pid };
+      }
+      if (action === "deselect") {
+        dispatch({ type: "SYSTEM_PROCESS_SELECT", payload: { pid: null } });
+        return { pid: null };
+      }
+      if (action === "kill") {
+        const pid = Number(args[0] || getState().system.selectedProcessPid);
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("Choose a process PID to kill.");
+        if (!backend.killProcess) throw new Error("Killing processes is unavailable in this runtime.");
+        await backend.killProcess(pid);
+        if (backend.systemSnapshot) {
+          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
+          dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
+        }
+        return { pid };
+      }
+      if (action === "open-path") {
+        const pid = Number(args[0] || getState().system.selectedProcessPid);
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("Choose a process PID to open.");
+        const process = getState().system.snapshot?.processes?.find((item) => Number(item.pid) === pid);
+        const processPath = String(process?.path || "").trim();
+        const workingDirectory = String(process?.workingDirectory || "").trim();
+        const folder = workingDirectory && workingDirectory !== "/"
+          ? workingDirectory
+          : processPath.split(/[\/]/).slice(0, -1).join("/") || processPath;
+        if (!folder) throw new Error("This process path is unavailable.");
+        if (!actions.openExternal) throw new Error("Opening process paths is unavailable in this runtime.");
+        await actions.openExternal(folder);
+        return { pid, path: folder };
+      }
+      throw new Error(`Unknown system action: ${action}`);
     }
 
     if (domain === "info") {

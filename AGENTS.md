@@ -14,6 +14,12 @@ Build a release bundle:
 npm run tauri:build
 ```
 
+Build and run the release app in the current terminal session on macOS or Linux:
+
+```bash
+npm run app
+```
+
 This file is the implementation contract for contributors and coding agents working on Auri.
 
 ## Non-negotiable workflow
@@ -26,6 +32,11 @@ This file is the implementation contract for contributors and coding agents work
 6. Never fake a native capability. Expose a clear unsupported/fallback result instead.
 7. Run focused tests, then `npm run check` and `cargo check --manifest-path src-tauri/Cargo.toml`.
 
+
+## Development instance safety
+
+Before starting a new development app or watcher, check whether an Auri development instance is already running. Stop only the existing dev/watch process that would conflict with the new test run, and do not kill release-version Auri processes. A build plus a manually started dev app is preferred for verification when continuous watch mode is unnecessary.
+
 ## Command-first rule
 
 `src/model/commands.js` is the source of truth. Add a registry entry and tests before implementing a new GUI action. GUI handlers call `executeCommand()` through `runInternal()` rather than changing state or invoking hardware directly. OS ingress that cannot originate as text—such as a file picker returning a browser `File` object—may create an attachment object, but an equivalent path-based command must exist for automation.
@@ -34,7 +45,7 @@ This file is the implementation contract for contributors and coding agents work
 auri tab new [title]                                                           Create and focus a new main workspace tab.
 auri tab close [id]                                                            Close a main tab (the active tab by default).
 auri tab select <id>                                                           Focus a main tab.
-auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|info>  Create and focus a horizontal subtab.
+auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|system|info>  Create and focus a horizontal subtab.
 auri subtab close [id]                                                         Close a horizontal subtab.
 auri subtab select <id>                                                        Focus a horizontal subtab.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
@@ -86,6 +97,12 @@ auri settings open                                                             O
 auri settings set <key> <value>                                                Update an application setting.
 auri permission status                                                         Refresh macOS media permission status.
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
+auri system open                                                              Open the System monitor.
+auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system refresh                                                           Refresh System monitor statistics.
+auri system select <pid>                                                    Select a System monitor process.
+auri system kill <pid>                                                      Kill the selected System monitor process.
+auri system open-path <pid>                                                 Open the selected process path externally.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.
@@ -124,6 +141,8 @@ Prefer Rust's standard library. Add a crate only when it provides substantial co
 The external CLI socket must stay user-only, bounded, and line-break safe. Current incomplete native areas must remain honestly labeled: PTY sessions, OS-global wake shortcuts, realtime live API streaming, clipboard image monitoring, and guaranteed audio/video transcoding.
 
 ## UI rules
+
+- Keep the System table scan-friendly: compact Name, RAM constrained to an about-seven-character display, Port wide enough for two port badges, Net/Disk metrics next, PID at the far right, and reset table scroll to top after sort changes.
 
 - Preserve the vertical workspace tabs and horizontal subtab model.
 - Every workspace retains its own folder, terminal cwd/history, viewer, and subtab selection.

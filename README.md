@@ -14,6 +14,12 @@ Build a release bundle:
 npm run tauri:build
 ```
 
+Build and run the release app in the current terminal session on macOS or Linux:
+
+```bash
+npm run app
+```
+
 Auri is a terminal-centered assistant workspace for macOS and Linux, built with Rust and Tauri. Its interface combines browser-like workspaces, a synchronized folder pane, terminal and AI composer, file inspection and viewing, webviews, clipboard history, settings, and audio/video capture.
 
 The project follows a command-first MVC design: every meaningful GUI action maps to a text command. A user types the public form (`auri tab new`), while internal GUI code calls the same command without the `auri` prefix (`tab new`). This keeps behavior testable and makes automation predictable.
@@ -131,6 +137,10 @@ npm run tauri:dev
 
 For restart-on-change development, `npm run native:watch` launches an independent Auri process with its own frontend server, temporary build identity, and command socket. Starting it again does not stop or replace another running watcher or Auri window.
 
+Agent development launch rule:
+
+Before starting a new development app or watcher, check for existing Auri development instances and stop only those dev/watch processes when they would conflict with the new run. Do not kill or replace release-version Auri processes. Prefer a build plus a manually started dev app for task verification when continuous watch mode is not needed.
+
 Install the external CLI on your `PATH`:
 
 ```bash
@@ -176,7 +186,7 @@ The public form starts with `auri` and works from the embedded terminal or the i
 auri tab new [title]                                                           Create and focus a new main workspace tab.
 auri tab close [id]                                                            Close a main tab (the active tab by default).
 auri tab select <id>                                                           Focus a main tab.
-auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|info>  Create and focus a horizontal subtab.
+auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|system|info>  Create and focus a horizontal subtab.
 auri subtab close [id]                                                         Close a horizontal subtab.
 auri subtab select <id>                                                        Focus a horizontal subtab.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
@@ -228,6 +238,12 @@ auri settings open                                                             O
 auri settings set <key> <value>                                                Update an application setting.
 auri permission status                                                         Refresh macOS media permission status.
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
+auri system open                                                              Open the System monitor.
+auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system refresh                                                           Refresh System monitor statistics.
+auri system select <pid>                                                    Select a System monitor process.
+auri system kill <pid>                                                      Kill the selected System monitor process.
+auri system open-path <pid>                                                 Open the selected process path externally.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.
@@ -263,6 +279,8 @@ Expected failures are shown both near the current interaction and in the Info su
 - Move long-running native operations off the UI thread when adding PTY, transcoding, or realtime streaming.
 
 ## Visual design
+
+- Keep the System table scan-friendly: compact Name, RAM constrained to an about-seven-character display, Port wide enough for two port badges, Net/Disk metrics next, PID at the far right, and reset table scroll to top after sort changes.
 
 The interface uses a light aurora palette, translucent surfaces, minimal separators, Unicode symbols with system-font fallbacks, and explicit press/hover/focus feedback. Buttons use icons where their meaning is standard; text remains where an icon alone would be ambiguous or unsafe.
 auri live record toggle                                                       Connect and record, or disconnect the active Live chat.

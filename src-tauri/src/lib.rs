@@ -1,10 +1,10 @@
 pub mod core;
 
 use core::{
-    capture, clipboard, files, ipc, lifecycle, permissions, shell, terminal, webview, workspace,
+    capture, clipboard, files, ipc, lifecycle, permissions, shell, system, terminal, webview,
+    workspace,
 };
 use serde_json::Value;
-#[cfg(desktop)]
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 #[cfg(desktop)]
@@ -16,6 +16,9 @@ const DEFAULT_WAKE_SHORTCUT: &str = "Alt+Space";
 #[cfg(desktop)]
 #[derive(Default)]
 struct WakeShortcutState(Mutex<Option<String>>);
+
+#[derive(Default)]
+struct SystemMonitorState(Mutex<Option<system::NetworkSample>>);
 
 #[tauri::command]
 fn initialize_workspace() -> Result<workspace::InitResult, String> {
@@ -183,8 +186,34 @@ fn remove_clipboard_entry(id: String) -> Result<Vec<clipboard::ClipboardEntry>, 
 }
 
 #[tauri::command]
+async fn system_snapshot(
+    state: tauri::State<'_, SystemMonitorState>,
+) -> Result<system::SystemSnapshot, String> {
+    let previous = *state
+        .0
+        .lock()
+        .map_err(|_| "System monitor state is unavailable.".to_string())?;
+    let (snapshot, sample) =
+        tauri::async_runtime::spawn_blocking(move || system::snapshot(previous))
+            .await
+            .map_err(|error| format!("System monitor task failed: {error}"))??;
+    *state
+        .0
+        .lock()
+        .map_err(|_| "System monitor state is unavailable.".to_string())? = Some(sample);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 fn read_shell_history() -> Result<Vec<String>, String> {
     workspace::read_shell_history()
+}
+
+#[tauri::command]
+async fn kill_process(pid: u32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system::kill_process(pid))
+        .await
+        .map_err(|error| format!("Process kill task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -326,6 +355,7 @@ pub fn run() {
             let command_server =
                 ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
             app.manage(command_server);
+            app.manage(SystemMonitorState::default());
 
             #[cfg(desktop)]
             {
@@ -395,6 +425,8 @@ pub fn run() {
             set_clipboard_pinned,
             remove_clipboard_entry,
             read_shell_history,
+            system_snapshot,
+            kill_process,
             save_settings,
             set_wake_shortcut,
             save_media_file,

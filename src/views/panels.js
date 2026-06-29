@@ -4,6 +4,7 @@ import { previewClipboardText } from "../model/clipboard.js";
 import { activeSubtab, activeWorkspace } from "../model/state.js";
 import { sortFolderEntries } from "../model/folder.js";
 import { defaultBookmarkName, normalizeWebUrl, webZoomPercent } from "../model/browser.js";
+import { emptySystemSnapshot, sortSystemProcesses } from "../model/system.js";
 
 const subtabIcons = {
   terminal: "⌘",
@@ -13,6 +14,9 @@ const subtabIcons = {
   audio: "♪",
   video: "▷",
   settings: "⚙",
+  system: "◬",
+  disk: "▤",
+  net: "⇄",
   info: "ⓘ"
 };
 
@@ -94,7 +98,7 @@ function renderSubtabMenu() {
   const items = [
     ["terminal", "⌘", "Terminal"], ["webview", "◎", "Webview"], ["viewer", "◈", "Viewer"],
     ["clipboard", "▣", "Clipboard"], ["audio", "♪", "Audio recording"], ["video", "▷", "Video recording"],
-    ["settings", "⚙", "Settings"], ["info", "ⓘ", "Info"]
+    ["settings", "⚙", "Settings"], ["system", "◬", "System monitor"], ["disk", "▤", "Disk monitor"], ["net", "⇄", "Network monitor"], ["info", "ⓘ", "Info"]
   ];
   return `<div class="pop-menu" role="menu">
     ${items.map(([type, icon, label]) => `<button type="button" data-action="subtab-new" data-type="${type}"><span>${icon}</span>${label}</button>`).join("")}
@@ -564,6 +568,258 @@ export function renderSettings(state) {
   </section>`;
 }
 
+function formatPercent(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(number >= 10 ? 0 : 1)}%` : "—";
+}
+
+function byteDisplayUnit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return { value: 0, unit: "MB" };
+  const megabytes = number / 1_000_000;
+  return Math.abs(megabytes) >= 1000
+    ? { value: megabytes / 1000, unit: "GB" }
+    : { value: megabytes, unit: "MB" };
+}
+
+function formatMegabytes(value, suffix = "") {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const display = byteDisplayUnit(number);
+  return `${display.value.toFixed(2)} ${display.unit}${suffix}`;
+}
+
+function formatCompactMegabytes(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const display = byteDisplayUnit(number);
+  const absolute = Math.abs(display.value);
+  const precision = absolute < 10 ? 2 : absolute < 100 ? 1 : 0;
+  return `${display.value.toFixed(precision)}${display.unit}`;
+}
+
+function formatMegabyteRate(value) {
+  return formatMegabytes(value, "/s");
+}
+
+function formatNetPair(upload, download, suffix = "") {
+  return `${formatMegabytes(upload || 0, suffix)} | ${formatMegabytes(download || 0, suffix)}`;
+}
+
+function formatCompactNetRate(upload, download) {
+  const up = Number(upload || 0);
+  const down = Number(download || 0);
+  if (!Number.isFinite(up) || !Number.isFinite(down)) return "—";
+  const upDisplay = byteDisplayUnit(up);
+  const downDisplay = byteDisplayUnit(down);
+  const unit = upDisplay.unit === "GB" || downDisplay.unit === "GB" ? "GB" : "MB";
+  const divisor = unit === "GB" ? 1_000_000_000 : 1_000_000;
+  return `${(up / divisor).toFixed(2)} | ${(down / divisor).toFixed(2)} ${unit}/s`;
+}
+
+function processNetTotal(process) {
+  return Number(process?.downloadBytes || 0) + Number(process?.uploadBytes || 0);
+}
+
+function selectedSystemProcess(state, processes) {
+  const selectedPid = Number(state.system.selectedProcessPid);
+  return Number.isFinite(selectedPid) ? processes.find((process) => Number(process.pid) === selectedPid) || null : null;
+}
+
+function formatUptime(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return "—";
+  const days = Math.floor(value / 86400);
+  const hours = Math.floor((value % 86400) / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  if (days) return `${days}d ${hours}h`;
+  if (hours) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function processSortButton(label, sort, activeSort) {
+  return `<button type="button" class="system-sort ${activeSort === sort ? "is-active" : ""}" data-action="system-sort" data-sort="${sort}" aria-pressed="${activeSort === sort}">${label}${activeSort === sort ? " ↓" : ""}</button>`;
+}
+
+function renderSystemMetric(label, value, detail = "") {
+  return `<article class="system-metric"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</article>`;
+}
+
+function processOpenTarget(process) {
+  if (!process) return "";
+  const workingDirectory = String(process.workingDirectory || "").trim();
+  if (workingDirectory && workingDirectory !== "/") return workingDirectory;
+  return String(process.path || "").trim();
+}
+
+function renderProcessDetailMetric(label, value) {
+  return `<article><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></article>`;
+}
+
+function formatDetailMegabyteValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return (number / 1_000_000).toFixed(2);
+}
+
+function renderProcessDetailDialog(state, processes) {
+  const selected = selectedSystemProcess(state, processes);
+  if (!selected) return "";
+  const pid = String(selected.pid || "");
+  const appName = String(selected.name || "Process");
+  const commandOrPath = String(selected.commandLine || selected.path || selected.name || "Command line unavailable");
+  const openTarget = processOpenTarget(selected);
+  const processActionLabel = "Kill " + "process";
+  const backdropStyle = "position:absolute;inset:0;z-index:780;display:flex;align-items:center;justify-content:center;padding:14px;pointer-events:none;background:transparent;";
+  const dialogStyle = "position:relative;width:min(610px,calc(100% - 28px));max-height:min(330px,calc(100% - 28px));padding:12px;border:1px solid #dce4ee;border-radius:16px;display:grid;gap:8px;overflow:hidden;background:#fff;color:#17243a;box-shadow:0 22px 60px rgba(28,39,61,.24);pointer-events:auto;";
+  const headerStyle = "min-width:0;height:38px;padding:0 10px;border-radius:11px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f2f5f9;";
+  const titleStyle = "min-width:0;display:flex;align-items:center;gap:8px;";
+  const nameStyle = "min-width:0;overflow:hidden;color:#17243a;font-size:14px;font-weight:850;line-height:1;text-overflow:ellipsis;white-space:nowrap;";
+  const pidStyle = "flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;color:#69768a;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;";
+  const pidCodeStyle = "color:#17243a;background:transparent;font:850 13px/1 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:0;text-transform:none;";
+  const statRowStyle = "display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;";
+  const statStyle = "min-width:0;min-height:66px;padding:7px;border-radius:10px;background:#f2f5f9;display:grid;grid-template-rows:auto minmax(0,1fr);gap:5px;";
+  const statHeadStyle = "min-width:0;display:flex;align-items:center;justify-content:space-between;gap:6px;color:#7f8ba0;font-size:9px;font-weight:850;letter-spacing:.12em;text-transform:uppercase;";
+  const statUnitStyle = "color:#9aa6b9;font-size:9px;font-weight:850;letter-spacing:.08em;";
+  const singleValueStyle = "align-self:center;display:block;min-width:0;overflow:hidden;color:#17243a;font-size:16px;font-weight:850;line-height:1.05;text-overflow:ellipsis;white-space:nowrap;";
+  const rowListStyle = "display:grid;gap:3px;align-content:center;";
+  const rowStyle = "min-width:0;display:flex;align-items:center;justify-content:space-between;gap:6px;color:#5d6a80;font-size:10px;font-weight:750;line-height:1.15;";
+  const rowValueStyle = "min-width:0;overflow:hidden;color:#17243a;font-size:12px;font-weight:850;text-overflow:ellipsis;white-space:nowrap;";
+  const pathWrapStyle = "min-width:0;padding:8px;border-radius:11px;background:#f4f7fb;";
+  const pathHeadStyle = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px;";
+  const pathLabelStyle = "display:block;color:#7f8ba0;font-size:9px;font-weight:850;letter-spacing:.12em;text-transform:uppercase;";
+  const pathFieldStyle = "width:100%;height:84px;min-height:84px;max-height:84px;padding:7px 8px;border:1px solid #d7e0eb;border-radius:9px;display:block;resize:none;overflow:auto;color:#17243a;background:#fff;font:500 11px/14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;";
+  return `<div class="system-process-detail-backdrop" role="presentation" style="${backdropStyle}">
+    <section class="system-process-detail" role="dialog" style="${dialogStyle}" aria-modal="true" aria-label="Process detail">
+      <header class="process-detail-header" style="${headerStyle}">
+        <div class="process-detail-title" style="${titleStyle}">
+          <strong style="${nameStyle}" title="${escapeHtml(appName)}">${escapeHtml(appName)}</strong>
+          <span class="process-detail-pid" style="${pidStyle}">PID <code style="${pidCodeStyle}">${escapeHtml(pid)}</code></span>
+        </div>
+        <button type="button" class="icon-copy-button" data-action="system-process-copy-value" data-value="${escapeHtml(pid)}" aria-label="Copy process PID" title="Copy PID">⧉</button>
+      </header>
+      <div class="process-detail-stat-row" style="${statRowStyle}">
+        <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>CPU</small></div><strong style="${singleValueStyle}">${escapeHtml(formatPercent(selected.cpuPercent))}</strong></article>
+        <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>RAM</small><span style="${statUnitStyle}">MB</span></div><div style="${rowListStyle}"><span style="${rowStyle}"><b>Memory</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.memoryBytes || 0))}</strong></span></div></article>
+        <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>Net</small><span style="${statUnitStyle}">MB</span></div><div style="${rowListStyle}"><span style="${rowStyle}"><b>Upload</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.uploadBytes || 0))}</strong></span><span style="${rowStyle}"><b>Download</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.downloadBytes || 0))}</strong></span></div></article>
+        <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>Disk</small><span style="${statUnitStyle}">MB</span></div><div style="${rowListStyle}"><span style="${rowStyle}"><b>Read</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.diskReadBytes || 0))}</strong></span><span style="${rowStyle}"><b>Write</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.diskWriteBytes || 0))}</strong></span></div></article>
+      </div>
+      <div class="process-detail-path" style="${pathWrapStyle}">
+        <div class="process-detail-path-head" style="${pathHeadStyle}">
+          <small style="${pathLabelStyle}">Path</small>
+          <button type="button" class="icon-copy-button" data-action="system-process-copy-value" data-value="${escapeHtml(commandOrPath)}" aria-label="Copy process path" title="Copy path">⧉</button>
+        </div>
+        <textarea class="process-detail-path-field" readonly rows="5" spellcheck="false" style="${pathFieldStyle}">${escapeHtml(commandOrPath)}</textarea>
+      </div>
+      <footer>
+        <button type="button" class="action-button secondary" data-action="system-process-open-path" ${openTarget ? "" : "disabled"}>Open path</button>
+        <button type="button" class="action-button secondary danger" data-action="system-process-kill">${processActionLabel}</button>
+      </footer>
+    </section>
+  </div>`;
+}
+
+function renderProcessTable(state, processes, { showDisk = false, showNet = true } = {}) {
+  const sortBy = state.system.sortBy || "cpu";
+  const selectedPid = Number(state.system.selectedProcessPid);
+  return `<div class="process-table" role="table" aria-label="System processes">
+    <div class="process-row process-heading ${showDisk ? "is-disk" : ""}" role="row">
+      <span role="columnheader">${processSortButton("Name", "name", sortBy)}</span>
+      <span role="columnheader">${processSortButton("Port", "port", sortBy)}</span>
+      <span role="columnheader">${processSortButton("RAM", "ram", sortBy)}</span>
+      <span role="columnheader">${processSortButton("CPU", "cpu", sortBy)}</span>
+      ${showDisk ? `<span role="columnheader">Disk read | write</span>` : ""}
+      ${showNet ? `<span role="columnheader">${processSortButton("Net up | down", "net", sortBy)}</span>` : ""}
+      <span role="columnheader">PID</span>
+    </div>
+    ${processes.length ? processes.map((process) => `<div class="process-row ${showDisk ? "is-disk" : ""} ${Number(process.pid) === selectedPid ? "is-selected" : ""}" role="row" data-action="system-process-select" data-pid="${escapeHtml(process.pid)}">
+      <span role="cell" title="${escapeHtml(process.commandLine || process.path || process.name)}">${escapeHtml(process.name)}</span>
+      <span role="cell">${process.ports?.length ? process.ports.map((port) => `<code>${escapeHtml(port)}</code>`).join(" ") : `<span class="muted">No port</span>`}</span>
+      <span role="cell">${formatCompactMegabytes(process.memoryBytes || 0)}</span>
+      <span role="cell">${formatPercent(process.cpuPercent)}</span>
+      ${showDisk ? `<span role="cell">${formatNetPair(process.diskReadBytes || 0, process.diskWriteBytes || 0)}</span>` : ""}
+      ${showNet ? `<span role="cell">${formatNetPair(process.uploadBytes || 0, process.downloadBytes || 0)}</span>` : ""}
+      <span role="cell"><code>${escapeHtml(process.pid)}</code></span>
+    </div>`).join("") : `<div class="empty-state"><span>◬</span><h2>No process data</h2><p>Native process monitoring is available in the Tauri build.</p></div>`}
+  </div>`;
+}
+
+function renderSystem(state) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  const sortBy = state.system.sortBy || "cpu";
+  const processes = sortSystemProcesses(snapshot.processes || [], sortBy).slice(0, 120);
+  const updated = snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleTimeString() : "Not loaded";
+  const memoryDetail = `${formatMegabytes(snapshot.memory?.usedBytes || 0)} / ${formatMegabytes(snapshot.memory?.totalBytes || 0)}`;
+  const swapTotal = Number(snapshot.memory?.swapTotalBytes || 0);
+  const swapDetail = swapTotal > 0
+    ? `${formatMegabytes(snapshot.memory?.swapUsedBytes || 0)} / ${formatMegabytes(swapTotal)}`
+    : "Swap off";
+  const swapValue = swapTotal > 0 ? formatPercent(snapshot.memory?.swapUsagePercent) : "Off";
+  const cpuDetail = `${snapshot.cpu?.cores || 0} cores · ${snapshot.cpu?.brand || "Unknown CPU"}`;
+  const hostName = snapshot.host?.hostname || "—";
+  const statusCopy = state.system.status === "loading"
+    ? "Refreshing…"
+    : state.system.status === "error"
+      ? state.system.error || "System monitor refresh failed."
+      : `Updated ${updated} · refreshes every 5s while open`;
+
+  return `<section class="system-panel"><header class="panel-title system-title"><div><span>◬</span><div><h2>System <em>${escapeHtml(hostName)}</em></h2></div></div>${button("↻", "Refresh system monitor", "system-refresh")}</header>
+    <div class="system-status ${state.system.status === "error" ? "is-error" : ""}" role="status">${escapeHtml(statusCopy)}</div>
+    <div class="system-grid">
+      ${renderSystemMetric("CPU", formatPercent(snapshot.cpu?.usagePercent), cpuDetail)}
+      ${renderSystemMetric("Memory", formatPercent(snapshot.memory?.usagePercent), memoryDetail)}
+      ${renderSystemMetric("Network", formatCompactNetRate(snapshot.network?.uploadBytesPerSecond || 0, snapshot.network?.downloadBytesPerSecond || 0), "Upload | download")}
+      ${renderSystemMetric("Disk", formatPercent(snapshot.disk?.usagePercent), `${formatMegabytes(snapshot.disk?.usedBytes || 0)} / ${formatMegabytes(snapshot.disk?.totalBytes || 0)}`)}
+      ${renderSystemMetric("Swap", swapValue, swapDetail)}
+      ${renderSystemMetric("Uptime", formatUptime(snapshot.host?.uptimeSeconds), `${(snapshot.network?.interfaces || []).filter((iface) => iface.status === "up" || iface.ip).length} interfaces`)}
+    </div>
+    <section class="process-monitor">
+      ${renderProcessTable(state, processes, { showNet: true })}
+    </section>
+    ${renderProcessDetailDialog(state, processes)}
+  </section>`;
+}
+
+function renderDisk(state) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  const processes = sortSystemProcesses(snapshot.processes || [], "ram").slice(0, 120);
+  const mounts = Array.isArray(snapshot.disk?.mounts) && snapshot.disk.mounts.length
+    ? snapshot.disk.mounts
+    : [{ mountPoint: "/", name: "Disk", totalBytes: snapshot.disk?.totalBytes || 0, usedBytes: snapshot.disk?.usedBytes || 0, freeBytes: snapshot.disk?.freeBytes || 0, usagePercent: snapshot.disk?.usagePercent }];
+  return `<section class="system-panel system-panel-with-detail"><header class="panel-title"><div><span>▤</span><div><small>MONITOR</small><h2>Disk monitor</h2></div></div>${button("↻", "Refresh system monitor", "system-refresh")}</header>
+    <div class="system-status" role="status">Disk capacity, free space, and process read | write counters use MB.</div>
+    <div class="system-grid disk-grid">
+      ${renderSystemMetric("Disk used", formatPercent(snapshot.disk?.usagePercent), `${formatMegabytes(snapshot.disk?.usedBytes || 0)} / ${formatMegabytes(snapshot.disk?.totalBytes || 0)}`)}
+      ${renderSystemMetric("Free", formatMegabytes(snapshot.disk?.freeBytes || 0), "Available space")}
+      ${renderSystemMetric("Read | write", formatNetPair(snapshot.disk?.readBytesPerSecond || 0, snapshot.disk?.writeBytesPerSecond || 0, "/s"), "Disk throughput")}
+    </div>
+    <section class="system-network-card system-detail-card"><h3>Common disk info</h3>
+      <div class="system-interface-list">${mounts.map((mount) => `<article><strong>${escapeHtml(mount.mountPoint || mount.name || "Disk")}</strong><span>${formatPercent(mount.usagePercent)}</span><code>${formatMegabytes(mount.usedBytes || 0)} / ${formatMegabytes(mount.totalBytes || 0)}</code><small>Free ${formatMegabytes(mount.freeBytes || 0)}</small></article>`).join("")}</div>
+    </section>
+    <section class="process-monitor"><div class="process-monitor-head"><div><h3>Process disk read | write</h3><p>Per-process disk counters are reported when the OS exposes them.</p></div><span>${processes.length} shown</span></div>${renderProcessTable(state, processes, { showDisk: true, showNet: false })}</section>
+    ${renderProcessDetailDialog(state, processes)}
+  </section>`;
+}
+
+function renderNet(state) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  const interfaces = Array.isArray(snapshot.network?.interfaces) ? snapshot.network.interfaces : [];
+  const processes = sortSystemProcesses(snapshot.processes || [], "port").slice(0, 120);
+  return `<section class="system-panel system-panel-with-detail"><header class="panel-title"><div><span>⇄</span><div><small>MONITOR</small><h2>Network monitor</h2></div></div>${button("↻", "Refresh system monitor", "system-refresh")}</header>
+    <div class="system-status" role="status">Interfaces with IP, upload | download status, process network usage, and port status.</div>
+    <div class="system-grid disk-grid">
+      ${renderSystemMetric("Upload | download", formatCompactNetRate(snapshot.network?.uploadBytesPerSecond || 0, snapshot.network?.downloadBytesPerSecond || 0), "Current network speed")}
+      ${renderSystemMetric("Total up | down", formatNetPair(snapshot.network?.totalTxBytes || 0, snapshot.network?.totalRxBytes || 0), "Interface counters")}
+      ${renderSystemMetric("Interfaces", String(interfaces.length), `${interfaces.filter((iface) => iface.status === "up" || iface.ip).length} active`)}
+    </div>
+    <section class="system-network-card system-detail-card"><h3>Network devices / IP</h3>
+      <div class="system-interface-list">${interfaces.length ? interfaces.map((iface) => `<article><strong>${escapeHtml(iface.name)}</strong><span>${escapeHtml(iface.status || "unknown")}</span><code>${escapeHtml(iface.ip || "No IP")}</code><small>${formatNetPair(iface.txBytes || 0, iface.rxBytes || 0)}</small></article>`).join("") : `<div class="empty-small"><span>◇</span><p>No network interfaces reported.</p></div>`}</div>
+    </section>
+    <section class="process-monitor"><div class="process-monitor-head"><div><h3>Process network and port status</h3><p>Processes using ports are listed first by default.</p></div><span>${processes.length} shown</span></div>${renderProcessTable(state, processes, { showNet: true })}</section>
+    ${renderProcessDetailDialog(state, processes)}
+  </section>`;
+}
+
 export function renderRecorder(state, kind) {
   const isVideo = kind === "video";
   const recording = state.media.status === "recording" && state.media.kind === kind;
@@ -584,6 +840,9 @@ export function renderActivePanel(state, options = {}) {
   if (subtab.type === "webview") return renderWebview(state, options);
   if (subtab.type === "clipboard") return renderClipboard(state);
   if (subtab.type === "settings") return renderSettings(state);
+  if (subtab.type === "system") return renderSystem(state);
+  if (subtab.type === "disk") return renderDisk(state);
+  if (subtab.type === "net") return renderNet(state);
   if (subtab.type === "info") return renderInfo(state);
   if (subtab.type === "audio" || subtab.type === "video") return renderRecorder(state, subtab.type);
   return renderEmptyPanel("◇", "Not available", "This panel type is not registered.");

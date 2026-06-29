@@ -23,10 +23,16 @@ export function captureSettingsScroll(root) {
   return scroller ? scroller.scrollTop : 0;
 }
 
+export function captureProcessScroll(root) {
+  const table = root && root.querySelector ? root.querySelector(".process-table") : null;
+  return table ? table.scrollTop : 0;
+}
+
 export class AppView {
   constructor(root) {
     this.root = root;
     this.terminalHosts = new Map();
+    this.lastProcessSortBy = null;
   }
 
   terminalHostKey(host) {
@@ -63,11 +69,18 @@ export class AppView {
     const tab = activeWorkspace(state);
     this.stashTerminalHost();
     this.pruneTerminalHosts(state);
+    const terminalInput = this.getTerminalInput();
+    const terminalWasFocused = Boolean(options.preserveInput && terminalInput && terminalInput.ownerDocument?.activeElement === terminalInput);
     const inputValue = options.preserveInput ? this.getTerminalInputValue() : tab.terminal.draft;
+    const inputSelectionStart = terminalWasFocused && Number.isInteger(terminalInput.selectionStart) ? terminalInput.selectionStart : inputValue.length;
+    const inputSelectionEnd = terminalWasFocused && Number.isInteger(terminalInput.selectionEnd) ? terminalInput.selectionEnd : inputSelectionStart;
     const folderCreateValue = state.ui.folderCreateKind ? this.getFolderCreateName() : "";
     const folderScrollTop = captureFolderScroll(this.root, tab.folder.path);
     const clipboardScrollTop = captureClipboardScroll(this.root);
     const settingsScrollTop = captureSettingsScroll(this.root);
+    const processSortBy = state.system?.sortBy || "";
+    const resetProcessScroll = this.lastProcessSortBy !== null && this.lastProcessSortBy !== processSortBy;
+    const processScrollTop = resetProcessScroll ? 0 : captureProcessScroll(this.root);
     this.root.innerHTML = `
       <div class="auri-shell">
         ${renderMainTabs(state)}
@@ -84,8 +97,15 @@ export class AppView {
     const active = activeSubtab(state);
     this.restoreTerminalHost(active?.type === "terminal" ? active.id : null);
 
-    if (inputValue && this.root.querySelector("#terminal-input")) {
-      this.root.querySelector("#terminal-input").value = inputValue;
+    const nextTerminalInput = this.getTerminalInput();
+    if (nextTerminalInput) {
+      nextTerminalInput.value = inputValue;
+      if (terminalWasFocused) {
+        nextTerminalInput.focus?.();
+        const safeStart = Math.min(nextTerminalInput.value.length, Math.max(0, inputSelectionStart));
+        const safeEnd = Math.min(nextTerminalInput.value.length, Math.max(safeStart, inputSelectionEnd));
+        nextTerminalInput.setSelectionRange?.(safeStart, safeEnd);
+      }
     }
     if (folderCreateValue && this.root.querySelector("#folder-create-input")) {
       this.root.querySelector("#folder-create-input").value = folderCreateValue;
@@ -96,6 +116,9 @@ export class AppView {
     if (clipboard) clipboard.scrollTop = clipboardScrollTop;
     const settings = this.root.querySelector(".settings-scroll");
     if (settings) settings.scrollTop = settingsScrollTop;
+    const processTable = this.root.querySelector(".process-table");
+    if (processTable) processTable.scrollTop = processScrollTop;
+    this.lastProcessSortBy = processSortBy;
     requestAnimationFrame(() => {
       const history = this.root.querySelector("#terminal-history");
       if (history) history.scrollTop = history.scrollHeight;
