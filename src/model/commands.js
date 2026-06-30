@@ -61,6 +61,8 @@ export const COMMANDS = Object.freeze([
   ["system select <pid>", "Select a System monitor process."],
   ["system kill <pid>", "Kill the selected System monitor process."],
   ["system open-path <pid>", "Open the selected process path externally."],
+  ["system tunnel start <port> [--install]", "Start a Cloudflare HTTPS tunnel for a process port."],
+  ["system tunnel stop <port>", "Stop the Cloudflare HTTPS tunnel for a process port."],
   ["info show", "Open the Info subtab."],
   ["info clear", "Clear notifications and errors."],
   ["help", "Show all available commands."]

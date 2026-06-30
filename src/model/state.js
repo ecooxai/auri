@@ -50,7 +50,7 @@ export function createInitialState() {
     tabs: [workspace],
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
-    system: { status: "idle", error: null, sortBy: "cpu", selectedProcessPid: null, snapshot: null },
+    system: { status: "idle", error: null, sortBy: "cpu", selectedProcessPid: null, snapshot: null, tunnels: {}, tunnelStatus: {} },
     browser: { bookmarks: [], history: [] },
     completion: { shellHistory: [] },
     permissions: { microphone: "unknown", screenRecording: "unknown" },
@@ -73,7 +73,7 @@ export function createInitialState() {
       commandUsage: []
     },
     media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [] }
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, tunnelUrlMenuPort: null }
   };
 }
 
@@ -300,6 +300,40 @@ export function reduceState(state, event) {
       return { ...state, system: { ...state.system, sortBy: event.payload.sortBy || "cpu" } };
     case "SYSTEM_PROCESS_SELECT":
       return { ...state, system: { ...state.system, selectedProcessPid: Number(event.payload.pid) || null } };
+    case "SYSTEM_TUNNEL_PENDING_SET": {
+      const port = Number(event.payload?.port);
+      if (!Number.isInteger(port) || port <= 0) return state;
+      return { ...state, system: { ...state.system, tunnelStatus: { ...(state.system.tunnelStatus || {}), [port]: { port, status: String(event.payload?.status || "starting") } } } };
+    }
+    case "SYSTEM_TUNNEL_PENDING_REMOVE": {
+      const port = Number(event.payload?.port);
+      if (!Number.isInteger(port) || port <= 0) return state;
+      const tunnelStatus = { ...(state.system.tunnelStatus || {}) };
+      delete tunnelStatus[port];
+      return { ...state, system: { ...state.system, tunnelStatus } };
+    }
+    case "SYSTEM_TUNNEL_SET": {
+      const port = Number(event.payload?.port);
+      if (!Number.isInteger(port) || port <= 0) return state;
+      const tunnel = {
+        port,
+        url: String(event.payload?.url || ""),
+        pid: Number(event.payload?.pid) || null,
+        path: String(event.payload?.path || "")
+      };
+      const tunnelStatus = { ...(state.system.tunnelStatus || {}) };
+      delete tunnelStatus[port];
+      return { ...state, system: { ...state.system, tunnels: { ...(state.system.tunnels || {}), [port]: tunnel }, tunnelStatus } };
+    }
+    case "SYSTEM_TUNNEL_REMOVE": {
+      const port = Number(event.payload?.port);
+      if (!Number.isInteger(port) || port <= 0) return state;
+      const tunnels = { ...(state.system.tunnels || {}) };
+      const tunnelStatus = { ...(state.system.tunnelStatus || {}) };
+      delete tunnels[port];
+      delete tunnelStatus[port];
+      return { ...state, system: { ...state.system, tunnels, tunnelStatus } };
+    }
     case "BROWSER_RESTORE":
       return {
         ...state,

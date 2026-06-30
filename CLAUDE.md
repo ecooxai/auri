@@ -73,6 +73,8 @@ auri system refresh                                                           Re
 auri system select <pid>                                                    Select a System monitor process.
 auri system kill <pid>                                                      Kill the selected System monitor process.
 auri system open-path <pid>                                                 Open the selected process path externally.
+auri system tunnel start <port> [--install]                              Start a Cloudflare HTTPS tunnel for a process port.
+auri system tunnel stop <port>                                           Stop the Cloudflare HTTPS tunnel for a process port.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
 auri help                                                                      Show all available commands.

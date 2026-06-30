@@ -5,6 +5,7 @@ use core::{
     workspace,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 #[cfg(desktop)]
@@ -19,6 +20,14 @@ struct WakeShortcutState(Mutex<Option<String>>);
 
 #[derive(Default)]
 struct SystemMonitorState(Mutex<Option<system::NetworkSample>>);
+
+struct ManagedCloudflaredTunnel {
+    info: system::CloudflaredTunnel,
+    child: std::process::Child,
+}
+
+#[derive(Default)]
+struct CloudflaredTunnelState(Mutex<HashMap<u16, ManagedCloudflaredTunnel>>);
 
 #[tauri::command]
 fn initialize_workspace() -> Result<workspace::InitResult, String> {
@@ -217,6 +226,109 @@ async fn kill_process(pid: u32) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn cloudflared_status() -> Result<system::CloudflaredStatus, String> {
+    tauri::async_runtime::spawn_blocking(system::cloudflared_status)
+        .await
+        .map_err(|error| format!("cloudflared status task failed: {error}"))
+}
+
+#[tauri::command]
+async fn cloudflared_start_tunnel(
+    state: tauri::State<'_, CloudflaredTunnelState>,
+    port: u16,
+    install_if_missing: bool,
+) -> Result<system::CloudflaredTunnel, String> {
+    if port == 0 {
+        return Err("Choose a valid local port.".to_string());
+    }
+    if let Some(existing) = state
+        .0
+        .lock()
+        .map_err(|_| "Cloudflare tunnel state is unavailable.".to_string())?
+        .get(&port)
+    {
+        return Ok(existing.info.clone());
+    }
+
+    let process = tauri::async_runtime::spawn_blocking(move || system::start_cloudflared_tunnel(port, install_if_missing))
+        .await
+        .map_err(|error| format!("cloudflared tunnel task failed: {error}"))??;
+    let info = process.info.clone();
+    state
+        .0
+        .lock()
+        .map_err(|_| "Cloudflare tunnel state is unavailable.".to_string())?
+        .insert(port, ManagedCloudflaredTunnel { info: process.info, child: process.child });
+    Ok(info)
+}
+
+#[tauri::command]
+async fn cloudflared_active_tunnels(
+    state: tauri::State<'_, CloudflaredTunnelState>,
+) -> Result<Vec<system::CloudflaredTunnel>, String> {
+    let tunnels = state
+        .0
+        .lock()
+        .map_err(|_| "Cloudflare tunnel state is unavailable.".to_string())?;
+    let mut active: Vec<system::CloudflaredTunnel> = tunnels.values().map(|t| t.info.clone()).collect();
+    
+    let discovered = system::discover_active_tunnels();
+    for disc in discovered {
+        if !active.iter().any(|t| t.port == disc.port) {
+            active.push(disc);
+        }
+    }
+    Ok(active)
+}
+
+#[tauri::command]
+async fn cloudflared_stop_tunnel(
+    state: tauri::State<'_, CloudflaredTunnelState>,
+    port: u16,
+) -> Result<system::CloudflaredTunnel, String> {
+    let managed = state
+        .0
+        .lock()
+        .map_err(|_| "Cloudflare tunnel state is unavailable.".to_string())?
+        .remove(&port);
+
+    // The tunnel for this port may not be in our in-memory map even though
+    // it's running: it can be a tunnel that was started in an earlier Auri
+    // session (cloudflared survives if Auri quits without explicitly
+    // stopping it, by design, so it keeps serving in the background), or
+    // one discovered on disk/in the process list rather than spawned by
+    // this app instance. Fall back to discovery + a plain kill-by-pid so
+    // "stop tunnel" still works for those.
+    let info = match managed {
+        Some(mut tunnel) => {
+            let info = tunnel.info.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = tunnel.child.kill();
+                tunnel
+                    .child
+                    .wait()
+                    .map_err(|error| format!("Could not wait for cloudflared to stop: {error}"))?;
+                Ok::<(), String>(())
+            })
+            .await
+            .map_err(|error| format!("cloudflared stop task failed: {error}"))??;
+            info
+        }
+        None => {
+            let discovered = system::discover_active_tunnels();
+            let found = discovered
+                .into_iter()
+                .find(|tunnel| tunnel.port == port)
+                .ok_or_else(|| format!("No Cloudflare tunnel is running for port {port}."))?;
+            let pid = found.pid;
+            tauri::async_runtime::spawn_blocking(move || system::kill_process(pid)).await.map_err(|error| format!("cloudflared stop task failed: {error}"))??;
+            found
+        }
+    };
+    Ok(info)
+}
+
+#[tauri::command]
 fn save_settings(settings: Value) -> Result<(), String> {
     workspace::save_configuration(&settings)
 }
@@ -356,6 +468,7 @@ pub fn run() {
                 ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
             app.manage(command_server);
             app.manage(SystemMonitorState::default());
+            app.manage(CloudflaredTunnelState::default());
 
             #[cfg(desktop)]
             {
@@ -427,6 +540,10 @@ pub fn run() {
             read_shell_history,
             system_snapshot,
             kill_process,
+            cloudflared_status,
+            cloudflared_start_tunnel,
+            cloudflared_active_tunnels,
+            cloudflared_stop_tunnel,
             save_settings,
             set_wake_shortcut,
             save_media_file,

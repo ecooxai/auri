@@ -1011,6 +1011,84 @@ test("selected process detail copy and outside click use the command layer", asy
   assert.deepEqual(commands, ['clipboard copy "/usr/bin/python -m app"', "system deselect"]);
 });
 
+test("selected process tunnel buttons prompt and use the command layer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const confirmations = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const previousConfirm = globalThis.confirm;
+  globalThis.confirm = (message) => {
+    confirmations.push(message);
+    return true;
+  };
+  try {
+    const controller = new AppController({
+      view,
+      backend: { isNative: true, cloudflaredStatus: async () => ({ available: false }) },
+      terminalSessionFactory: () => ({ initialize: async () => {} })
+    });
+    controller.state = {
+      ...controller.state,
+      system: {
+        ...controller.state.system,
+        selectedProcessPid: 42,
+        tunnels: { 5173: { port: 5173, url: "https://auri-preview.trycloudflare.com", pid: 222 } },
+        snapshot: { processes: [{ pid: 42, commandLine: "/usr/bin/python -m app", ports: [3000, 5173] }] }
+      }
+    };
+    controller.runInternal = async (command) => { commands.push(command); };
+    const targetForAction = (dataset) => ({
+      closest: (selector) => {
+        if (selector === ".system-process-detail") return {};
+        if (selector === "[data-action]") return { dataset };
+        return null;
+      }
+    });
+
+    await controller.handleClick({
+      target: targetForAction({ action: "system-process-tunnel-toggle", port: "3000" }),
+      preventDefault() {}
+    });
+    await controller.handleClick({
+      target: targetForAction({ action: "system-process-tunnel-toggle", port: "5173" }),
+      preventDefault() {}
+    });
+    await controller.handleClick({
+      target: targetForAction({ action: "system-process-tunnel-copy-url", value: "https://auri-preview.trycloudflare.com" }),
+      preventDefault() {}
+    });
+  } finally {
+    globalThis.confirm = previousConfirm;
+  }
+
+  assert.deepEqual(commands, ["system tunnel start 3000 --install", "system tunnel stop 5173", 'clipboard copy "https://auri-preview.trycloudflare.com"']);
+  assert.equal(confirmations.length, 0);
+});
+
+test("system tunnel commands call the backend and update tunnel state", async () => {
+  const h = harness();
+  const calls = [];
+  h.backend.startCloudflaredTunnel = async ({ port, installIfMissing }) => {
+    calls.push(["start", port, installIfMissing]);
+    return { port, url: `https://port-${port}.trycloudflare.com`, pid: 999 };
+  };
+  h.backend.stopCloudflaredTunnel = async (port) => {
+    calls.push(["stop", port]);
+    return { port };
+  };
+
+  await executeCommand("system tunnel start 8080 --install", h);
+  assert.equal(h.state().system.tunnels[8080].url, "https://port-8080.trycloudflare.com");
+  await executeCommand("system tunnel stop 8080", h);
+  assert.equal(h.state().system.tunnels[8080], undefined);
+  assert.deepEqual(calls, [["start", 8080, true], ["stop", 8080]]);
+});
+
 test("clipboard pin and remove commands persist through the backend and replace state", async () => {
   const h = harness();
   h.dispatch({
@@ -1338,4 +1416,217 @@ test("native wake handler is dynamic instead of matching Alt+Space", async () =>
   assert.match(source, /unregister/);
   assert.doesNotMatch(source, /shortcut\.matches\(Modifiers::ALT, Code::Space\)/);
   assert.match(source, /set_wake_shortcut,/);
+});
+
+test("refreshActiveTunnels reconciles externally-managed tunnels (e.g. token-based fixed-URL tunnels) into process detail state", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+
+  let discoveredTunnels = [
+    { port: 8009, url: "https://miniswetagentmcpmacneo.22222233.xyz", pid: 75278, path: "" }
+  ];
+
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({
+        capturedAt: "2026-06-30T08:00:00.000Z",
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 5 },
+        memory: { totalBytes: 1000, usedBytes: 500 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: [{ pid: 75278, name: "cloudflared", cpuPercent: 1, memoryBytes: 10, ports: [8009] }]
+      }),
+      cloudflaredActiveTunnels: async () => discoveredTunnels
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  // Simulate a tunnel that was never started through Auri's own start/stop
+  // flow (e.g. `cloudflared tunnel run --token ...` started independently,
+  // exposing a fixed production URL on port 8009). Before the fix, nothing
+  // ever called cloudflaredActiveTunnels, so state.system.tunnels stayed
+  // empty and the process detail panel showed "No public tunnel".
+  await controller.refreshActiveTunnels();
+  assert.equal(controller.state.system.tunnels[8009].url, "https://miniswetagentmcpmacneo.22222233.xyz");
+  assert.equal(controller.state.system.tunnels[8009].pid, 75278);
+
+  // If the tunnel later disappears (process exits), the stale entry should
+  // be removed rather than left showing a dead tunnel as active.
+  discoveredTunnels = [];
+  await controller.refreshActiveTunnels();
+  assert.equal(controller.state.system.tunnels[8009], undefined);
+});
+
+test("system monitor refresh also syncs discovered tunnels automatically", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({
+        capturedAt: "2026-06-30T08:00:00.000Z",
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 5 },
+        memory: { totalBytes: 1000, usedBytes: 500 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: []
+      }),
+      cloudflaredActiveTunnels: async () => [
+        { port: 8009, url: "https://miniswetagentmcpmacneo.22222233.xyz", pid: 75278, path: "" }
+      ]
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  await controller.refreshSystemMonitor();
+  // refreshActiveTunnels is fired-and-forgotten inside refreshSystemMonitor;
+  // await it directly too so the assertion isn't racy in this test.
+  await controller.refreshActiveTunnels();
+  assert.equal(controller.state.system.tunnels[8009].url, "https://miniswetagentmcpmacneo.22222233.xyz");
+});
+
+test("refreshActiveTunnels removes a tunnel URL once its process is no longer in the live process snapshot", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+
+  let liveProcesses = [{ pid: 75278, name: "cloudflared", cpuPercent: 1, memoryBytes: 10, ports: [8009] }];
+
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({
+        capturedAt: "2026-06-30T08:00:00.000Z",
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 5 },
+        memory: { totalBytes: 1000, usedBytes: 500 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: liveProcesses
+      }),
+      // discover_active_tunnels still reports the tunnel (e.g. a brief race
+      // where the ps scan and the process snapshot disagree, or a stale
+      // pid was reused) but the live process snapshot says the pid is gone.
+      cloudflaredActiveTunnels: async () => [
+        { port: 8009, url: "https://miniswetagentmcpmacneo.22222233.xyz", pid: 75278, path: "" }
+      ]
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  await controller.refreshSystemMonitor();
+  await controller.refreshActiveTunnels();
+  assert.equal(controller.state.system.tunnels[8009].url, "https://miniswetagentmcpmacneo.22222233.xyz");
+
+  // Process disappears from the live snapshot (cloudflared died).
+  liveProcesses = [];
+  await controller.refreshSystemMonitor();
+  await controller.refreshActiveTunnels();
+  assert.equal(controller.state.system.tunnels[8009], undefined);
+});
+
+test("clicking the tunnel URL opens a float menu with Open in browser and Copy URL, each closing the menu after use", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const opened = [];
+  const copied = [];
+
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      openExternalUrl: async (url) => { opened.push(url); },
+      saveSettings: async () => {}
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => {
+    if (command.startsWith("clipboard copy")) copied.push(command);
+  };
+
+  const targetForAction = (dataset, insideProcessDetail = false) => ({
+    closest: (selector) => {
+      if (selector === "[data-action]") return { dataset };
+      if (selector === ".system-process-detail") return insideProcessDetail ? {} : null;
+      if (selector === ".process-detail-port-url-menu, .process-detail-port-url") return insideProcessDetail ? {} : null;
+      return null;
+    }
+  });
+
+  // Toggle the popover open.
+  await controller.handleClick({
+    target: targetForAction({ action: "system-process-tunnel-url-menu-toggle", port: "8009", value: "https://miniswetagentmcpmacneo.22222233.xyz" }, true),
+    preventDefault() {}
+  });
+  assert.equal(controller.state.ui.tunnelUrlMenuPort, 8009);
+
+  // Choosing "Open in browser" opens it and closes the menu.
+  await controller.handleClick({
+    target: targetForAction({ action: "system-process-tunnel-url-menu-open", value: "https://miniswetagentmcpmacneo.22222233.xyz" }, true),
+    preventDefault() {}
+  });
+  assert.deepEqual(opened, ["https://miniswetagentmcpmacneo.22222233.xyz"]);
+  assert.equal(controller.state.ui.tunnelUrlMenuPort, null);
+
+  // Reopen, then choose "Copy URL" — should copy and show a toast.
+  let toasted = null;
+  view.showToast = (message, kind) => { toasted = [message, kind]; };
+  await controller.handleClick({
+    target: targetForAction({ action: "system-process-tunnel-url-menu-toggle", port: "8009", value: "https://miniswetagentmcpmacneo.22222233.xyz" }, true),
+    preventDefault() {}
+  });
+  await controller.handleClick({
+    target: targetForAction({ action: "system-process-tunnel-url-menu-copy", value: "https://miniswetagentmcpmacneo.22222233.xyz" }, true),
+    preventDefault() {}
+  });
+  assert.equal(copied.length, 1);
+  assert.deepEqual(toasted, ["Copied tunnel URL", "success"]);
+  assert.equal(controller.state.ui.tunnelUrlMenuPort, null);
+});
+
+test("the dedicated open button opens the tunnel URL directly without requiring the float menu", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const opened = [];
+
+  const controller = new AppController({
+    view,
+    backend: { isNative: true, openExternalUrl: async (url) => { opened.push(url); } },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  const targetForAction = (dataset) => ({
+    closest: (selector) => (selector === "[data-action]" ? { dataset } : (selector === ".system-process-detail" ? {} : null))
+  });
+
+  await controller.handleClick({
+    target: targetForAction({ action: "system-process-tunnel-open", value: "https://miniswetagentmcpmacneo.22222233.xyz" }),
+    preventDefault() {}
+  });
+  assert.deepEqual(opened, ["https://miniswetagentmcpmacneo.22222233.xyz"]);
 });

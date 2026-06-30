@@ -1,7 +1,12 @@
 use serde::Serialize;
 use std::collections::HashMap;
-use std::process::Command;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::fs;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NetworkSample {
@@ -111,6 +116,571 @@ pub struct ProcessInfo {
     pub disk_read_bytes: u64,
     pub disk_write_bytes: u64,
     pub ports: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudflaredStatus {
+    pub available: bool,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudflaredTunnel {
+    pub port: u16,
+    pub url: String,
+    pub pid: u32,
+    pub path: String,
+}
+
+#[derive(Debug)]
+pub struct CloudflaredProcess {
+    pub info: CloudflaredTunnel,
+    pub child: Child,
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+fn local_cloudflared_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".local").join("bin").join("cloudflared"))
+}
+
+/// When Auri is launched from Finder/Dock rather than a terminal, the process
+/// inherits launchd's minimal PATH (typically just /usr/bin:/bin:/usr/sbin:/sbin)
+/// instead of the user's shell PATH. Homebrew, asdf, nvm, etc. all live outside
+/// that minimal PATH, so a plain std::env::var_os("PATH") lookup misses tools
+/// like cloudflared even though they work fine from a terminal. Ask the user's
+/// login shell for its resolved PATH, mirroring the approach shell::run already
+/// uses ($SHELL -lc ...) to execute terminal commands with the full environment.
+fn login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let output = Command::new(&shell)
+        .arg("-lc")
+        .arg("echo $PATH")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Common package-manager install locations checked as a last resort, in case
+/// the login shell probe above is unavailable (no SHELL set, shell failed to
+/// launch) or the user's shell rc files don't actually export PATH.
+fn fallback_search_directories() -> Vec<PathBuf> {
+    let mut directories = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/local/sbin"),
+        PathBuf::from("/opt/local/bin"),
+    ];
+    if let Some(home) = home_dir() {
+        directories.push(home.join(".homebrew").join("bin"));
+        directories.push(home.join(".linuxbrew").join("bin"));
+        directories.push(home.join(".local").join("bin"));
+    }
+    directories
+}
+
+fn search_directories() -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    let mut directories = Vec::new();
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            if seen.insert(directory.clone()) {
+                directories.push(directory);
+            }
+        }
+    }
+    if let Some(path) = login_shell_path() {
+        for directory in std::env::split_paths(&path) {
+            if seen.insert(directory.clone()) {
+                directories.push(directory);
+            }
+        }
+    }
+    for directory in fallback_search_directories() {
+        if seen.insert(directory.clone()) {
+            directories.push(directory);
+        }
+    }
+    directories
+}
+
+fn path_has_cloudflared() -> Option<PathBuf> {
+    search_directories()
+        .into_iter()
+        .map(|directory| directory.join("cloudflared"))
+        .find(|candidate| candidate.is_file())
+}
+
+fn cloudflared_path() -> Option<PathBuf> {
+    path_has_cloudflared().or_else(|| local_cloudflared_path().filter(|path| path.is_file()))
+}
+
+pub fn cloudflared_status() -> CloudflaredStatus {
+    match cloudflared_path() {
+        Some(path) => CloudflaredStatus { available: true, path: path.to_string_lossy().into_owned() },
+        None => CloudflaredStatus { available: false, path: String::new() },
+    }
+}
+
+fn run_download(url: &str, destination: &Path) -> Result<(), String> {
+    let status = Command::new("curl")
+        .args(["-L", "--fail", "--show-error", "--output"])
+        .arg(destination)
+        .arg(url)
+        .status()
+        .map_err(|error| format!("Could not start curl to download cloudflared: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("cloudflared download failed with status {status}."))
+    }
+}
+
+fn set_executable(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)
+            .map_err(|error| format!("Could not inspect cloudflared permissions: {error}"))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)
+            .map_err(|error| format!("Could not mark cloudflared executable: {error}"))?;
+    }
+    Ok(())
+}
+
+fn cloudflared_download() -> Result<(&'static str, bool), String> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok(("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", false)),
+        ("linux", "aarch64") => Ok(("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64", false)),
+        ("linux", "arm") => Ok(("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm", false)),
+        ("macos", "aarch64") => Ok(("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz", true)),
+        ("macos", "x86_64") => Ok(("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz", true)),
+        (os, arch) => Err(format!("Automatic cloudflared install is not supported on {os}/{arch}. Install cloudflared in PATH or ~/.local/bin.")),
+    }
+}
+
+fn current_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn install_cloudflared() -> Result<PathBuf, String> {
+    let destination = local_cloudflared_path()
+        .ok_or_else(|| "Could not resolve ~/.local/bin for cloudflared install.".to_string())?;
+    let bin_dir = destination
+        .parent()
+        .ok_or_else(|| "Could not resolve cloudflared install directory.".to_string())?;
+    fs::create_dir_all(bin_dir)
+        .map_err(|error| format!("Could not create ~/.local/bin: {error}"))?;
+
+    let (url, archive) = cloudflared_download()?;
+    let stamp = format!("{}-{}", std::process::id(), current_millis());
+    let temp_root = std::env::temp_dir().join(format!("auri-cloudflared-{stamp}"));
+    fs::create_dir_all(&temp_root)
+        .map_err(|error| format!("Could not create temporary cloudflared directory: {error}"))?;
+    let download_path = temp_root.join(if archive { "cloudflared.tgz" } else { "cloudflared" });
+    run_download(url, &download_path)?;
+
+    if archive {
+        let extract_dir = temp_root.join("extract");
+        fs::create_dir_all(&extract_dir)
+            .map_err(|error| format!("Could not create cloudflared extract directory: {error}"))?;
+        let status = Command::new("tar")
+            .arg("-xzf")
+            .arg(&download_path)
+            .arg("-C")
+            .arg(&extract_dir)
+            .status()
+            .map_err(|error| format!("Could not extract cloudflared archive: {error}"))?;
+        if !status.success() {
+            return Err(format!("cloudflared archive extraction failed with status {status}."));
+        }
+        let extracted = find_extracted_cloudflared(&extract_dir)
+            .ok_or_else(|| "cloudflared archive did not contain a cloudflared binary.".to_string())?;
+        fs::copy(&extracted, &destination)
+            .map_err(|error| format!("Could not install cloudflared to ~/.local/bin: {error}"))?;
+    } else {
+        fs::copy(&download_path, &destination)
+            .map_err(|error| format!("Could not install cloudflared to ~/.local/bin: {error}"))?;
+    }
+    set_executable(&destination)?;
+    let _ = fs::remove_dir_all(&temp_root);
+    Ok(destination)
+}
+
+fn find_extracted_cloudflared(directory: &Path) -> Option<PathBuf> {
+    for entry in fs::read_dir(directory).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name == "cloudflared") {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_extracted_cloudflared(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn extract_trycloudflare_url(line: &str) -> Option<String> {
+    line.split(|character: char| character.is_whitespace() || character == '|' || character == ',' || character == ';')
+        .map(|token| {
+            let t = token.trim_matches(|character: char| matches!(character, '<' | '>' | '"' | '\'' | ')' | '(' | '[' | ']'));
+            let t = t.trim_end_matches('.');
+            t.trim_matches(|character: char| matches!(character, '<' | '>' | '"' | '\'' | ')' | '(' | '[' | ']'))
+        })
+        .find(|token| token.starts_with("https://") && token.contains(".trycloudflare.com"))
+        .map(|token| token.to_string())
+}
+
+// Drains cloudflared's stdout/stderr for the full lifetime of the process.
+// Earlier this stopped reading (`break`) as soon as the public URL was
+// found. cloudflared keeps writing connection/heartbeat logs after that,
+// and once nothing reads from a pipe its OS buffer fills up; the child then
+// blocks on write() and appears to get "killed after a short time" (it's
+// actually stuck, not killed, but the effect for the user is the same: the
+// tunnel goes dead). Keep consuming lines for as long as the pipe is open
+// so the process can run indefinitely.
+fn watch_cloudflared_output<R>(reader: R, sender: mpsc::Sender<String>)
+where
+    R: std::io::Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut url_sent = false;
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            if !url_sent {
+                if let Some(url) = extract_trycloudflare_url(&line) {
+                    let _ = sender.send(url);
+                    url_sent = true;
+                }
+            }
+            // Keep looping (discarding further lines) instead of breaking,
+            // so the pipe never backs up and blocks the child process.
+        }
+    });
+}
+
+pub fn start_cloudflared_tunnel(port: u16, install_if_missing: bool) -> Result<CloudflaredProcess, String> {
+    if port == 0 {
+        return Err("Choose a valid local port.".to_string());
+    }
+    let executable = match cloudflared_path() {
+        Some(path) => path,
+        None if install_if_missing => install_cloudflared()?,
+        None => return Err("cloudflared is not installed in PATH or ~/.local/bin. Confirm install from the System monitor, or install it manually.".to_string()),
+    };
+    let local_url = format!("http://127.0.0.1:{port}");
+    let mut child = Command::new(&executable)
+        .args(["tunnel", "--url", &local_url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Could not start cloudflared: {error}"))?;
+
+    let (sender, receiver) = mpsc::channel();
+    if let Some(stdout) = child.stdout.take() {
+        watch_cloudflared_output(stdout, sender.clone());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        watch_cloudflared_output(stderr, sender);
+    }
+
+    let started_at = Instant::now();
+    let timeout = Duration::from_secs(25);
+    loop {
+        if let Ok(url) = receiver.try_recv() {
+            let info = CloudflaredTunnel {
+                port,
+                url,
+                pid: child.id(),
+                path: executable.to_string_lossy().into_owned(),
+            };
+            return Ok(CloudflaredProcess { info, child });
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Could not inspect cloudflared process: {error}"))?
+        {
+            return Err(format!("cloudflared exited before creating a public URL with status {status}."));
+        }
+        if started_at.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Timed out waiting for cloudflared to return a public HTTPS URL.".to_string());
+        }
+    }
+}
+
+pub fn parse_port_from_service_url(service: &str) -> Option<u16> {
+    let service = service.trim();
+    if service.starts_with("http://") || service.starts_with("https://") || service.starts_with("tcp://") {
+        if let Some(idx) = service.rfind(':') {
+            if idx > 6 {
+                let port_str: String = service[idx + 1..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(port) = port_str.parse::<u16>() {
+                    return Some(port);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn parse_port_from_cmdline(cmd: &str) -> Option<u16> {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    for i in 0..parts.len() {
+        if parts[i] == "--url" && i + 1 < parts.len() {
+            if let Some(port) = parse_port_from_service_url(parts[i + 1]) {
+                return Some(port);
+            }
+        } else if parts[i].starts_with("--url=") {
+            if let Some(port) = parse_port_from_service_url(&parts[i][6..]) {
+                return Some(port);
+            }
+        }
+    }
+    None
+}
+
+pub fn parse_config_path_from_cmdline(cmd: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    for i in 0..parts.len() {
+        if (parts[i] == "--config" || parts[i] == "-config") && i + 1 < parts.len() {
+            return Some(PathBuf::from(parts[i + 1]));
+        } else if parts[i].starts_with("--config=") {
+            return Some(PathBuf::from(&parts[i][9..]));
+        }
+    }
+    None
+}
+
+pub fn parse_logfile_path_from_cmdline(cmd: &str) -> Option<PathBuf> {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    for i in 0..parts.len() {
+        if (parts[i] == "--logfile" || parts[i] == "-logfile") && i + 1 < parts.len() {
+            return Some(PathBuf::from(parts[i + 1]));
+        } else if parts[i].starts_with("--logfile=") {
+            return Some(PathBuf::from(&parts[i][10..]));
+        }
+    }
+    None
+}
+
+pub fn scan_config_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, String>) {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    
+    let mut current_hostname = String::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("url:") {
+            let val = line[4..].trim();
+            if let Some(port) = parse_port_from_service_url(val) {
+                mappings.insert(port, String::new());
+            }
+        } else if line.starts_with("- hostname:") || line.starts_with("hostname:") {
+            let val = if line.starts_with("- hostname:") {
+                line[11..].trim()
+            } else {
+                line[9..].trim()
+            };
+            current_hostname = val.trim_matches(|c| c == '"' || c == '\'' || c == ' ').to_string();
+        } else if line.starts_with("- service:") || line.starts_with("service:") {
+            let val = if line.starts_with("- service:") {
+                line[10..].trim()
+            } else {
+                line[8..].trim()
+            };
+            let val = val.trim_matches(|c| c == '"' || c == '\'' || c == ' ');
+            if let Some(port) = parse_port_from_service_url(val) {
+                if !current_hostname.is_empty() {
+                    let url = if current_hostname.starts_with("http://") || current_hostname.starts_with("https://") {
+                        current_hostname.clone()
+                    } else {
+                        format!("https://{current_hostname}")
+                    };
+                    mappings.insert(port, url);
+                }
+            }
+        }
+    }
+}
+
+pub fn scan_log_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, String>) {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let metadata = match file.metadata() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = if metadata.len() > 2_000_000 {
+        reader.lines().flatten().collect::<Vec<String>>().into_iter().rev().take(5000).collect::<Vec<String>>().into_iter().rev().collect()
+    } else {
+        reader.lines().flatten().collect()
+    };
+    
+    for line in lines {
+        if let Some(idx) = line.find("Updated to new configuration config=\"") {
+            let start = idx + "Updated to new configuration config=\"".len();
+            if let Some(end) = line[start..].find('"') {
+                let json_str = &line[start..start + end];
+                let unescaped = json_str.replace("\\\"", "\"");
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&unescaped) {
+                    if let Some(ingress) = json.get("ingress").and_then(|v| v.as_array()) {
+                        for rule in ingress {
+                            if let (Some(hostname), Some(service)) = (rule.get("hostname").and_then(|v| v.as_str()), rule.get("service").and_then(|v| v.as_str())) {
+                                if let Some(port) = parse_port_from_service_url(service) {
+                                    let url = if hostname.starts_with("http://") || hostname.starts_with("https://") {
+                                        hostname.to_string()
+                                    } else {
+                                        format!("https://{hostname}")
+                                    };
+                                    mappings.insert(port, url);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let (Some(dest_idx), Some(origin_idx)) = (line.find("dest="), line.find("originService=")) {
+            let dest_part = &line[dest_idx + 5..];
+            let dest_val = dest_part.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '"' || c == '\'');
+            
+            let origin_part = &line[origin_idx + 14..];
+            let origin_val = origin_part.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '"' || c == '\'');
+            
+            if let Some(port) = parse_port_from_service_url(origin_val) {
+                if let Some(url_idx) = dest_val.find("://") {
+                    let host_part = &dest_val[url_idx + 3..];
+                    let host = host_part.split('/').next().unwrap_or(host_part);
+                    let protocol = &dest_val[..url_idx];
+                    let url = format!("{protocol}://{host}");
+                    mappings.insert(port, url);
+                }
+            }
+        }
+    }
+}
+
+pub fn discover_active_tunnels() -> Vec<CloudflaredTunnel> {
+    let mut discovered = Vec::new();
+    let cloudflared_procs = get_running_cloudflared_processes();
+    if cloudflared_procs.is_empty() {
+        return discovered;
+    }
+    
+    let mut port_to_url: HashMap<u16, String> = HashMap::new();
+    let mut port_to_pid: HashMap<u16, u32> = HashMap::new();
+    let mut quick_ports = Vec::new();
+    
+    for (pid, cmd) in &cloudflared_procs {
+        if let Some(port) = parse_port_from_cmdline(cmd) {
+            port_to_pid.insert(port, *pid);
+            quick_ports.push(port);
+        }
+    }
+    
+    let mut log_paths = vec![
+        PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.err.log"),
+        PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.out.log"),
+    ];
+    if let Some(home) = home_dir() {
+        log_paths.push(home.join(".cloudflared").join("tunnel.log"));
+    }
+    
+    for (_pid, cmd) in &cloudflared_procs {
+        if let Some(log_path) = parse_logfile_path_from_cmdline(cmd) {
+            if !log_paths.contains(&log_path) {
+                log_paths.push(log_path);
+            }
+        }
+        if let Some(config_path) = parse_config_path_from_cmdline(cmd) {
+            scan_config_file_for_mappings(&config_path, &mut port_to_url);
+        }
+    }
+    
+    for path in log_paths {
+        scan_log_file_for_mappings(&path, &mut port_to_url);
+    }
+    
+    let mut last_try_url = String::new();
+    for path in &[
+        PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.err.log"),
+        PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.out.log"),
+    ] {
+        if let Ok(file) = fs::File::open(path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if let Some(url) = extract_trycloudflare_url(&line) {
+                    last_try_url = url;
+                }
+            }
+        }
+    }
+    
+    for port in quick_ports {
+        if !port_to_url.contains_key(&port) && !last_try_url.is_empty() {
+            port_to_url.insert(port, last_try_url.clone());
+        }
+    }
+    
+    let default_pid = cloudflared_procs.first().map(|(pid, _)| *pid).unwrap_or(0);
+    
+    for (port, url) in port_to_url {
+        let pid = port_to_pid.get(&port).copied().unwrap_or(default_pid);
+        discovered.push(CloudflaredTunnel {
+            port,
+            url,
+            pid,
+            path: String::new(),
+        });
+    }
+    
+    discovered
+}
+
+fn get_running_cloudflared_processes() -> Vec<(u32, String)> {
+    let mut results = Vec::new();
+    if let Some(output) = command_output("ps", &["-axo", "pid=,command="]) {
+        for line in output.lines() {
+            let line = line.trim_start();
+            let mut parts = line.splitn(2, char::is_whitespace);
+            if let (Some(pid_str), Some(cmd)) = (parts.next(), parts.next()) {
+                if cmd.contains("cloudflared") {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        results.push((pid, cmd.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    results
 }
 
 fn command_output(program: &str, args: &[&str]) -> Option<String> {
@@ -568,17 +1138,23 @@ fn parse_nettop_process_line(line: &str) -> Option<(u32, u64, u64)> {
     if parts.len() < 4 || parts.first().copied() == Some("time") {
         return None;
     }
-    let rx = parts
-        .get(parts.len().saturating_sub(8))?
-        .parse::<u64>()
-        .ok()?;
-    let tx = parts
-        .get(parts.len().saturating_sub(7))?
-        .parse::<u64>()
-        .ok()?;
-    let identity = parts[..parts.len().saturating_sub(8)].join(" ");
-    let pid_fragment = identity.rsplit('.').next()?.trim();
-    let pid = pid_fragment.parse::<u32>().ok()?;
+    let mut pid_index = None;
+    for i in 1..parts.len() {
+        let token = parts[i];
+        if let Some(pos) = token.rfind('.') {
+            let suffix = &token[pos + 1..];
+            if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+                pid_index = Some(i);
+                break;
+            }
+        }
+    }
+    let pid_idx = pid_index?;
+    let pid_token = parts[pid_idx];
+    let pid_pos = pid_token.rfind('.')?;
+    let pid = pid_token[pid_pos + 1..].parse::<u32>().ok()?;
+    let rx = parts.get(pid_idx + 1)?.parse::<u64>().ok()?;
+    let tx = parts.get(pid_idx + 2)?.parse::<u64>().ok()?;
     Some((pid, rx, tx))
 }
 
@@ -959,7 +1535,8 @@ pub fn snapshot(
 #[cfg(test)]
 mod tests {
     use super::{
-        display_process_name, parse_lsof_port, parse_macos_top_cpu, parse_nettop_process_line,
+        display_process_name, extract_trycloudflare_url, fallback_search_directories,
+        parse_lsof_port, parse_macos_top_cpu, parse_nettop_process_line,
         parse_process_command_line, parse_process_line,
     };
 
@@ -1044,5 +1621,50 @@ mod tests {
     fn parses_macos_cpu_idle_usage() {
         let usage = parse_macos_top_cpu("CPU usage: 7.10% user, 8.20% sys, 84.70% idle").unwrap();
         assert!((usage - 15.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn extracts_trycloudflare_url_from_cloudflared_log_lines() {
+        let line = "2026-06-29T12:00:00Z INF |  https://auri-preview.trycloudflare.com  |";
+        assert_eq!(
+            extract_trycloudflare_url(line).as_deref(),
+            Some("https://auri-preview.trycloudflare.com")
+        );
+        assert_eq!(extract_trycloudflare_url("no url on this line"), None);
+        assert_eq!(
+            extract_trycloudflare_url("Visit it at: <https://auri-preview.trycloudflare.com>."),
+            Some("https://auri-preview.trycloudflare.com".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_search_directories_include_common_homebrew_locations() {
+        let directories = fallback_search_directories();
+        let joined: Vec<String> = directories
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        assert!(joined.iter().any(|path| path == "/opt/homebrew/bin"));
+        assert!(joined.iter().any(|path| path == "/usr/local/bin"));
+    }
+
+    #[test]
+    fn parses_cloudflared_tunnels_and_configs() {
+        use super::{
+            parse_port_from_service_url, parse_port_from_cmdline,
+            parse_config_path_from_cmdline, parse_logfile_path_from_cmdline,
+        };
+        use std::path::PathBuf;
+
+        assert_eq!(parse_port_from_service_url("http://localhost:8009"), Some(8009));
+        assert_eq!(parse_port_from_service_url("tcp://127.0.0.1:22"), Some(22));
+        assert_eq!(parse_port_from_service_url("invalid"), None);
+
+        assert_eq!(parse_port_from_cmdline("cloudflared tunnel --url http://localhost:8009"), Some(8009));
+        assert_eq!(parse_port_from_cmdline("cloudflared tunnel --url=http://127.0.0.1:3000"), Some(3000));
+        assert_eq!(parse_port_from_cmdline("cloudflared tunnel run"), None);
+
+        assert_eq!(parse_config_path_from_cmdline("cloudflared tunnel run --config /etc/cloudflared.yml"), Some(PathBuf::from("/etc/cloudflared.yml")));
+        assert_eq!(parse_logfile_path_from_cmdline("cloudflared --logfile /var/log/cf.log"), Some(PathBuf::from("/var/log/cf.log")));
     }
 }

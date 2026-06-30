@@ -316,6 +316,26 @@ export class Backend {
     return this.call("kill_process", { pid: Number(pid) });
   }
 
+  async cloudflaredActiveTunnels() {
+    if (!this.invoke) return [];
+    return this.call("cloudflared_active_tunnels");
+  }
+
+  async cloudflaredStatus() {
+    if (!this.invoke) return { available: false, path: "" };
+    return this.call("cloudflared_status");
+  }
+
+  async startCloudflaredTunnel({ port, installIfMissing = false }) {
+    if (!this.invoke) throw new Error("Cloudflare tunnels need the native Tauri build.");
+    return this.call("cloudflared_start_tunnel", { port: Number(port), installIfMissing: Boolean(installIfMissing) });
+  }
+
+  async stopCloudflaredTunnel(port) {
+    if (!this.invoke) throw new Error("Cloudflare tunnels need the native Tauri build.");
+    return this.call("cloudflared_stop_tunnel", { port: Number(port) });
+  }
+
   async listDirectory(path) {
     if (!this.invoke) return browserEntries(path);
     return this.call("list_directory", { path });

@@ -128,3 +128,11 @@ pub struct CommandServer;
 pub fn start_command_server(_app: tauri::AppHandle) -> Result<CommandServer, String> {
     Err("The external Auri command bridge currently supports macOS and Linux.".to_string())
 }
+
+#[cfg(test)]
+pub struct CommandServer;
+
+#[cfg(test)]
+pub fn start_command_server<T>(_app: T) -> Result<CommandServer, String> {
+    Ok(CommandServer)
+}

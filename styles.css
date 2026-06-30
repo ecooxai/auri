@@ -1742,16 +1742,18 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .process-monitor { min-height: 0; margin: 0 18px 18px; border: 1px solid rgba(88, 110, 145, .1); border-radius: 17px; display: flex; flex-direction: column; overflow: hidden; background: rgba(255, 255, 255, .76); }
 .process-monitor-head { display: none; }
 .process-table { min-height: 0; flex: 1 1 auto; overflow: auto; font-size: .66rem; }
-.process-row { display: grid; grid-template-columns: repeat(6, 1fr); align-items: center; border-bottom: 1px solid rgba(88, 110, 145, .06); cursor: default; }
-.process-row.is-disk { grid-template-columns: repeat(6, 1fr); }
+.process-row { display: grid; grid-template-columns: minmax(240px, 3fr) minmax(110px, 0.8fr) 8ch 60px minmax(130px, 1fr) 62px; align-items: center; border-bottom: 1px solid rgba(88, 110, 145, .06); cursor: default; }
+.process-row.is-disk { grid-template-columns: minmax(240px, 3fr) minmax(110px, 0.8fr) 8ch 60px minmax(130px, 1fr) 62px; }
 .process-row > span { padding: 8px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.process-row > span:nth-child(3) { padding-left: 4px; padding-right: 4px; }
+.process-row > span:first-child { padding-left: 10px; }
 .process-row:not(.process-heading):hover { background: rgba(112, 137, 248, .045); }
 .process-row.is-selected { background: rgba(112, 137, 248, .1); box-shadow: inset 3px 0 0 var(--blue-dark); }
 .process-heading { position: sticky; top: 0; z-index: 2; color: #66748a; background: rgba(246, 249, 252, .97); font-size: .58rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .process-row code { padding: 2px 5px; border-radius: 6px; color: #56647b; background: rgba(112, 137, 248, .08); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .6rem; }
 .process-row .muted { color: #a1aab8; }
 .system-process-detail-backdrop { position: absolute; inset: 0; z-index: 780; display: flex; align-items: center; justify-content: center; padding: 14px; overflow: hidden; pointer-events: none; background: transparent; backdrop-filter: none; }
-.system-process-detail { position: relative; width: min(610px, calc(100% - 28px)); max-height: min(330px, calc(100% - 28px)); padding: 12px; border: 1px solid #dce4ee; border-radius: 16px; display: grid; gap: 8px; overflow: hidden; color: #17243a; background: #fff; box-shadow: 0 22px 60px rgba(28, 39, 61, .24); pointer-events: auto; }
+.system-process-detail { position: relative; width: min(680px, calc(100% - 28px)); max-height: min(430px, calc(100% - 28px)); padding: 12px; border: 1px solid #dce4ee; border-radius: 16px; display: grid; gap: 8px; overflow: hidden; color: #17243a; background: #fff; box-shadow: 0 22px 60px rgba(28, 39, 61, .24); pointer-events: auto; }
 .process-detail-header { min-width: 0; height: 38px; padding: 0 10px; border-radius: 11px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #f2f5f9; }
 .process-detail-title { min-width: 0; display: flex; align-items: center; gap: 8px; }
 .process-detail-title strong { min-width: 0; overflow: hidden; color: #17243a; font-size: 14px; font-weight: 850; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
@@ -1769,7 +1771,14 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .process-detail-path { min-width: 0; padding: 8px; border-radius: 11px; background: #f4f7fb; }
 .process-detail-path-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
 .process-detail-path-head small { display: block; color: #7f8ba0; font-size: 9px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
-.process-detail-path-field { width: 100%; height: 84px; min-height: 84px; max-height: 84px; padding: 7px 8px; border: 1px solid #d7e0eb; border-radius: 9px; display: block; resize: none; overflow: auto; color: #17243a; background: #fff; font: 500 11px/14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; }
+.process-detail-path-field { width: 100%; height: 74px; min-height: 74px; max-height: 74px; padding: 7px 8px; border: 1px solid #d7e0eb; border-radius: 9px; display: block; resize: none; overflow: auto; color: #17243a; background: #fff; font: 500 11px/14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; white-space: pre-wrap; }
+.process-detail-ports { min-width: 0; margin-top: 8px; display: grid; gap: 6px; }
+.process-detail-port-row { min-width: 0; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; padding: 6px; border: 1px solid #d7e0eb; border-radius: 9px; background: #fff; }
+.process-detail-port-row code { padding: 2px 6px; border-radius: 7px; color: #56647b; background: rgba(112, 137, 248, .08); font: 700 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.process-detail-port-url { min-width: 0; overflow: hidden; border: 0; background: transparent; color: var(--accent); font-weight: 700; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.process-detail-tunnel-button { height: 24px; padding: 0 8px; border: 1px solid #d7e0eb; border-radius: 8px; color: #53617a; background: #edf2f7; font-size: 10px; font-weight: 800; cursor: pointer; }
+.process-detail-tunnel-button:hover, .process-detail-port-url:hover { background: #eef4ff; }
+.process-detail-port-empty { padding: 7px 8px; border: 1px dashed #d7e0eb; border-radius: 9px; color: #7f8ba0; background: #fff; font-size: 11px; }
 .system-process-detail footer { display: flex; justify-content: flex-end; gap: 6px; padding-top: 0; }
 .icon-copy-button { width: 30px; height: 30px; border: 0; border-radius: 10px; color: #53617a; background: #edf2f7; cursor: pointer; }
 .icon-copy-button:hover { background: #e4ebf5; }
@@ -1791,3 +1800,12 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .system-sort:hover, .system-sort.is-active { color: var(--blue-dark); }
 @media (max-width: 1100px) { .system-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .system-grid, .disk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .system-panel { grid-template-rows: 68px auto auto minmax(0, 1fr); } .system-process-detail-backdrop { padding: 10px; } .system-process-detail { width: calc(100% - 20px); max-height: calc(100% - 20px); } .process-detail-stat-row { grid-template-columns: repeat(4, minmax(0, 1fr)); } .process-detail-title strong { max-width: 34vw; } .process-detail-stat > strong { font-size: 13px; } .process-detail-stat div:last-child span { font-size: 9px; } .process-detail-stat div:last-child strong { font-size: 10px; } }
+
+.system-tunnel-prompt-backdrop { position: fixed; inset: 0; z-index: 1800; display: flex; align-items: center; justify-content: center; padding: 18px; background: rgba(20, 30, 47, .18); backdrop-filter: blur(8px); }
+.system-tunnel-prompt { width: min(430px, calc(100% - 32px)); padding: 16px; border: 1px solid #dce4ee; border-radius: 18px; display: grid; gap: 12px; color: #17243a; background: rgba(255, 255, 255, .96); box-shadow: 0 24px 70px rgba(28, 39, 61, .28); }
+.system-tunnel-prompt header { display: flex; align-items: center; gap: 10px; }
+.system-tunnel-prompt header > span { width: 34px; height: 34px; border-radius: 12px; display: grid; place-items: center; color: var(--blue-dark); background: rgba(112, 137, 248, .12); font-weight: 900; }
+.system-tunnel-prompt small { display: block; color: #7f8ba0; font-size: 10px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+.system-tunnel-prompt h2 { margin: 2px 0 0; color: #17243a; font-size: 18px; line-height: 1.15; }
+.system-tunnel-prompt p { margin: 0; color: #53617a; font-size: 13px; line-height: 1.45; }
+.system-tunnel-prompt footer { display: flex; justify-content: flex-end; gap: 8px; }

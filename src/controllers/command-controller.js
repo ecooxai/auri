@@ -580,12 +580,46 @@ export async function executeCommand(input, context) {
         if (!backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
         const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
         dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
+        if (backend.cloudflaredActiveTunnels) {
+          try {
+            const tunnels = await backend.cloudflaredActiveTunnels();
+            const activePorts = new Set(tunnels.map((t) => Number(t.port)));
+            const currentPorts = Object.keys(getState().system.tunnels || {}).map(Number);
+            for (const port of currentPorts) {
+              if (!activePorts.has(port)) {
+                dispatch({ type: "SYSTEM_TUNNEL_REMOVE", payload: { port } });
+              }
+            }
+            for (const tunnel of tunnels) {
+              dispatch({ type: "SYSTEM_TUNNEL_SET", payload: tunnel });
+            }
+          } catch (e) {
+            console.error("Failed to fetch active tunnels", e);
+          }
+        }
         return snapshot;
       }
       if (action === "select") {
         const pid = Number(args[0]);
         if (!Number.isInteger(pid) || pid <= 0) throw new Error("Choose a process PID.");
         dispatch({ type: "SYSTEM_PROCESS_SELECT", payload: { pid } });
+        if (backend.cloudflaredActiveTunnels) {
+          try {
+            const tunnels = await backend.cloudflaredActiveTunnels();
+            const activePorts = new Set(tunnels.map((t) => Number(t.port)));
+            const currentPorts = Object.keys(getState().system.tunnels || {}).map(Number);
+            for (const port of currentPorts) {
+              if (!activePorts.has(port)) {
+                dispatch({ type: "SYSTEM_TUNNEL_REMOVE", payload: { port } });
+              }
+            }
+            for (const tunnel of tunnels) {
+              dispatch({ type: "SYSTEM_TUNNEL_SET", payload: tunnel });
+            }
+          } catch (e) {
+            console.error("Failed to fetch active tunnels", e);
+          }
+        }
         return { pid };
       }
       if (action === "deselect") {
@@ -616,6 +650,24 @@ export async function executeCommand(input, context) {
         if (!actions.openExternal) throw new Error("Opening process paths is unavailable in this runtime.");
         await actions.openExternal(folder);
         return { pid, path: folder };
+      }
+      if (action === "tunnel") {
+        const tunnelAction = args[0];
+        const port = Number(args[1]);
+        if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error("Choose a valid process port.");
+        if (tunnelAction === "start") {
+          if (!backend.startCloudflaredTunnel) throw new Error("Cloudflare tunnels need the native Tauri build.");
+          const tunnel = await backend.startCloudflaredTunnel({ port, installIfMissing: args.includes("--install") });
+          dispatch({ type: "SYSTEM_TUNNEL_SET", payload: tunnel });
+          return tunnel;
+        }
+        if (tunnelAction === "stop") {
+          if (!backend.stopCloudflaredTunnel) throw new Error("Cloudflare tunnels need the native Tauri build.");
+          const tunnel = await backend.stopCloudflaredTunnel(port);
+          dispatch({ type: "SYSTEM_TUNNEL_REMOVE", payload: { port } });
+          return tunnel;
+        }
+        throw new Error("Use system tunnel start <port> or system tunnel stop <port>.");
       }
       throw new Error(`Unknown system action: ${action}`);
     }

@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderWebOverlay } from "./panels.js";
+import { customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -93,6 +93,7 @@ export class AppView {
         </main>
       </div>
       ${renderWebOverlay(state, { native: Boolean(options.native) })}
+      ${renderSystemTunnelPrompt(state)}
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
     const active = activeSubtab(state);
     this.restoreTerminalHost(active?.type === "terminal" ? active.id : null);

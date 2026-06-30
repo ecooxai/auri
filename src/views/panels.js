@@ -339,6 +339,23 @@ function renderWebDialog(state, subtab) {
   return "";
 }
 
+export function renderSystemTunnelPrompt(state) {
+  const prompt = state.ui?.systemTunnelPrompt;
+  if (!prompt) return "";
+  const danger = prompt.kind === "stop";
+  const icon = prompt.kind === "install" ? "↓" : prompt.kind === "stop" ? "■" : "↗";
+  return `<div class="system-tunnel-prompt-backdrop" data-action="system-tunnel-prompt-cancel">
+    <section class="system-tunnel-prompt" role="dialog" aria-modal="true" aria-label="${escapeHtml(prompt.title || "Confirm tunnel action")}">
+      <header><span>${icon}</span><div><small>HTTPS tunnel</small><h2>${escapeHtml(prompt.title || "Confirm tunnel action")}</h2></div></header>
+      <p>${escapeHtml(prompt.message || "")}</p>
+      <footer>
+        <button type="button" class="action-button secondary" data-action="system-tunnel-prompt-cancel">Cancel</button>
+        <button type="button" class="action-button ${danger ? "secondary danger" : "primary"}" data-action="system-tunnel-prompt-confirm">${escapeHtml(prompt.confirmLabel || "Confirm")}</button>
+      </footer>
+    </section>
+  </div>`;
+}
+
 export function renderWebOverlay(state, { native = false } = {}) {
   if (native) return "";
   const subtab = activeSubtab(state);
@@ -662,6 +679,54 @@ function formatDetailMegabyteValue(value) {
   return (number / 1_000_000).toFixed(2);
 }
 
+
+function renderProcessDetailPorts(state, process) {
+  const ports = Array.isArray(process?.ports) ? process.ports : [];
+  const tunnels = state.system?.tunnels || {};
+  const tunnelStatus = state.system?.tunnelStatus || {};
+  const tunnelUrlMenuPort = state.ui?.tunnelUrlMenuPort ?? null;
+  const shellStyle = "min-width:0;margin-top:8px;display:grid;gap:6px;";
+  const headStyle = "display:block;color:#7f8ba0;font-size:9px;font-weight:850;letter-spacing:.12em;text-transform:uppercase;";
+  const emptyStyle = "padding:7px 8px;border:1px dashed #d7e0eb;border-radius:9px;color:#7f8ba0;background:#fff;font-size:11px;";
+  const rowStyle = "min-width:0;display:grid;grid-template-columns:auto 1fr auto auto;align-items:center;gap:8px;padding:6px;border:1px solid #d7e0eb;border-radius:9px;background:#fff;position:relative;";
+  const portStyle = "padding:2px 6px;border-radius:7px;color:#56647b;background:rgba(112,137,248,.08);font:700 11px/1.2 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;";
+  const urlWrapStyle = "position:relative;min-width:0;";
+  const urlStyle = "min-width:0;width:100%;overflow:hidden;border:0;background:transparent;color:#2f6fed;font:700 11px/1.2 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;";
+  const mutedStyle = "min-width:0;overflow:hidden;color:#9aa6b9;font-size:11px;font-weight:700;text-overflow:ellipsis;white-space:nowrap;";
+  const openButtonStyle = "height:24px;width:24px;display:inline-flex;align-items:center;justify-content:center;padding:0;border:1px solid #d7e0eb;border-radius:8px;color:#53617a;background:#edf2f7;font-size:11px;cursor:pointer;";
+  const buttonStyle = "height:24px;padding:0 8px;border:1px solid #d7e0eb;border-radius:8px;color:#53617a;background:#edf2f7;font-size:10px;font-weight:800;cursor:pointer;";
+  const menuStyle = "position:absolute;z-index:40;top:calc(100% + 4px);left:0;display:grid;gap:2px;padding:4px;border:1px solid #d7e0eb;border-radius:10px;background:#fff;box-shadow:0 10px 28px rgba(28,39,61,.18);min-width:152px;";
+  const menuItemStyle = "display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:0;border-radius:7px;background:transparent;color:#2c3a52;font:700 11px/1.2 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;text-align:left;cursor:pointer;white-space:nowrap;";
+  const rows = ports.length
+    ? ports.map((port) => {
+        const tunnel = tunnels?.[port];
+        const pending = tunnelStatus?.[port];
+        const url = String(tunnel?.url || "");
+        const statusLabel = pending?.status === "stopping" ? "Stopping tunnel…" : "Starting tunnel…";
+        const menuOpen = url && Number(tunnelUrlMenuPort) === Number(port);
+        return `<div class="process-detail-port-row" style="${rowStyle}">
+          <code style="${portStyle}">${escapeHtml(port)}</code>
+          ${url
+            ? `<div class="process-detail-port-url-wrap" style="${urlWrapStyle}">
+                <button type="button" class="process-detail-port-url" style="${urlStyle}" data-action="system-process-tunnel-url-menu-toggle" data-port="${escapeHtml(port)}" data-value="${escapeHtml(url)}" title="${escapeHtml(url)}" aria-haspopup="menu" aria-expanded="${menuOpen}">${escapeHtml(url.replace(/^https?:\/\//, ""))}</button>
+                ${menuOpen
+                  ? `<div class="process-detail-port-url-menu" role="menu" aria-label="Tunnel URL actions" style="${menuStyle}">
+                      <button type="button" role="menuitem" style="${menuItemStyle}" data-action="system-process-tunnel-url-menu-open" data-value="${escapeHtml(url)}">Open in browser</button>
+                      <button type="button" role="menuitem" style="${menuItemStyle}" data-action="system-process-tunnel-url-menu-copy" data-value="${escapeHtml(url)}">Copy URL</button>
+                    </div>`
+                  : ""}
+              </div>`
+            : pending
+              ? `<span class="muted" style="${mutedStyle}">${statusLabel}</span>`
+              : `<span class="muted" style="${mutedStyle}">No public tunnel</span>`}
+          ${url ? `<button type="button" class="process-detail-port-open" style="${openButtonStyle}" data-action="system-process-tunnel-open" data-value="${escapeHtml(url)}" title="Open in browser" aria-label="Open tunnel URL in browser">↗</button>` : `<span></span>`}
+          <button type="button" class="process-detail-tunnel-button" style="${buttonStyle}" data-action="system-process-tunnel-toggle" data-port="${escapeHtml(port)}" ${pending ? "disabled" : ""}>${pending ? "Working…" : url ? "Stop tunnel" : "Enable HTTPS tunnel"}</button>
+        </div>`;
+      }).join("")
+    : `<div class="process-detail-port-empty" style="${emptyStyle}">No listening ports detected for this process.</div>`;
+  return `<div class="process-detail-ports" style="${shellStyle}"><small style="${headStyle}">Ports</small>${rows}</div>`;
+}
+
 function renderProcessDetailDialog(state, processes) {
   const selected = selectedSystemProcess(state, processes);
   if (!selected) return "";
@@ -671,7 +736,7 @@ function renderProcessDetailDialog(state, processes) {
   const openTarget = processOpenTarget(selected);
   const processActionLabel = "Kill " + "process";
   const backdropStyle = "position:absolute;inset:0;z-index:780;display:flex;align-items:center;justify-content:center;padding:14px;pointer-events:none;background:transparent;";
-  const dialogStyle = "position:relative;width:min(610px,calc(100% - 28px));max-height:min(330px,calc(100% - 28px));padding:12px;border:1px solid #dce4ee;border-radius:16px;display:grid;gap:8px;overflow:hidden;background:#fff;color:#17243a;box-shadow:0 22px 60px rgba(28,39,61,.24);pointer-events:auto;";
+  const dialogStyle = "position:relative;width:min(680px,calc(100% - 28px));max-height:min(430px,calc(100% - 28px));padding:12px;border:1px solid #dce4ee;border-radius:16px;display:grid;gap:8px;overflow:hidden;background:#fff;color:#17243a;box-shadow:0 22px 60px rgba(28,39,61,.24);pointer-events:auto;";
   const headerStyle = "min-width:0;height:38px;padding:0 10px;border-radius:11px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f2f5f9;";
   const titleStyle = "min-width:0;display:flex;align-items:center;gap:8px;";
   const nameStyle = "min-width:0;overflow:hidden;color:#17243a;font-size:14px;font-weight:850;line-height:1;text-overflow:ellipsis;white-space:nowrap;";
@@ -688,7 +753,7 @@ function renderProcessDetailDialog(state, processes) {
   const pathWrapStyle = "min-width:0;padding:8px;border-radius:11px;background:#f4f7fb;";
   const pathHeadStyle = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px;";
   const pathLabelStyle = "display:block;color:#7f8ba0;font-size:9px;font-weight:850;letter-spacing:.12em;text-transform:uppercase;";
-  const pathFieldStyle = "width:100%;height:84px;min-height:84px;max-height:84px;padding:7px 8px;border:1px solid #d7e0eb;border-radius:9px;display:block;resize:none;overflow:auto;color:#17243a;background:#fff;font:500 11px/14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;";
+  const pathFieldStyle = "width:100%;height:74px;min-height:74px;max-height:74px;padding:7px 8px;border:1px solid #d7e0eb;border-radius:9px;display:block;resize:none;overflow:auto;color:#17243a;background:#fff;font:500 11px/14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;";
   return `<div class="system-process-detail-backdrop" role="presentation" style="${backdropStyle}">
     <section class="system-process-detail" role="dialog" style="${dialogStyle}" aria-modal="true" aria-label="Process detail">
       <header class="process-detail-header" style="${headerStyle}">
@@ -710,6 +775,7 @@ function renderProcessDetailDialog(state, processes) {
           <button type="button" class="icon-copy-button" data-action="system-process-copy-value" data-value="${escapeHtml(commandOrPath)}" aria-label="Copy process path" title="Copy path">⧉</button>
         </div>
         <textarea class="process-detail-path-field" readonly rows="5" spellcheck="false" style="${pathFieldStyle}">${escapeHtml(commandOrPath)}</textarea>
+        ${renderProcessDetailPorts(state, selected)}
       </div>
       <footer>
         <button type="button" class="action-button secondary" data-action="system-process-open-path" ${openTarget ? "" : "disabled"}>Open path</button>

@@ -31,6 +31,11 @@ pub fn reveal_main_window(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+pub fn reveal_main_window<T>(_app: &T) -> Result<(), String> {
+    Ok(())
+}
+
 /// Returns whether closing a window should terminate the desktop process.
 ///
 /// Auri currently has one primary window. On macOS, allowing that window to

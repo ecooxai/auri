@@ -108,12 +108,13 @@ test("system panel uses compact cards and centered selected-process detail", () 
         memory: { totalBytes: 2_000_000, usedBytes: 1_000_000, swapTotalBytes: 2_000_000_000, swapUsedBytes: 1_000_000_000 },
         network: { downloadBytesPerSecond: 1_000_000, uploadBytesPerSecond: 500_000, totalRxBytes: 3_000_000, totalTxBytes: 4_000_000 },
         processes: [
-          { pid: 10, name: "web", path: "/usr/bin/web", commandLine: "/usr/bin/web --serve very-long-project", memoryBytes: 2_000_000, cpuPercent: 1, downloadBytes: 1_000_000, uploadBytes: 500_000, diskReadBytes: 200_000, diskWriteBytes: 100_000, ports: [3000] }
+          { pid: 10, name: "web", path: "/usr/bin/web", commandLine: "/usr/bin/web --serve very-long-project", memoryBytes: 2_000_000, cpuPercent: 1, downloadBytes: 1_000_000, uploadBytes: 500_000, diskReadBytes: 200_000, diskWriteBytes: 100_000, ports: [3000, 5173] }
         ]
       })
     }
   });
   state = reduceState(state, { type: "SYSTEM_PROCESS_SELECT", payload: { pid: 10 } });
+  state = reduceState(state, { type: "SYSTEM_TUNNEL_SET", payload: { port: 5173, url: "https://auri-preview.trycloudflare.com", pid: 222 } });
 
   const html = renderActivePanel(state);
   assert.match(html, /<h2>System <em>auri-host<\/em><\/h2>/);
@@ -132,7 +133,7 @@ test("system panel uses compact cards and centered selected-process detail", () 
   assert.ok(html.includes('display:flex'));
   assert.ok(html.includes('background:transparent'));
   assert.ok(html.includes('pointer-events:none'));
-  assert.ok(html.includes('width:min(610px,calc(100% - 28px))'));
+  assert.ok(html.includes('width:min(680px,calc(100% - 28px))'));
   assert.ok(html.includes('grid-template-columns:repeat(4,minmax(0,1fr))'));
   assert.match(html, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Process detail"/);
   assert.match(html, /data-action="system-process-copy-value"[^>]*data-value="10"/);
@@ -142,6 +143,9 @@ test("system panel uses compact cards and centered selected-process detail", () 
   assert.match(html, /class="process-detail-header"[\s\S]*<strong[^>]*>web<\/strong>[\s\S]*PID <code[^>]*>10<\/code>[\s\S]*data-action="system-process-copy-value"[^>]*data-value="10"/);
   assert.match(html, /class="process-detail-stat-row"[\s\S]*<small>CPU<\/small>[\s\S]*1\.0%[\s\S]*<small>RAM<\/small><span[^>]*>MB<\/span>[\s\S]*Memory[\s\S]*2\.00[\s\S]*<small>Net<\/small><span[^>]*>MB<\/span>[\s\S]*Upload[\s\S]*0\.50[\s\S]*Download[\s\S]*1\.00[\s\S]*<small>Disk<\/small><span[^>]*>MB<\/span>[\s\S]*Read[\s\S]*0\.20[\s\S]*Write[\s\S]*0\.10/);
   assert.match(html, /<textarea class="process-detail-path-field"[^>]*readonly[^>]*rows="5"[^>]*>\/usr\/bin\/web --serve very-long-project<\/textarea>/);
+  assert.match(html, /class="process-detail-ports"[\s\S]*<small[^>]*>Ports<\/small>/);
+  assert.match(html, /class="process-detail-port-row"[\s\S]*<code[^>]*>3000<\/code>[\s\S]*data-action="system-process-tunnel-toggle"[^>]*data-port="3000"[\s\S]*Enable HTTPS tunnel/);
+  assert.match(html, /<code[^>]*>5173<\/code>[\s\S]*data-action="system-process-tunnel-copy-url"[^>]*data-value="https:\/\/auri-preview\.trycloudflare\.com"[\s\S]*auri-preview\.trycloudflare\.com[\s\S]*data-action="system-process-tunnel-toggle"[^>]*data-port="5173"[\s\S]*Stop tunnel/);
   assert.match(html, /data-action="system-process-kill"/);
   assert.match(html, /data-action="system-process-open-path"/);
   assert.match(html, /process-row\s+is-selected/);
@@ -149,7 +153,7 @@ test("system panel uses compact cards and centered selected-process detail", () 
 
 
 
-test("process table name column is compact and columns are ordered for scanning", () => {
+test("process table name column is wide enough and columns are ordered for scanning", () => {
   let state = createInitialState();
   state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: "system-tab", subtabs: [...state.tabs[0].subtabs, { id: "system-tab", type: "system", title: "System" }] }] };
   state = reduceState(state, {
@@ -162,11 +166,11 @@ test("process table name column is compact and columns are ordered for scanning"
   assert.match(html, /data-action="system-sort" data-sort="ram"/);
   assert.match(html, /data-action="system-sort" data-sort="port"/);
   assert.match(html, /data-action="system-sort" data-sort="cpu"/);
-  assert.match(html, /title="web">web<\/span>[\s\S]*<code>3000<\/code> <code>17078<\/code>[\s\S]*2\.00MB[\s\S]*1\.0%[\s\S]*0\.50 MB \| 1\.00 MB[\s\S]*<code>10<\/code>/);
+  assert.match(html, /title="web">web<\/span>[\s\S]*<code[^>]*>3000<\/code> <code>17078<\/code>[\s\S]*2\.00MB[\s\S]*1\.0%[\s\S]*0\.50 MB \| 1\.00 MB[\s\S]*<code>10<\/code>/);
 
   const css = readFileSync("styles.css", "utf8");
-  assert.match(css, /\.process-row\s*\{[^}]*grid-template-columns:\s*minmax\(120px, 1.5fr\) minmax\(110px, 0.8fr\) 8ch 60px minmax\(130px, 1fr\) 62px/s);
-  assert.match(css, /\.process-row\.is-disk\s*\{[^}]*grid-template-columns:\s*minmax\(120px, 1.5fr\) minmax\(110px, 0.8fr\) 8ch 60px minmax\(130px, 1fr\) 62px/s);
+  assert.match(css, /\.process-row\s*\{[^}]*grid-template-columns:\s*minmax\(240px, 3fr\) minmax\(110px, 0.8fr\) 8ch 60px minmax\(130px, 1fr\) 62px/s);
+  assert.match(css, /\.process-row\.is-disk\s*\{[^}]*grid-template-columns:\s*minmax\(240px, 3fr\) minmax\(110px, 0.8fr\) 8ch 60px minmax\(130px, 1fr\) 62px/s);
   assert.match(css, /\.process-row > span:nth-child\(3\)\s*\{[^}]*padding-left:\s*4px;[^}]*padding-right:\s*4px/s);
   assert.ok(css.indexOf(".process-row > span {") < css.indexOf(".process-row > span:nth-child(3)"), "RAM cell override must come after the generic cell rule");
   assert.match(css, /\.process-row > span:first-child\s*\{[^}]*padding-left:\s*10px/s);
@@ -174,15 +178,17 @@ test("process table name column is compact and columns are ordered for scanning"
   assert.match(css, /\.system-process-detail-backdrop\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*center/s);
   assert.ok(css.includes('background: transparent'));
   assert.ok(css.includes('pointer-events: none'));
-  assert.ok(css.includes('width: min(610px, calc(100% - 28px))'));
-  assert.ok(css.includes('max-height: min(330px, calc(100% - 28px))'));
+  assert.ok(css.includes('width: min(680px, calc(100% - 28px))'));
+  assert.ok(css.includes('max-height: min(430px, calc(100% - 28px))'));
   assert.ok(css.includes('grid-template-columns: repeat(4, minmax(0, 1fr))'));
-  assert.ok(css.includes('height: 84px'));
+  assert.ok(css.includes('height: 74px'));
   assert.ok(css.includes('font: 500 11px/14px'));
   assert.ok(css.includes('.system-process-detail .icon-copy-button { width: 24px'));
   assert.match(css, /\.process-detail-stat-row\s*\{[^}]*grid-template-columns:\s*repeat\(4,/s);
   assert.match(css, /\.process-detail-header\s*\{[^}]*display:\s*flex/s);
   assert.match(css, /\.process-detail-path-field\s*\{[^}]*resize:\s*none;[^}]*overflow:\s*auto/s);
+  assert.match(css, /\.process-detail-ports\s*\{[^}]*display:\s*grid/s);
+  assert.match(css, /\.process-detail-port-row\s*\{[^}]*grid-template-columns:\s*auto 1fr auto/s);
 });
 
 test("disk and net subtabs render beside the system monitor", () => {

@@ -131,6 +131,7 @@ export class AppController {
     this.terminalCompletionRange = null;
     this.terminalEnterHoldTimer = null;
     this.terminalEnterHeld = false;
+    this.systemTunnelPromptResolver = null;
   }
 
   context() {
@@ -373,12 +374,75 @@ export class AppController {
     try {
       const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot());
       this.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { preserveInput: true });
+      this.refreshActiveTunnels().catch(() => {});
       return snapshot;
     } catch (error) {
       this.dispatch({ type: "SYSTEM_STATUS_SET", payload: { status: "error", error: error?.message || String(error) } }, { preserveInput: true });
       throw error;
     } finally {
       this.systemMonitorRefreshing = false;
+    }
+  }
+
+  // Reconciles state.system.tunnels with tunnels actually running on the
+  // host. This covers tunnels Auri itself started, but also ones started
+  // outside Auri (e.g. a fixed-URL production tunnel via
+  // `cloudflared tunnel run --token ...`), which discover_active_tunnels
+  // finds by reading the cloudflared process list plus its log/config
+  // files. Without this sync, externally-managed tunnels never show up in
+  // the process detail UI, because state.system.tunnels was previously only
+  // ever written to by the start/stop tunnel actions.
+  async refreshActiveTunnels() {
+    if (!this.backend.cloudflaredActiveTunnels) return;
+    let discovered;
+    try {
+      discovered = await this.backend.cloudflaredActiveTunnels();
+    } catch (error) {
+      return;
+    }
+    if (!Array.isArray(discovered)) return;
+
+    // Cross-check each discovered tunnel's pid against the live process
+    // list from the same system snapshot poll. discover_active_tunnels
+    // already filters to processes whose command line contains
+    // "cloudflared", but this extra check catches the case where the pid
+    // was stale/reused or the snapshot and discovery briefly disagree, so a
+    // dead tunnel's URL never lingers in the process detail panel.
+    const liveProcessPids = new Set(
+      (this.state.system?.snapshot?.processes || [])
+        .map((process) => Number(process?.pid))
+        .filter((pid) => Number.isInteger(pid) && pid > 0)
+    );
+
+    const known = this.state.system?.tunnels || {};
+    const seenPorts = new Set();
+    for (const tunnel of discovered) {
+      const port = Number(tunnel?.port);
+      if (!Number.isInteger(port) || port <= 0) continue;
+      const pid = Number(tunnel?.pid);
+      // Only treat the live-process check as authoritative when we actually
+      // have a process snapshot to check against and a real pid was
+      // reported; otherwise fall back to trusting discovery alone so we
+      // don't drop valid tunnels just because the snapshot hasn't loaded.
+      if (liveProcessPids.size > 0 && Number.isInteger(pid) && pid > 0 && !liveProcessPids.has(pid)) {
+        continue;
+      }
+      seenPorts.add(port);
+      const existing = known[port];
+      if (existing && existing.url === tunnel.url && existing.pid === tunnel.pid && existing.path === tunnel.path) continue;
+      this.dispatch(
+        { type: "SYSTEM_TUNNEL_SET", payload: { port, url: tunnel.url, pid: tunnel.pid, path: tunnel.path } },
+        { preserveInput: true }
+      );
+    }
+    for (const portKey of Object.keys(known)) {
+      const port = Number(portKey);
+      if (!seenPorts.has(port)) {
+        this.dispatch({ type: "SYSTEM_TUNNEL_REMOVE", payload: { port } }, { preserveInput: true });
+        if (this.state.ui.tunnelUrlMenuPort === port) {
+          this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
+        }
+      }
     }
   }
 
@@ -609,6 +673,76 @@ export class AppController {
     this.backend.startWindowDragging().catch((error) => this.reportError("Window drag", error));
   }
 
+
+
+  systemTunnelPrompt(kind, port) {
+    const number = Number(port);
+    if (!Number.isInteger(number) || number <= 0) return Promise.resolve(false);
+    const messages = {
+      start: {
+        title: `Enable HTTPS tunnel for port ${number}?`,
+        message: `Start the helper for local port ${number} and show the generated HTTPS URL in this process detail.`,
+        confirmLabel: "Enable tunnel"
+      },
+      install: {
+        title: "Install helper?",
+        message: "The tunnel helper is not installed in PATH or ~/.local/bin. Auri can install it to ~/.local/bin and continue.",
+        confirmLabel: "Install and continue"
+      },
+      stop: {
+        title: `Stop HTTPS tunnel for port ${number}?`,
+        message: "Stop the helper process for this port and remove its URL from this process detail.",
+        confirmLabel: "Stop tunnel"
+      }
+    };
+    const prompt = { id: `system-tunnel-${Date.now()}-${Math.random().toString(16).slice(2)}`, kind, port: number, ...(messages[kind] || messages.start) };
+    if (this.systemTunnelPromptResolver) this.systemTunnelPromptResolver(false);
+    return new Promise((resolve) => {
+      this.systemTunnelPromptResolver = resolve;
+      this.dispatch({ type: "UI_SET", payload: { systemTunnelPrompt: prompt } }, { preserveInput: true });
+    });
+  }
+
+  resolveSystemTunnelPrompt(value) {
+    const resolver = this.systemTunnelPromptResolver;
+    this.systemTunnelPromptResolver = null;
+    this.dispatch({ type: "UI_SET", payload: { systemTunnelPrompt: null } }, { preserveInput: true });
+    resolver?.(Boolean(value));
+  }
+
+  async toggleSystemPortTunnel(port) {
+    const number = Number(port);
+    if (!Number.isInteger(number) || number <= 0) throw new Error("Choose a process port.");
+    const existing = this.state.system?.tunnels?.[number];
+    if (existing) {
+      this.dispatch({ type: "SYSTEM_TUNNEL_PENDING_SET", payload: { port: number, status: "stopping" } }, { preserveInput: true });
+      try {
+        await this.runInternal(`system tunnel stop ${number}`);
+      } catch (error) {
+        this.dispatch({ type: "SYSTEM_TUNNEL_PENDING_REMOVE", payload: { port: number } }, { preserveInput: true });
+        throw error;
+      }
+      return true;
+    }
+
+    let installFlag = "";
+    if (this.backend.cloudflaredStatus) {
+      const status = await this.backend.cloudflaredStatus();
+      if (!status?.available) {
+        installFlag = " --install";
+      }
+    }
+
+    this.dispatch({ type: "SYSTEM_TUNNEL_PENDING_SET", payload: { port: number, status: "starting" } }, { preserveInput: true });
+    try {
+      await this.runInternal(`system tunnel start ${number}${installFlag}`);
+    } catch (error) {
+      this.dispatch({ type: "SYSTEM_TUNNEL_PENDING_REMOVE", payload: { port: number } }, { preserveInput: true });
+      throw error;
+    }
+    return true;
+  }
+
   scrollProcessTableToTop() {
     const table = this.view.root.querySelector?.(".process-table");
     if (!table) return;
@@ -619,12 +753,17 @@ export class AppController {
   async handleClick(event) {
     const insideAssistantPopup = event.target?.closest?.(".assistant-action-popup");
     const insideProcessDetail = event.target?.closest?.(".system-process-detail");
+    const insideSystemTunnelPrompt = event.target?.closest?.(".system-tunnel-prompt");
+    const insideTunnelUrlMenu = event.target?.closest?.(".process-detail-port-url-menu, .process-detail-port-url");
     const target = event.target?.closest?.("[data-action]");
     if (hasAssistantActionPopup(this.state) && !insideAssistantPopup) {
       await this.runInternal("transcript dismiss");
     }
+    if (this.state.ui.tunnelUrlMenuPort && !insideTunnelUrlMenu) {
+      this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
+    }
     const action = target?.dataset?.action || "";
-    if (this.state.system.selectedProcessPid && !insideProcessDetail && action !== "system-process-select") {
+    if (this.state.system.selectedProcessPid && !insideProcessDetail && !insideSystemTunnelPrompt && !action.startsWith("system-tunnel-prompt-") && action !== "system-process-select") {
       await this.runInternal("system deselect");
     }
     if (!target) return;
@@ -673,6 +812,15 @@ export class AppController {
           await this.runInternal(`subtab new ${target.dataset.type}`);
           if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
           break;
+        case "system-tunnel-prompt-confirm":
+          this.resolveSystemTunnelPrompt(true);
+          break;
+        case "system-tunnel-prompt-cancel":
+          if (event.target.closest(".system-tunnel-prompt") && !event.target.closest("button")) {
+            break;
+          }
+          this.resolveSystemTunnelPrompt(false);
+          break;
         case "system-refresh":
           await this.runInternal("system refresh");
           break;
@@ -691,6 +839,45 @@ export class AppController {
         case "system-process-copy-value": {
           const value = target.dataset.value || "";
           if (value) await this.runInternal(`clipboard copy ${quoteArg(value)}`);
+          break;
+        }
+        case "system-process-tunnel-toggle":
+          await this.toggleSystemPortTunnel(target.dataset.port || "");
+          break;
+        case "system-process-tunnel-open": {
+          const url = target.dataset.value || "";
+          if (url) await this.openExternalUrl(url);
+          break;
+        }
+        case "system-process-tunnel-url-menu-toggle": {
+          const port = Number(target.dataset.port) || null;
+          this.dispatch(
+            { type: "UI_SET", payload: { tunnelUrlMenuPort: this.state.ui.tunnelUrlMenuPort === port ? null : port } },
+            { preserveInput: true }
+          );
+          break;
+        }
+        case "system-process-tunnel-url-menu-open": {
+          const url = target.dataset.value || "";
+          this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
+          if (url) await this.openExternalUrl(url);
+          break;
+        }
+        case "system-process-tunnel-url-menu-copy": {
+          const value = target.dataset.value || "";
+          this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
+          if (value) {
+            await this.runInternal(`clipboard copy ${quoteArg(value)}`);
+            this.view.showToast("Copied tunnel URL", "success");
+          }
+          break;
+        }
+        case "system-process-tunnel-copy-url": {
+          const value = target.dataset.value || "";
+          if (value) {
+            await this.runInternal(`clipboard copy ${quoteArg(value)}`);
+            this.view.showToast("Copied tunnel URL", "success");
+          }
           break;
         }
         case "system-process-detail-close":
@@ -1890,6 +2077,19 @@ export class AppController {
     if (!path) return;
     if (this.backend.isNative) await this.backend.call("open_external", { path });
     else this.view.showToast("External file opening needs the native build.", "info");
+  }
+
+  async openExternalUrl(url) {
+    if (!url) return;
+    if (this.backend.isNative && this.backend.openExternalUrl) {
+      await this.backend.openExternalUrl(url);
+      return;
+    }
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    this.view.showToast("External browser opening needs the native build.", "info");
   }
 
   async startRecording(kind) {
