@@ -658,8 +658,85 @@ function processSortButton(label, sort, activeSort) {
   return `<button type="button" class="system-sort ${activeSort === sort ? "is-active" : ""}" data-action="system-sort" data-sort="${sort}" aria-pressed="${activeSort === sort}">${label}${activeSort === sort ? " ↓" : ""}</button>`;
 }
 
-function renderSystemMetric(label, value, detail = "") {
-  return `<article class="system-metric"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</article>`;
+function renderSystemMetric(label, value, detail = "", key = "") {
+  return `<article class="system-metric"${key ? ` data-metric="${escapeHtml(key)}"` : ""}><small>${escapeHtml(label)}</small><strong data-metric-value>${escapeHtml(value)}</strong>${detail ? `<span data-metric-detail>${escapeHtml(detail)}</span>` : `<span data-metric-detail hidden></span>`}</article>`;
+}
+
+// Builds the system/disk/net metric tiles as plain data (key, label, value,
+// detail) instead of HTML strings, so the same values can be used both for
+// the initial full render and for in-place DOM patching during the quiet
+// 5s polling refresh (see AppView.patchSystemMonitor). Keep this in sync
+// with renderSystem/renderDisk/renderNet below.
+export function buildSystemMetrics(state, kind) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  if (kind === "system") {
+    const memoryDetail = `${formatMegabytes(snapshot.memory?.usedBytes || 0)} / ${formatMegabytes(snapshot.memory?.totalBytes || 0)}`;
+    const swapTotal = Number(snapshot.memory?.swapTotalBytes || 0);
+    const swapDetail = swapTotal > 0 ? `${formatMegabytes(snapshot.memory?.swapUsedBytes || 0)} / ${formatMegabytes(swapTotal)}` : "Swap off";
+    const swapValue = swapTotal > 0 ? formatPercent(snapshot.memory?.swapUsagePercent) : "Off";
+    const cpuDetail = `${snapshot.cpu?.cores || 0} cores · ${snapshot.cpu?.brand || "Unknown CPU"}`;
+    return [
+      { key: "cpu", label: "CPU", value: formatPercent(snapshot.cpu?.usagePercent), detail: cpuDetail },
+      { key: "memory", label: "Memory", value: formatPercent(snapshot.memory?.usagePercent), detail: memoryDetail },
+      { key: "network", label: "Network", value: formatCompactNetRate(snapshot.network?.uploadBytesPerSecond || 0, snapshot.network?.downloadBytesPerSecond || 0), detail: "Upload | download" },
+      { key: "disk", label: "Disk", value: formatPercent(snapshot.disk?.usagePercent), detail: `${formatMegabytes(snapshot.disk?.usedBytes || 0)} / ${formatMegabytes(snapshot.disk?.totalBytes || 0)}` },
+      { key: "swap", label: "Swap", value: swapValue, detail: swapDetail },
+      { key: "uptime", label: "Uptime", value: formatUptime(snapshot.host?.uptimeSeconds), detail: `${(snapshot.network?.interfaces || []).filter((iface) => iface.status === "up" || iface.ip).length} interfaces` }
+    ];
+  }
+  if (kind === "disk") {
+    return [
+      { key: "disk-used", label: "Disk used", value: formatPercent(snapshot.disk?.usagePercent), detail: `${formatMegabytes(snapshot.disk?.usedBytes || 0)} / ${formatMegabytes(snapshot.disk?.totalBytes || 0)}` },
+      { key: "disk-free", label: "Free", value: formatMegabytes(snapshot.disk?.freeBytes || 0), detail: "Available space" },
+      { key: "disk-rw", label: "Read | write", value: formatNetPair(snapshot.disk?.readBytesPerSecond || 0, snapshot.disk?.writeBytesPerSecond || 0, "/s"), detail: "Disk throughput" }
+    ];
+  }
+  if (kind === "net") {
+    const interfaces = Array.isArray(snapshot.network?.interfaces) ? snapshot.network.interfaces : [];
+    return [
+      { key: "net-rate", label: "Upload | download", value: formatCompactNetRate(snapshot.network?.uploadBytesPerSecond || 0, snapshot.network?.downloadBytesPerSecond || 0), detail: "Current network speed" },
+      { key: "net-total", label: "Total up | down", value: formatNetPair(snapshot.network?.totalTxBytes || 0, snapshot.network?.totalRxBytes || 0), detail: "Interface counters" },
+      { key: "net-interfaces", label: "Interfaces", value: String(interfaces.length), detail: `${interfaces.filter((iface) => iface.status === "up" || iface.ip).length} active` }
+    ];
+  }
+  return [];
+}
+
+export function buildSystemStatusText(state) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  const updated = snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleTimeString() : "Not loaded";
+  if (state.system.status === "loading") return "Refreshing…";
+  if (state.system.status === "error") return state.system.error || "System monitor refresh failed.";
+  return `Updated ${updated} · refreshes every 5s while open`;
+}
+
+// Normalized disk mount rows, keyed by mount point so patchSystemMonitor can
+// update each row's text in place rather than rebuilding the whole list.
+export function buildDiskMountRows(state) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  const mounts = Array.isArray(snapshot.disk?.mounts) && snapshot.disk.mounts.length
+    ? snapshot.disk.mounts
+    : [{ mountPoint: "/", name: "Disk", totalBytes: snapshot.disk?.totalBytes || 0, usedBytes: snapshot.disk?.usedBytes || 0, freeBytes: snapshot.disk?.freeBytes || 0, usagePercent: snapshot.disk?.usagePercent }];
+  return mounts.map((mount, index) => ({
+    key: `mount-${index}-${mount.mountPoint || mount.name || "disk"}`,
+    title: mount.mountPoint || mount.name || "Disk",
+    percent: formatPercent(mount.usagePercent),
+    usage: `${formatMegabytes(mount.usedBytes || 0)} / ${formatMegabytes(mount.totalBytes || 0)}`,
+    free: `Free ${formatMegabytes(mount.freeBytes || 0)}`
+  }));
+}
+
+// Normalized network interface rows, keyed by interface name.
+export function buildNetInterfaceRows(state) {
+  const snapshot = state.system.snapshot || emptySystemSnapshot;
+  const interfaces = Array.isArray(snapshot.network?.interfaces) ? snapshot.network.interfaces : [];
+  return interfaces.map((iface, index) => ({
+    key: `iface-${index}-${iface.name || "interface"}`,
+    title: iface.name || "",
+    status: iface.status || "unknown",
+    ip: iface.ip || "No IP",
+    traffic: formatNetPair(iface.txBytes || 0, iface.rxBytes || 0)
+  }));
 }
 
 function processOpenTarget(process) {
@@ -814,30 +891,14 @@ function renderSystem(state) {
   const snapshot = state.system.snapshot || emptySystemSnapshot;
   const sortBy = state.system.sortBy || "cpu";
   const processes = sortSystemProcesses(snapshot.processes || [], sortBy).slice(0, 120);
-  const updated = snapshot.capturedAt ? new Date(snapshot.capturedAt).toLocaleTimeString() : "Not loaded";
-  const memoryDetail = `${formatMegabytes(snapshot.memory?.usedBytes || 0)} / ${formatMegabytes(snapshot.memory?.totalBytes || 0)}`;
-  const swapTotal = Number(snapshot.memory?.swapTotalBytes || 0);
-  const swapDetail = swapTotal > 0
-    ? `${formatMegabytes(snapshot.memory?.swapUsedBytes || 0)} / ${formatMegabytes(swapTotal)}`
-    : "Swap off";
-  const swapValue = swapTotal > 0 ? formatPercent(snapshot.memory?.swapUsagePercent) : "Off";
-  const cpuDetail = `${snapshot.cpu?.cores || 0} cores · ${snapshot.cpu?.brand || "Unknown CPU"}`;
   const hostName = snapshot.host?.hostname || "—";
-  const statusCopy = state.system.status === "loading"
-    ? "Refreshing…"
-    : state.system.status === "error"
-      ? state.system.error || "System monitor refresh failed."
-      : `Updated ${updated} · refreshes every 5s while open`;
+  const statusCopy = buildSystemStatusText(state);
+  const metrics = buildSystemMetrics(state, "system");
 
   return `<section class="system-panel"><header class="panel-title system-title"><div><span>◬</span><div><h2>System <em>${escapeHtml(hostName)}</em></h2></div></div>${button("↻", "Refresh system monitor", "system-refresh")}</header>
-    <div class="system-status ${state.system.status === "error" ? "is-error" : ""}" role="status">${escapeHtml(statusCopy)}</div>
+    <div class="system-status ${state.system.status === "error" ? "is-error" : ""}" role="status" data-system-status>${escapeHtml(statusCopy)}</div>
     <div class="system-grid">
-      ${renderSystemMetric("CPU", formatPercent(snapshot.cpu?.usagePercent), cpuDetail)}
-      ${renderSystemMetric("Memory", formatPercent(snapshot.memory?.usagePercent), memoryDetail)}
-      ${renderSystemMetric("Network", formatCompactNetRate(snapshot.network?.uploadBytesPerSecond || 0, snapshot.network?.downloadBytesPerSecond || 0), "Upload | download")}
-      ${renderSystemMetric("Disk", formatPercent(snapshot.disk?.usagePercent), `${formatMegabytes(snapshot.disk?.usedBytes || 0)} / ${formatMegabytes(snapshot.disk?.totalBytes || 0)}`)}
-      ${renderSystemMetric("Swap", swapValue, swapDetail)}
-      ${renderSystemMetric("Uptime", formatUptime(snapshot.host?.uptimeSeconds), `${(snapshot.network?.interfaces || []).filter((iface) => iface.status === "up" || iface.ip).length} interfaces`)}
+      ${metrics.map((metric) => renderSystemMetric(metric.label, metric.value, metric.detail, metric.key)).join("")}
     </div>
     <section class="process-monitor">
       ${renderProcessTable(state, processes, { showNet: true })}
@@ -849,18 +910,15 @@ function renderSystem(state) {
 function renderDisk(state) {
   const snapshot = state.system.snapshot || emptySystemSnapshot;
   const processes = sortSystemProcesses(snapshot.processes || [], "ram").slice(0, 120);
-  const mounts = Array.isArray(snapshot.disk?.mounts) && snapshot.disk.mounts.length
-    ? snapshot.disk.mounts
-    : [{ mountPoint: "/", name: "Disk", totalBytes: snapshot.disk?.totalBytes || 0, usedBytes: snapshot.disk?.usedBytes || 0, freeBytes: snapshot.disk?.freeBytes || 0, usagePercent: snapshot.disk?.usagePercent }];
+  const metrics = buildSystemMetrics(state, "disk");
+  const mountRows = buildDiskMountRows(state);
   return `<section class="system-panel system-panel-with-detail"><header class="panel-title"><div><span>▤</span><div><small>MONITOR</small><h2>Disk monitor</h2></div></div>${button("↻", "Refresh system monitor", "system-refresh")}</header>
     <div class="system-status" role="status">Disk capacity, free space, and process read | write counters use MB.</div>
     <div class="system-grid disk-grid">
-      ${renderSystemMetric("Disk used", formatPercent(snapshot.disk?.usagePercent), `${formatMegabytes(snapshot.disk?.usedBytes || 0)} / ${formatMegabytes(snapshot.disk?.totalBytes || 0)}`)}
-      ${renderSystemMetric("Free", formatMegabytes(snapshot.disk?.freeBytes || 0), "Available space")}
-      ${renderSystemMetric("Read | write", formatNetPair(snapshot.disk?.readBytesPerSecond || 0, snapshot.disk?.writeBytesPerSecond || 0, "/s"), "Disk throughput")}
+      ${metrics.map((metric) => renderSystemMetric(metric.label, metric.value, metric.detail, metric.key)).join("")}
     </div>
     <section class="system-network-card system-detail-card"><h3>Common disk info</h3>
-      <div class="system-interface-list">${mounts.map((mount) => `<article><strong>${escapeHtml(mount.mountPoint || mount.name || "Disk")}</strong><span>${formatPercent(mount.usagePercent)}</span><code>${formatMegabytes(mount.usedBytes || 0)} / ${formatMegabytes(mount.totalBytes || 0)}</code><small>Free ${formatMegabytes(mount.freeBytes || 0)}</small></article>`).join("")}</div>
+      <div class="system-interface-list" data-mount-list>${mountRows.map((mount) => `<article data-mount-row="${escapeHtml(mount.key)}"><strong data-mount-title>${escapeHtml(mount.title)}</strong><span data-mount-percent>${escapeHtml(mount.percent)}</span><code data-mount-usage>${escapeHtml(mount.usage)}</code><small data-mount-free>${escapeHtml(mount.free)}</small></article>`).join("")}</div>
     </section>
     <section class="process-monitor"><div class="process-monitor-head"><div><h3>Process disk read | write</h3><p>Per-process disk counters are reported when the OS exposes them.</p></div><span>${processes.length} shown</span></div>${renderProcessTable(state, processes, { showDisk: true, showNet: false })}</section>
     ${renderProcessDetailDialog(state, processes)}
@@ -869,17 +927,16 @@ function renderDisk(state) {
 
 function renderNet(state) {
   const snapshot = state.system.snapshot || emptySystemSnapshot;
-  const interfaces = Array.isArray(snapshot.network?.interfaces) ? snapshot.network.interfaces : [];
   const processes = sortSystemProcesses(snapshot.processes || [], "port").slice(0, 120);
+  const metrics = buildSystemMetrics(state, "net");
+  const interfaceRows = buildNetInterfaceRows(state);
   return `<section class="system-panel system-panel-with-detail"><header class="panel-title"><div><span>⇄</span><div><small>MONITOR</small><h2>Network monitor</h2></div></div>${button("↻", "Refresh system monitor", "system-refresh")}</header>
     <div class="system-status" role="status">Interfaces with IP, upload | download status, process network usage, and port status.</div>
     <div class="system-grid disk-grid">
-      ${renderSystemMetric("Upload | download", formatCompactNetRate(snapshot.network?.uploadBytesPerSecond || 0, snapshot.network?.downloadBytesPerSecond || 0), "Current network speed")}
-      ${renderSystemMetric("Total up | down", formatNetPair(snapshot.network?.totalTxBytes || 0, snapshot.network?.totalRxBytes || 0), "Interface counters")}
-      ${renderSystemMetric("Interfaces", String(interfaces.length), `${interfaces.filter((iface) => iface.status === "up" || iface.ip).length} active`)}
+      ${metrics.map((metric) => renderSystemMetric(metric.label, metric.value, metric.detail, metric.key)).join("")}
     </div>
     <section class="system-network-card system-detail-card"><h3>Network devices / IP</h3>
-      <div class="system-interface-list">${interfaces.length ? interfaces.map((iface) => `<article><strong>${escapeHtml(iface.name)}</strong><span>${escapeHtml(iface.status || "unknown")}</span><code>${escapeHtml(iface.ip || "No IP")}</code><small>${formatNetPair(iface.txBytes || 0, iface.rxBytes || 0)}</small></article>`).join("") : `<div class="empty-small"><span>◇</span><p>No network interfaces reported.</p></div>`}</div>
+      <div class="system-interface-list" data-interface-list>${interfaceRows.length ? interfaceRows.map((iface) => `<article data-interface-row="${escapeHtml(iface.key)}"><strong data-interface-title>${escapeHtml(iface.title)}</strong><span data-interface-status>${escapeHtml(iface.status)}</span><code data-interface-ip>${escapeHtml(iface.ip)}</code><small data-interface-traffic>${escapeHtml(iface.traffic)}</small></article>`).join("") : `<div class="empty-small"><span>◇</span><p>No network interfaces reported.</p></div>`}</div>
     </section>
     <section class="process-monitor"><div class="process-monitor-head"><div><h3>Process network and port status</h3><p>Processes using ports are listed first by default.</p></div><span>${processes.length} shown</span></div>${renderProcessTable(state, processes, { showNet: true })}</section>
     ${renderProcessDetailDialog(state, processes)}

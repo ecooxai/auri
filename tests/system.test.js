@@ -119,8 +119,8 @@ test("system panel uses compact cards and centered selected-process detail", () 
   const html = renderActivePanel(state);
   assert.match(html, /<h2>System <em>auri-host<\/em><\/h2>/);
   assert.doesNotMatch(html, /<small>MONITOR<\/small><h2>System/);
-  assert.match(html, /Network<\/small><strong>0\.50 \| 1\.00 MB\/s<\/strong>/);
-  assert.match(html, /Swap<\/small><strong>50%<\/strong><span>1\.00 GB \/ 2\.00 GB<\/span>/);
+  assert.match(html, /Network<\/small><strong data-metric-value>0\.50 \| 1\.00 MB\/s<\/strong>/);
+  assert.match(html, /Swap<\/small><strong data-metric-value>50%<\/strong><span data-metric-detail>1\.00 GB \/ 2\.00 GB<\/span>/);
   assert.match(html, /2\.00 MB/);
   assert.match(html, /Net up \| down/);
   assert.doesNotMatch(html, /Net ↓/);
@@ -145,7 +145,7 @@ test("system panel uses compact cards and centered selected-process detail", () 
   assert.match(html, /<textarea class="process-detail-path-field"[^>]*readonly[^>]*rows="5"[^>]*>\/usr\/bin\/web --serve very-long-project<\/textarea>/);
   assert.match(html, /class="process-detail-ports"[\s\S]*<small[^>]*>Ports<\/small>/);
   assert.match(html, /class="process-detail-port-row"[\s\S]*<code[^>]*>3000<\/code>[\s\S]*data-action="system-process-tunnel-toggle"[^>]*data-port="3000"[\s\S]*Enable HTTPS tunnel/);
-  assert.match(html, /<code[^>]*>5173<\/code>[\s\S]*data-action="system-process-tunnel-copy-url"[^>]*data-value="https:\/\/auri-preview\.trycloudflare\.com"[\s\S]*auri-preview\.trycloudflare\.com[\s\S]*data-action="system-process-tunnel-toggle"[^>]*data-port="5173"[\s\S]*Stop tunnel/);
+  assert.match(html, /<code[^>]*>5173<\/code>[\s\S]*data-action="system-process-tunnel-url-menu-toggle"[^>]*data-port="5173"[^>]*data-value="https:\/\/auri-preview\.trycloudflare\.com"[\s\S]*auri-preview\.trycloudflare\.com[\s\S]*data-action="system-process-tunnel-open"[^>]*data-value="https:\/\/auri-preview\.trycloudflare\.com"[\s\S]*data-action="system-process-tunnel-toggle"[^>]*data-port="5173"[\s\S]*Stop tunnel/);
   assert.match(html, /data-action="system-process-kill"/);
   assert.match(html, /data-action="system-process-open-path"/);
   assert.match(html, /process-row\s+is-selected/);

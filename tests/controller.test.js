@@ -1463,6 +1463,45 @@ test("refreshActiveTunnels reconciles externally-managed tunnels (e.g. token-bas
   assert.equal(controller.state.system.tunnels[8009], undefined);
 });
 
+
+test("quiet background system polling updates state without rendering inactive tabs", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() { renderCount += 1; },
+    getTerminalInputValue: () => "typing in composer",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({
+        capturedAt: "2026-06-30T08:00:00.000Z",
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 7 },
+        memory: { totalBytes: 1000, usedBytes: 500 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: [{ pid: 77, name: "node", cpuPercent: 1 }]
+      }),
+      cloudflaredActiveTunnels: async () => [
+        { port: 5173, url: "https://auri-preview.example", pid: 77, path: "" }
+      ]
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const terminalSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "terminal");
+  controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: terminalSubtab.id } });
+
+  await controller.refreshSystemMonitor({ quiet: true });
+  await controller.refreshActiveTunnels({ render: false });
+
+  assert.equal(renderCount, 0);
+  assert.equal(activeSubtab(controller.state).type, "terminal");
+  assert.equal(controller.state.system.snapshot.processes[0].pid, 77);
+  assert.equal(controller.state.system.tunnels[5173].url, "https://auri-preview.example");
+});
+
 test("system monitor refresh also syncs discovered tunnels automatically", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const view = {
@@ -1481,7 +1520,7 @@ test("system monitor refresh also syncs discovered tunnels automatically", async
         cpu: { brand: "Test CPU", cores: 8, usagePercent: 5 },
         memory: { totalBytes: 1000, usedBytes: 500 },
         network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
-        processes: []
+        processes: [{ pid: 75278, name: "cloudflared", ports: [8009] }]
       }),
       cloudflaredActiveTunnels: async () => [
         { port: 8009, url: "https://miniswetagentmcpmacneo.22222233.xyz", pid: 75278, path: "" }

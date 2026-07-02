@@ -348,6 +348,18 @@ export class AppController {
     return state.tabs.some((tab) => tab.subtabs.some((subtab) => ["system", "disk", "net"].includes(subtab.type)));
   }
 
+  isSystemMonitorActive(state = this.state) {
+    return ["system", "disk", "net"].includes(activeSubtab(state)?.type);
+  }
+
+  applySystemMonitorEvent(event, { render = true } = {}) {
+    if (render) {
+      this.dispatch(event, { preserveInput: true });
+    } else {
+      this.state = reduceState(this.state, event);
+    }
+  }
+
   syncSystemMonitorPolling() {
     if (this.backend.systemSnapshot && this.hasSystemSubtab()) {
       if (!this.systemMonitorTimer) {
@@ -368,16 +380,17 @@ export class AppController {
     if (this.systemMonitorRefreshing) return this.state.system.snapshot;
     if (!this.backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
     this.systemMonitorRefreshing = true;
+    const render = !quiet || this.isSystemMonitorActive();
     if (!quiet && !this.state.system.snapshot) {
-      this.dispatch({ type: "SYSTEM_STATUS_SET", payload: { status: "loading" } }, { preserveInput: true });
+      this.applySystemMonitorEvent({ type: "SYSTEM_STATUS_SET", payload: { status: "loading" } }, { render });
     }
     try {
       const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot());
-      this.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { preserveInput: true });
-      this.refreshActiveTunnels().catch(() => {});
+      this.applySystemMonitorEvent({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { render });
+      await this.refreshActiveTunnels({ render });
       return snapshot;
     } catch (error) {
-      this.dispatch({ type: "SYSTEM_STATUS_SET", payload: { status: "error", error: error?.message || String(error) } }, { preserveInput: true });
+      this.applySystemMonitorEvent({ type: "SYSTEM_STATUS_SET", payload: { status: "error", error: error?.message || String(error) } }, { render });
       throw error;
     } finally {
       this.systemMonitorRefreshing = false;
@@ -392,7 +405,7 @@ export class AppController {
   // files. Without this sync, externally-managed tunnels never show up in
   // the process detail UI, because state.system.tunnels was previously only
   // ever written to by the start/stop tunnel actions.
-  async refreshActiveTunnels() {
+  async refreshActiveTunnels({ render = true } = {}) {
     if (!this.backend.cloudflaredActiveTunnels) return;
     let discovered;
     try {
@@ -408,6 +421,7 @@ export class AppController {
     // "cloudflared", but this extra check catches the case where the pid
     // was stale/reused or the snapshot and discovery briefly disagree, so a
     // dead tunnel's URL never lingers in the process detail panel.
+    const hasProcessSnapshot = Array.isArray(this.state.system?.snapshot?.processes);
     const liveProcessPids = new Set(
       (this.state.system?.snapshot?.processes || [])
         .map((process) => Number(process?.pid))
@@ -424,23 +438,23 @@ export class AppController {
       // have a process snapshot to check against and a real pid was
       // reported; otherwise fall back to trusting discovery alone so we
       // don't drop valid tunnels just because the snapshot hasn't loaded.
-      if (liveProcessPids.size > 0 && Number.isInteger(pid) && pid > 0 && !liveProcessPids.has(pid)) {
+      if (hasProcessSnapshot && Number.isInteger(pid) && pid > 0 && !liveProcessPids.has(pid)) {
         continue;
       }
       seenPorts.add(port);
       const existing = known[port];
       if (existing && existing.url === tunnel.url && existing.pid === tunnel.pid && existing.path === tunnel.path) continue;
-      this.dispatch(
+      this.applySystemMonitorEvent(
         { type: "SYSTEM_TUNNEL_SET", payload: { port, url: tunnel.url, pid: tunnel.pid, path: tunnel.path } },
-        { preserveInput: true }
+        { render }
       );
     }
     for (const portKey of Object.keys(known)) {
       const port = Number(portKey);
       if (!seenPorts.has(port)) {
-        this.dispatch({ type: "SYSTEM_TUNNEL_REMOVE", payload: { port } }, { preserveInput: true });
+        this.applySystemMonitorEvent({ type: "SYSTEM_TUNNEL_REMOVE", payload: { port } }, { render });
         if (this.state.ui.tunnelUrlMenuPort === port) {
-          this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
+          this.applySystemMonitorEvent({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { render });
         }
       }
     }

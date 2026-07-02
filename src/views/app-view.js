@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
+import { buildDiskMountRows, buildNetInterfaceRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -64,6 +64,52 @@ export class AppView {
     }
   }
 
+  // Captures the currently focused element (if any) before a full innerHTML
+  // rebuild so it can be refocused afterwards. The terminal composer has its
+  // own dedicated focus/selection handling below (it also needs its value
+  // restored, not just focus), so this only handles every *other* focusable
+  // input/textarea/select: AI model forms, the web bookmark dialog, the
+  // wake-shortcut field, settings fields, etc. Without this, any full
+  // re-render (e.g. the periodic system-monitor poll while preserveInput is
+  // set) silently drops focus from whatever the person was typing into.
+  captureFocus(skipElement) {
+    const doc = this.root.ownerDocument || (typeof document !== "undefined" ? document : null);
+    const active = doc?.activeElement;
+    if (!active || active === skipElement || active === doc.body) return null;
+    if (this.root.contains && !this.root.contains(active)) return null;
+    const id = active.id || null;
+    const name = active.name || null;
+    const formId = !id && name ? active.closest?.("form")?.id || null : null;
+    const isTextLike = typeof active.selectionStart === "number" && typeof active.selectionEnd === "number";
+    if (!id && !name) return null;
+    return {
+      id,
+      name,
+      formId,
+      selectionStart: isTextLike ? active.selectionStart : null,
+      selectionEnd: isTextLike ? active.selectionEnd : null
+    };
+  }
+
+  restoreFocus(snapshot) {
+    if (!snapshot || !this.root.querySelector) return;
+    let target = null;
+    if (snapshot.id) {
+      target = this.root.querySelector(`#${snapshot.id}`);
+    } else if (snapshot.name) {
+      const scope = snapshot.formId ? this.root.querySelector(`#${snapshot.formId}`) : this.root;
+      target = scope?.querySelector?.(`[name="${snapshot.name}"]`);
+    }
+    if (!target) return;
+    target.focus?.();
+    if (snapshot.selectionStart !== null && typeof target.setSelectionRange === "function") {
+      const length = typeof target.value === "string" ? target.value.length : snapshot.selectionEnd;
+      const start = Math.min(length, snapshot.selectionStart);
+      const end = Math.min(length, Math.max(start, snapshot.selectionEnd));
+      target.setSelectionRange(start, end);
+    }
+  }
+
   render(state, options = {}) {
     applyAppFontSize(this.root, state.settings.fontSize);
     const tab = activeWorkspace(state);
@@ -74,6 +120,7 @@ export class AppView {
     const inputValue = options.preserveInput ? this.getTerminalInputValue() : tab.terminal.draft;
     const inputSelectionStart = terminalWasFocused && Number.isInteger(terminalInput.selectionStart) ? terminalInput.selectionStart : inputValue.length;
     const inputSelectionEnd = terminalWasFocused && Number.isInteger(terminalInput.selectionEnd) ? terminalInput.selectionEnd : inputSelectionStart;
+    const focusSnapshot = options.preserveInput ? this.captureFocus(terminalInput) : null;
     const folderCreateValue = state.ui.folderCreateKind ? this.getFolderCreateName() : "";
     const folderScrollTop = captureFolderScroll(this.root, tab.folder.path);
     const clipboardScrollTop = captureClipboardScroll(this.root);
