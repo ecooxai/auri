@@ -60,6 +60,18 @@ test("programmatic terminal runs do not steal focus from the composer", async ()
   assert.doesNotMatch(runMethod, /this\.focus\(\)/);
 });
 
+test("terminal selection copy delegates to the command-backed clipboard action", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const copied = [];
+  const session = new TerminalSession({ isNative: false }, {
+    copyText: async (text) => copied.push(text)
+  });
+  session.term = { getSelection: () => "selected terminal text" };
+
+  assert.equal(await session.copySelection(), true);
+  assert.deepEqual(copied, ["selected terminal text"]);
+});
+
 
 test("AppView render resolves the active terminal subtab without throwing", async () => {
   const { createInitialState, reduceState } = await import("../src/model/state.js");

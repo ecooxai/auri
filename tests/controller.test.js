@@ -1502,6 +1502,54 @@ test("quiet background system polling updates state without rendering inactive t
   assert.equal(controller.state.system.tunnels[5173].url, "https://auri-preview.example");
 });
 
+test("system monitor polling runs only while system disk or net subtabs are focused", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const previousSetInterval = globalThis.setInterval;
+  const previousClearInterval = globalThis.clearInterval;
+  const timers = [];
+  const cleared = [];
+  globalThis.setInterval = (callback, delay) => {
+    const timer = { callback, delay, unref() {} };
+    timers.push(timer);
+    return timer;
+  };
+  globalThis.clearInterval = (timer) => {
+    cleared.push(timer);
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true, systemSnapshot: async () => ({ processes: [] }) },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const terminalSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "terminal");
+  const systemSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "system");
+
+  try {
+    controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: terminalSubtab.id } });
+    controller.syncSystemMonitorPolling();
+    assert.equal(timers.length, 0);
+
+    controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: systemSubtab.id } });
+    controller.syncSystemMonitorPolling();
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delay, 5000);
+
+    controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: terminalSubtab.id } });
+    controller.syncSystemMonitorPolling();
+    assert.deepEqual(cleared, [timers[0]]);
+    assert.equal(controller.systemMonitorTimer, null);
+  } finally {
+    globalThis.setInterval = previousSetInterval;
+    globalThis.clearInterval = previousClearInterval;
+  }
+});
+
 test("system monitor refresh also syncs discovered tunnels automatically", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const view = {

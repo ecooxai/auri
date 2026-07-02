@@ -222,6 +222,13 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
     Ok(entries)
 }
 
+pub fn set_text(text: &str) -> Result<(), String> {
+    let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|error| error.to_string())
+}
+
 pub fn set_pinned(id: &str, pinned: bool) -> Result<Vec<ClipboardEntry>, String> {
     let path = history_path()?;
     let mut entries = load_history(&path)?;

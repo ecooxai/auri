@@ -31,6 +31,28 @@ test("terminal sessions receive command-backed Insert and Copy callbacks", async
   ]);
 });
 
+test("platform copy prefers the native backend clipboard writer", async () => {
+  const copied = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      writeClipboardText: async (text) => copied.push(text)
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  await controller.context().actions.copyText("native text");
+
+  assert.deepEqual(copied, ["native text"]);
+});
+
 test("completed Live replies without stream events use the static structured renderer", () => {
   const calls = [];
   const session = {

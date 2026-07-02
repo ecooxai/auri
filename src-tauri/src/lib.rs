@@ -168,8 +168,17 @@ async fn request_media_permission(
 }
 
 #[tauri::command]
-fn read_clipboard_history() -> Result<Vec<clipboard::ClipboardEntry>, String> {
-    clipboard::read_history()
+async fn read_clipboard_history() -> Result<Vec<clipboard::ClipboardEntry>, String> {
+    tauri::async_runtime::spawn_blocking(|| clipboard::read_history())
+        .await
+        .map_err(|error| format!("Clipboard history task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_clipboard_text(text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || clipboard::set_text(&text))
+        .await
+        .map_err(|error| format!("Clipboard write task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -532,9 +541,10 @@ pub fn run() {
             window_start_dragging,
             capture_screenshot,
             media_permission_status,
-            request_media_permission,
-            read_clipboard_history,
-            paste_clipboard_entry,
+                request_media_permission,
+                read_clipboard_history,
+                set_clipboard_text,
+                paste_clipboard_entry,
             set_clipboard_pinned,
             remove_clipboard_entry,
             read_shell_history,

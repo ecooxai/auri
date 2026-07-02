@@ -160,7 +160,9 @@ export class AppController {
         openWebDialog: (dialog) => this.openWebDialog(dialog),
         openExternal: (path) => this.openExternal(path),
         openFileInWebview: (path, metadata, options) => this.openFileInWebview(path, metadata, options),
-        copyText: (text) => navigator.clipboard.writeText(text),
+        copyText: (text) => this.backend.writeClipboardText
+          ? this.backend.writeClipboardText(text)
+          : navigator.clipboard.writeText(text),
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
@@ -339,13 +341,9 @@ export class AppController {
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
     this.syncSystemMonitorPolling();
-    if (this.backend.systemSnapshot && activeSubtab(this.state)?.type === "system" && this.state.system.status === "idle") {
+    if (this.backend.systemSnapshot && this.isSystemMonitorActive() && this.state.system.status === "idle") {
       scheduleFrame(() => this.refreshSystemMonitor().catch((error) => this.reportError("System", error)));
     }
-  }
-
-  hasSystemSubtab(state = this.state) {
-    return state.tabs.some((tab) => tab.subtabs.some((subtab) => ["system", "disk", "net"].includes(subtab.type)));
   }
 
   isSystemMonitorActive(state = this.state) {
@@ -361,9 +359,10 @@ export class AppController {
   }
 
   syncSystemMonitorPolling() {
-    if (this.backend.systemSnapshot && this.hasSystemSubtab()) {
+    if (this.backend.systemSnapshot && this.isSystemMonitorActive()) {
       if (!this.systemMonitorTimer) {
         this.systemMonitorTimer = setInterval(() => {
+          if (!this.isSystemMonitorActive()) return;
           this.refreshSystemMonitor({ quiet: true }).catch((error) => this.reportError("System", error));
         }, 5000);
         this.systemMonitorTimer.unref?.();

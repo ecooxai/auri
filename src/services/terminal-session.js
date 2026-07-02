@@ -1,8 +1,20 @@
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import { terminalAssistantSegments } from "../model/assistant.js";
 
 const encoder = new TextEncoder();
+let terminalModulesPromise = null;
+
+async function loadTerminalModules() {
+  if (!terminalModulesPromise) {
+    terminalModulesPromise = Promise.all([
+      import("@xterm/xterm"),
+      import("@xterm/addon-fit")
+    ]).then(([xtermModule, fitAddonModule]) => ({
+      Terminal: xtermModule.Terminal || xtermModule.default?.Terminal,
+      FitAddon: fitAddonModule.FitAddon || fitAddonModule.default?.FitAddon
+    }));
+  }
+  return terminalModulesPromise;
+}
 
 function mediaRows(kind) {
   if (kind === "image") return 14;
@@ -42,6 +54,7 @@ export class TerminalSession {
     this.onCwdChange = null;
     this.renderQueue = Promise.resolve();
     this.assistantStreamAtLineStart = true;
+    this.clipboardAbort = null;
   }
 
   async initialize() {
@@ -227,7 +240,9 @@ export class TerminalSession {
     }
 
     const generation = ++this.mountGeneration;
+    this.clipboardAbort?.abort();
     this.term?.dispose();
+    const { Terminal, FitAddon } = await loadTerminalModules();
     this.fitAddon = new FitAddon();
     this.term = new Terminal({
       cursorBlink: true,
@@ -262,6 +277,7 @@ export class TerminalSession {
     this.term.loadAddon(this.fitAddon);
     this.term.open(element);
     this.mountedElement = element;
+    this.installClipboardHandlers(element);
     this.fitAddon.fit();
     this.renderQueue = Promise.resolve();
     for (const record of this.output) this.queueRender(record, generation);
@@ -302,6 +318,40 @@ export class TerminalSession {
     await this.onCwdChange?.(cwd);
   }
 
+  selectedText() {
+    return this.term?.getSelection?.() || "";
+  }
+
+  async copySelection() {
+    const text = this.selectedText();
+    if (!text) return false;
+    if (!this.assistantActions.copyText) return false;
+    await this.assistantActions.copyText(text);
+    return true;
+  }
+
+  installClipboardHandlers(element) {
+    this.clipboardAbort?.abort();
+    this.clipboardAbort = new AbortController();
+    const { signal } = this.clipboardAbort;
+    element.addEventListener("keydown", (event) => {
+      const key = String(event.key || "").toLowerCase();
+      const isCopyShortcut = (event.ctrlKey && event.shiftKey && key === "c") || (event.metaKey && key === "c") || (event.ctrlKey && event.key === "Insert");
+      if (!isCopyShortcut || !this.selectedText()) return;
+      event.preventDefault();
+      this.copySelection().catch((error) => {
+        console.error("Could not copy terminal selection", error);
+      });
+    }, { signal });
+    element.addEventListener("contextmenu", (event) => {
+      if (!this.selectedText()) return;
+      event.preventDefault();
+      this.copySelection().catch((error) => {
+        console.error("Could not copy terminal selection", error);
+      });
+    }, { signal });
+  }
+
   async ensureStarted(cwd = this.cwd, cols = this.term?.cols || 80, rows = this.term?.rows || 24) {
     if (!this.backend.isNative) return false;
     if (this.started) return true;
@@ -328,6 +378,8 @@ export class TerminalSession {
   async stop() {
     this.mountGeneration += 1;
     clearTimeout(this.cwdRefreshTimer);
+    this.clipboardAbort?.abort();
+    this.clipboardAbort = null;
     this.term?.dispose();
     this.term = null;
     this.mountedElement = null;

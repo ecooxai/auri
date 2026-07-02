@@ -1115,20 +1115,146 @@ fn parse_lsof_port(line: &str) -> Option<(u32, u16)> {
     None
 }
 
+fn insert_process_port(map: &mut HashMap<u32, Vec<u16>>, pid: u32, port: u16) {
+    let ports = map.entry(pid).or_default();
+    if !ports.contains(&port) {
+        ports.push(port);
+    }
+}
+
+fn parse_port_from_local_address(value: &str) -> Option<u16> {
+    let index = value.rfind(':')?;
+    let digits: String = value[index + 1..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    digits.parse::<u16>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_ss_listening_port(line: &str) -> Option<(u32, u16)> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.first().copied() != Some("LISTEN") || parts.len() < 4 {
+        return None;
+    }
+    let port = parse_port_from_local_address(parts.get(3)?)?;
+    let pid_index = line.find("pid=")? + 4;
+    let pid_text: String = line[pid_index..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    let pid = pid_text.parse::<u32>().ok()?;
+    Some((pid, port))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_ss_listening_ports_by_pid() -> HashMap<u32, Vec<u16>> {
+    let text = command_output("ss", &["-ltnp"]).unwrap_or_default();
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        if let Some((pid, port)) = parse_ss_listening_port(line) {
+            insert_process_port(&mut map, pid, port);
+        }
+    }
+    map
+}
+
+#[cfg(target_os = "linux")]
+fn parse_proc_net_tcp_listener(line: &str) -> Option<(u64, u16)> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 10 || parts.get(3).copied() != Some("0A") {
+        return None;
+    }
+    let local = parts.get(1)?;
+    let port_hex = local.rsplit_once(':')?.1;
+    let port = u16::from_str_radix(port_hex, 16).ok()?;
+    let inode = parts.get(9)?.parse::<u64>().ok()?;
+    Some((inode, port))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_tcp_listener_ports_by_inode() -> HashMap<u64, u16> {
+    let mut map = HashMap::new();
+    for path in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        for line in text.lines().skip(1) {
+            if let Some((inode, port)) = parse_proc_net_tcp_listener(line) {
+                map.insert(inode, port);
+            }
+        }
+    }
+    map
+}
+
+#[cfg(target_os = "linux")]
+fn parse_socket_inode_link(value: &str) -> Option<u64> {
+    value
+        .strip_prefix("socket:[")?
+        .strip_suffix(']')?
+        .parse::<u64>()
+        .ok()
+}
+
+#[cfg(target_os = "linux")]
+fn linux_proc_listening_ports_by_pid() -> HashMap<u32, Vec<u16>> {
+    let ports_by_inode = linux_tcp_listener_ports_by_inode();
+    if ports_by_inode.is_empty() {
+        return HashMap::new();
+    }
+    let mut map = HashMap::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return map;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            let Ok(target) = std::fs::read_link(fd.path()) else {
+                continue;
+            };
+            let Some(inode) = parse_socket_inode_link(&target.to_string_lossy()) else {
+                continue;
+            };
+            if let Some(port) = ports_by_inode.get(&inode).copied() {
+                insert_process_port(&mut map, pid, port);
+            }
+        }
+    }
+    map
+}
+
+fn sort_process_port_map(map: &mut HashMap<u32, Vec<u16>>) {
+    for ports in map.values_mut() {
+        ports.sort_unstable();
+    }
+}
+
 fn listening_ports_by_pid() -> HashMap<u32, Vec<u16>> {
     let text = command_output("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN"]).unwrap_or_default();
     let mut map: HashMap<u32, Vec<u16>> = HashMap::new();
     for line in text.lines() {
         if let Some((pid, port)) = parse_lsof_port(line) {
-            let ports = map.entry(pid).or_default();
-            if !ports.contains(&port) {
-                ports.push(port);
+            insert_process_port(&mut map, pid, port);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for (pid, ports) in linux_ss_listening_ports_by_pid() {
+            for port in ports {
+                insert_process_port(&mut map, pid, port);
+            }
+        }
+        for (pid, ports) in linux_proc_listening_ports_by_pid() {
+            for port in ports {
+                insert_process_port(&mut map, pid, port);
             }
         }
     }
-    for ports in map.values_mut() {
-        ports.sort_unstable();
-    }
+    sort_process_port_map(&mut map);
     map
 }
 
@@ -1536,9 +1662,13 @@ pub fn snapshot(
 mod tests {
     use super::{
         display_process_name, extract_trycloudflare_url, fallback_search_directories,
-        parse_lsof_port, parse_macos_top_cpu, parse_nettop_process_line,
-        parse_process_command_line, parse_process_line,
+        parse_lsof_port, parse_macos_top_cpu, parse_process_command_line, parse_process_line,
     };
+
+    #[cfg(target_os = "linux")]
+    use super::{parse_proc_net_tcp_listener, parse_socket_inode_link, parse_ss_listening_port};
+    #[cfg(target_os = "macos")]
+    use super::parse_nettop_process_line;
 
     #[test]
     fn derives_readable_app_names_from_bundle_paths() {
@@ -1605,6 +1735,34 @@ mod tests {
         assert_eq!(parsed, (42, 5173));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_linux_ss_listening_ports() {
+        let parsed = parse_ss_listening_port(
+            r#"LISTEN 0 511 0.0.0.0:3333 0.0.0.0:* users:(("node",pid=694,fd=21))"#,
+        )
+        .unwrap();
+        assert_eq!(parsed, (694, 3333));
+
+        let parsed = parse_ss_listening_port(
+            r#"LISTEN 0 5 [::1]:9876 [::]:* users:(("python3",pid=48792,fd=3))"#,
+        )
+        .unwrap();
+        assert_eq!(parsed, (48792, 9876));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_linux_proc_tcp_listener_rows() {
+        let parsed = parse_proc_net_tcp_listener(
+            "   0: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 159940 1 0000000000000000 100 0 0 10 0",
+        )
+        .unwrap();
+        assert_eq!(parsed, (159940, 8000));
+        assert_eq!(parse_socket_inode_link("socket:[159940]"), Some(159940));
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn parses_macos_nettop_process_rows() {
         let parsed =

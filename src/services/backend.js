@@ -603,6 +603,16 @@ export class Backend {
     return this.call("paste_clipboard_entry", { id });
   }
 
+  async writeClipboardText(text) {
+    if (!this.invoke) {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        return navigator.clipboard.writeText(text);
+      }
+      throw new Error("Clipboard writing is unavailable.");
+    }
+    return this.call("set_clipboard_text", { text: String(text ?? "") });
+  }
+
   decorateClipboardItems(items) {
     const result = items.map((item) => ({ ...item }));
     const convertFileSrc = typeof window === "undefined"

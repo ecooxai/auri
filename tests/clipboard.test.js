@@ -106,6 +106,14 @@ test("native clipboard history uses a 1000-item soft limit and removes evicted i
   assert.doesNotMatch(clipboard, /entries\.truncate\(200\)/);
 });
 
+test("native clipboard polling and writes run off the Tauri command thread", () => {
+  const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  assert.match(lib, /async fn read_clipboard_history\(\)/);
+  assert.match(lib, /spawn_blocking\(\|\| clipboard::read_history\(\)\)/);
+  assert.match(lib, /async fn set_clipboard_text\(text: String\)/);
+  assert.match(lib, /spawn_blocking\(move \|\| clipboard::set_text\(&text\)\)/);
+});
+
 test("clipboard retention never falls back to deleting a pinned item", () => {
   const clipboard = readFileSync(new URL("../src-tauri/src/core/clipboard.rs", import.meta.url), "utf8");
   const start = clipboard.indexOf("fn enforce_history_limit");
