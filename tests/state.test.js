@@ -10,6 +10,11 @@ test("initial workspace focuses system monitor and includes folder pane", () => 
   assert.equal(state.tabs[0].folder.visible, true);
 });
 
+test("window visibility defaults to all desktop workspaces", () => {
+  const state = createInitialState();
+  assert.equal(state.settings.visibleOnAllWorkspaces, true);
+});
+
 test("new main tabs and subtabs become active", () => {
   let state = createInitialState();
   state = reduceState(state, { type: "TAB_NEW", payload: { title: "Work" } });
@@ -116,6 +121,19 @@ test("terminal line retention defaults to 4000 and rejects unsafe values", () =>
 
   state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalMaxLines", value: "not-a-number" } });
   assert.equal(state.settings.terminalMaxLines, 4000);
+});
+
+test("folder pane width has a usable persisted range", () => {
+  let state = createInitialState();
+  assert.equal(state.settings.folderPaneWidth, 230);
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "folderPaneWidth", value: 340 } });
+  assert.equal(state.settings.folderPaneWidth, 340);
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "folderPaneWidth", value: 80 } });
+  assert.equal(state.settings.folderPaneWidth, 160);
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "folderPaneWidth", value: 900 } });
+  assert.equal(state.settings.folderPaneWidth, 420);
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "folderPaneWidth", value: "bad" } });
+  assert.equal(state.settings.folderPaneWidth, 230);
 });
 
 

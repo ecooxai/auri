@@ -14,6 +14,16 @@ await build({
   sourcemap: true
 });
 
+await build({
+  entryPoints: ["src/services/codemirror-viewer-entry.js"],
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  target: ["safari15"],
+  outfile: "dist/codemirror-viewer.js",
+  sourcemap: true
+});
+
 const index = (await readFile("index.html", "utf8"))
   .replace('src="src/main.js"', 'src="app.js?v=3"');
 await writeFile("dist/index.html", index);

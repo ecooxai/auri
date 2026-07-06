@@ -149,6 +149,20 @@ test("native web tabs omit the DOM new-tab popover because it is rendered in the
   assert.doesNotMatch(renderSubtabs(state, { native: true }), /class="pop-menu"/);
 });
 
+test("topbar command menu lists opened tabs and exits through a command action", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "settings" } });
+  state = reduceState(state, { type: "UI_SET", payload: { commandMenuOpen: true } });
+  const html = renderSubtabs(state);
+
+  assert.match(html, /class="command-menu pop-menu"/);
+  assert.match(html, /data-action="command-menu-tab"/);
+  assert.match(html, /Terminal/);
+  assert.match(html, /Settings/);
+  assert.match(html, /data-action="app-exit"/);
+  assert.match(html, /Exit Auri/);
+});
+
 test("native New Tab menu uses the topmost overlay without hiding the website", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const calls = [];
@@ -260,6 +274,62 @@ test("native browser menu overlays the website without hiding or moving it", asy
   assert.equal(calls.some(([kind]) => kind === "hide-websites"), false);
   assert.equal(overlay[1].mode, "menu");
   assert.equal(overlay[2].width, 260);
+});
+
+test("native webview uses the full web frame bounds when the host is collapsed on Linux", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const calls = [];
+  const frame = { getBoundingClientRect: () => ({ left: 100, top: 80, width: 700, height: 540 }) };
+  const host = {
+    getBoundingClientRect: () => ({ left: 100, top: 350, width: 700, height: 270 }),
+    closest: (selector) => selector === ".web-frame-wrap" ? frame : null
+  };
+  const view = {
+    root: { querySelector: (selector) => selector === "#native-webview-host" ? host : null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: true,
+    showWebview: async (...args) => calls.push(["website", ...args]),
+    hideBrowserOverlay: async () => {}
+  };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.state = reduceState(controller.state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
+
+  await controller.syncNativeWebview();
+
+  const website = calls.find(([kind]) => kind === "website");
+  assert.deepEqual(website[3], { x: 100, y: 80, width: 700, height: 540 });
+});
+
+test("native webview uses the frame origin when Linux reports a displaced host", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const calls = [];
+  const frame = { getBoundingClientRect: () => ({ left: 392, top: 124, width: 786, height: 796 }) };
+  const host = {
+    getBoundingClientRect: () => ({ left: 392, top: 475, width: 786, height: 796 }),
+    closest: (selector) => selector === ".web-frame-wrap" ? frame : null
+  };
+  const view = {
+    root: { querySelector: (selector) => selector === "#native-webview-host" ? host : null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const backend = {
+    isNative: true,
+    showWebview: async (...args) => calls.push(["website", ...args]),
+    hideBrowserOverlay: async () => {}
+  };
+  const controller = new AppController({ view, backend, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.state = reduceState(controller.state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
+
+  await controller.syncNativeWebview();
+
+  const website = calls.find(([kind]) => kind === "website");
+  assert.deepEqual(website[3], { x: 392, y: 124, width: 786, height: 796 });
 });
 
 test("native bookmark and history dialogs use centered overlay children while the website stays visible", async () => {

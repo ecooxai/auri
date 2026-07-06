@@ -230,8 +230,14 @@ fn cloudflared_path() -> Option<PathBuf> {
 
 pub fn cloudflared_status() -> CloudflaredStatus {
     match cloudflared_path() {
-        Some(path) => CloudflaredStatus { available: true, path: path.to_string_lossy().into_owned() },
-        None => CloudflaredStatus { available: false, path: String::new() },
+        Some(path) => CloudflaredStatus {
+            available: true,
+            path: path.to_string_lossy().into_owned(),
+        },
+        None => CloudflaredStatus {
+            available: false,
+            path: String::new(),
+        },
     }
 }
 
@@ -295,7 +301,11 @@ fn install_cloudflared() -> Result<PathBuf, String> {
     let temp_root = std::env::temp_dir().join(format!("auri-cloudflared-{stamp}"));
     fs::create_dir_all(&temp_root)
         .map_err(|error| format!("Could not create temporary cloudflared directory: {error}"))?;
-    let download_path = temp_root.join(if archive { "cloudflared.tgz" } else { "cloudflared" });
+    let download_path = temp_root.join(if archive {
+        "cloudflared.tgz"
+    } else {
+        "cloudflared"
+    });
     run_download(url, &download_path)?;
 
     if archive {
@@ -310,10 +320,13 @@ fn install_cloudflared() -> Result<PathBuf, String> {
             .status()
             .map_err(|error| format!("Could not extract cloudflared archive: {error}"))?;
         if !status.success() {
-            return Err(format!("cloudflared archive extraction failed with status {status}."));
+            return Err(format!(
+                "cloudflared archive extraction failed with status {status}."
+            ));
         }
-        let extracted = find_extracted_cloudflared(&extract_dir)
-            .ok_or_else(|| "cloudflared archive did not contain a cloudflared binary.".to_string())?;
+        let extracted = find_extracted_cloudflared(&extract_dir).ok_or_else(|| {
+            "cloudflared archive did not contain a cloudflared binary.".to_string()
+        })?;
         fs::copy(&extracted, &destination)
             .map_err(|error| format!("Could not install cloudflared to ~/.local/bin: {error}"))?;
     } else {
@@ -329,7 +342,12 @@ fn find_extracted_cloudflared(directory: &Path) -> Option<PathBuf> {
     for entry in fs::read_dir(directory).ok()? {
         let entry = entry.ok()?;
         let path = entry.path();
-        if path.is_file() && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name == "cloudflared") {
+        if path.is_file()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "cloudflared")
+        {
             return Some(path);
         }
         if path.is_dir() {
@@ -342,14 +360,20 @@ fn find_extracted_cloudflared(directory: &Path) -> Option<PathBuf> {
 }
 
 fn extract_trycloudflare_url(line: &str) -> Option<String> {
-    line.split(|character: char| character.is_whitespace() || character == '|' || character == ',' || character == ';')
-        .map(|token| {
-            let t = token.trim_matches(|character: char| matches!(character, '<' | '>' | '"' | '\'' | ')' | '(' | '[' | ']'));
-            let t = t.trim_end_matches('.');
-            t.trim_matches(|character: char| matches!(character, '<' | '>' | '"' | '\'' | ')' | '(' | '[' | ']'))
+    line.split(|character: char| {
+        character.is_whitespace() || character == '|' || character == ',' || character == ';'
+    })
+    .map(|token| {
+        let t = token.trim_matches(|character: char| {
+            matches!(character, '<' | '>' | '"' | '\'' | ')' | '(' | '[' | ']')
+        });
+        let t = t.trim_end_matches('.');
+        t.trim_matches(|character: char| {
+            matches!(character, '<' | '>' | '"' | '\'' | ')' | '(' | '[' | ']')
         })
-        .find(|token| token.starts_with("https://") && token.contains(".trycloudflare.com"))
-        .map(|token| token.to_string())
+    })
+    .find(|token| token.starts_with("https://") && token.contains(".trycloudflare.com"))
+    .map(|token| token.to_string())
 }
 
 // Drains cloudflared's stdout/stderr for the full lifetime of the process.
@@ -379,7 +403,10 @@ where
     });
 }
 
-pub fn start_cloudflared_tunnel(port: u16, install_if_missing: bool) -> Result<CloudflaredProcess, String> {
+pub fn start_cloudflared_tunnel(
+    port: u16,
+    install_if_missing: bool,
+) -> Result<CloudflaredProcess, String> {
     if port == 0 {
         return Err("Choose a valid local port.".to_string());
     }
@@ -420,22 +447,32 @@ pub fn start_cloudflared_tunnel(port: u16, install_if_missing: bool) -> Result<C
             .try_wait()
             .map_err(|error| format!("Could not inspect cloudflared process: {error}"))?
         {
-            return Err(format!("cloudflared exited before creating a public URL with status {status}."));
+            return Err(format!(
+                "cloudflared exited before creating a public URL with status {status}."
+            ));
         }
         if started_at.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Timed out waiting for cloudflared to return a public HTTPS URL.".to_string());
+            return Err(
+                "Timed out waiting for cloudflared to return a public HTTPS URL.".to_string(),
+            );
         }
     }
 }
 
 pub fn parse_port_from_service_url(service: &str) -> Option<u16> {
     let service = service.trim();
-    if service.starts_with("http://") || service.starts_with("https://") || service.starts_with("tcp://") {
+    if service.starts_with("http://")
+        || service.starts_with("https://")
+        || service.starts_with("tcp://")
+    {
         if let Some(idx) = service.rfind(':') {
             if idx > 6 {
-                let port_str: String = service[idx + 1..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                let port_str: String = service[idx + 1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
                 if let Ok(port) = port_str.parse::<u16>() {
                     return Some(port);
                 }
@@ -490,7 +527,7 @@ pub fn scan_config_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, St
         Ok(c) => c,
         Err(_) => return,
     };
-    
+
     let mut current_hostname = String::new();
     for line in content.lines() {
         let line = line.trim();
@@ -505,7 +542,9 @@ pub fn scan_config_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, St
             } else {
                 line[9..].trim()
             };
-            current_hostname = val.trim_matches(|c| c == '"' || c == '\'' || c == ' ').to_string();
+            current_hostname = val
+                .trim_matches(|c| c == '"' || c == '\'' || c == ' ')
+                .to_string();
         } else if line.starts_with("- service:") || line.starts_with("service:") {
             let val = if line.starts_with("- service:") {
                 line[10..].trim()
@@ -515,7 +554,9 @@ pub fn scan_config_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, St
             let val = val.trim_matches(|c| c == '"' || c == '\'' || c == ' ');
             if let Some(port) = parse_port_from_service_url(val) {
                 if !current_hostname.is_empty() {
-                    let url = if current_hostname.starts_with("http://") || current_hostname.starts_with("https://") {
+                    let url = if current_hostname.starts_with("http://")
+                        || current_hostname.starts_with("https://")
+                    {
                         current_hostname.clone()
                     } else {
                         format!("https://{current_hostname}")
@@ -536,14 +577,24 @@ pub fn scan_log_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, Strin
         Ok(m) => m,
         Err(_) => return,
     };
-    
+
     let reader = BufReader::new(file);
     let lines: Vec<String> = if metadata.len() > 2_000_000 {
-        reader.lines().flatten().collect::<Vec<String>>().into_iter().rev().take(5000).collect::<Vec<String>>().into_iter().rev().collect()
+        reader
+            .lines()
+            .flatten()
+            .collect::<Vec<String>>()
+            .into_iter()
+            .rev()
+            .take(5000)
+            .collect::<Vec<String>>()
+            .into_iter()
+            .rev()
+            .collect()
     } else {
         reader.lines().flatten().collect()
     };
-    
+
     for line in lines {
         if let Some(idx) = line.find("Updated to new configuration config=\"") {
             let start = idx + "Updated to new configuration config=\"".len();
@@ -553,9 +604,14 @@ pub fn scan_log_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, Strin
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&unescaped) {
                     if let Some(ingress) = json.get("ingress").and_then(|v| v.as_array()) {
                         for rule in ingress {
-                            if let (Some(hostname), Some(service)) = (rule.get("hostname").and_then(|v| v.as_str()), rule.get("service").and_then(|v| v.as_str())) {
+                            if let (Some(hostname), Some(service)) = (
+                                rule.get("hostname").and_then(|v| v.as_str()),
+                                rule.get("service").and_then(|v| v.as_str()),
+                            ) {
                                 if let Some(port) = parse_port_from_service_url(service) {
-                                    let url = if hostname.starts_with("http://") || hostname.starts_with("https://") {
+                                    let url = if hostname.starts_with("http://")
+                                        || hostname.starts_with("https://")
+                                    {
                                         hostname.to_string()
                                     } else {
                                         format!("https://{hostname}")
@@ -568,13 +624,23 @@ pub fn scan_log_file_for_mappings(path: &Path, mappings: &mut HashMap<u16, Strin
                 }
             }
         }
-        if let (Some(dest_idx), Some(origin_idx)) = (line.find("dest="), line.find("originService=")) {
+        if let (Some(dest_idx), Some(origin_idx)) =
+            (line.find("dest="), line.find("originService="))
+        {
             let dest_part = &line[dest_idx + 5..];
-            let dest_val = dest_part.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '"' || c == '\'');
-            
+            let dest_val = dest_part
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '"' || c == '\'');
+
             let origin_part = &line[origin_idx + 14..];
-            let origin_val = origin_part.split_whitespace().next().unwrap_or("").trim_matches(|c| c == '"' || c == '\'');
-            
+            let origin_val = origin_part
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c| c == '"' || c == '\'');
+
             if let Some(port) = parse_port_from_service_url(origin_val) {
                 if let Some(url_idx) = dest_val.find("://") {
                     let host_part = &dest_val[url_idx + 3..];
@@ -594,18 +660,18 @@ pub fn discover_active_tunnels() -> Vec<CloudflaredTunnel> {
     if cloudflared_procs.is_empty() {
         return discovered;
     }
-    
+
     let mut port_to_url: HashMap<u16, String> = HashMap::new();
     let mut port_to_pid: HashMap<u16, u32> = HashMap::new();
     let mut quick_ports = Vec::new();
-    
+
     for (pid, cmd) in &cloudflared_procs {
         if let Some(port) = parse_port_from_cmdline(cmd) {
             port_to_pid.insert(port, *pid);
             quick_ports.push(port);
         }
     }
-    
+
     let mut log_paths = vec![
         PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.err.log"),
         PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.out.log"),
@@ -613,7 +679,7 @@ pub fn discover_active_tunnels() -> Vec<CloudflaredTunnel> {
     if let Some(home) = home_dir() {
         log_paths.push(home.join(".cloudflared").join("tunnel.log"));
     }
-    
+
     for (_pid, cmd) in &cloudflared_procs {
         if let Some(log_path) = parse_logfile_path_from_cmdline(cmd) {
             if !log_paths.contains(&log_path) {
@@ -624,11 +690,11 @@ pub fn discover_active_tunnels() -> Vec<CloudflaredTunnel> {
             scan_config_file_for_mappings(&config_path, &mut port_to_url);
         }
     }
-    
+
     for path in log_paths {
         scan_log_file_for_mappings(&path, &mut port_to_url);
     }
-    
+
     let mut last_try_url = String::new();
     for path in &[
         PathBuf::from("/Library/Logs/com.cloudflare.cloudflared.err.log"),
@@ -643,15 +709,15 @@ pub fn discover_active_tunnels() -> Vec<CloudflaredTunnel> {
             }
         }
     }
-    
+
     for port in quick_ports {
         if !port_to_url.contains_key(&port) && !last_try_url.is_empty() {
             port_to_url.insert(port, last_try_url.clone());
         }
     }
-    
+
     let default_pid = cloudflared_procs.first().map(|(pid, _)| *pid).unwrap_or(0);
-    
+
     for (port, url) in port_to_url {
         let pid = port_to_pid.get(&port).copied().unwrap_or(default_pid);
         discovered.push(CloudflaredTunnel {
@@ -661,7 +727,7 @@ pub fn discover_active_tunnels() -> Vec<CloudflaredTunnel> {
             path: String::new(),
         });
     }
-    
+
     discovered
 }
 
@@ -984,15 +1050,26 @@ fn parse_process_line(line: &str) -> Option<ProcessInfo> {
         .parse::<f64>()
         .ok()?;
     let state_index = parts.len().saturating_sub(3);
-    let has_state_column = parts
-        .get(state_index)
-        .is_some_and(|value| value.chars().all(|char| char.is_ascii_alphabetic() || char == '+' || char == '<' || char == '>' || char == 'N' || char == 's'));
+    let has_state_column = parts.get(state_index).is_some_and(|value| {
+        value.chars().all(|char| {
+            char.is_ascii_alphabetic()
+                || char == '+'
+                || char == '<'
+                || char == '>'
+                || char == 'N'
+                || char == 's'
+        })
+    });
     let status = if has_state_column {
         parts.get(state_index).copied().unwrap_or("").to_string()
     } else {
         String::new()
     };
-    let name_end = if has_state_column { state_index } else { parts.len().saturating_sub(2) };
+    let name_end = if has_state_column {
+        state_index
+    } else {
+        parts.len().saturating_sub(2)
+    };
     let raw_path = parts[1..name_end].join(" ");
     let name = raw_path
         .rsplit('/')
@@ -1073,7 +1150,10 @@ fn working_directories_by_pid() -> HashMap<u32, String> {
         .unwrap_or_default()
         .lines()
     {
-        if let Some(pid) = line.strip_prefix('p').and_then(|value| value.parse::<u32>().ok()) {
+        if let Some(pid) = line
+            .strip_prefix('p')
+            .and_then(|value| value.parse::<u32>().ok())
+        {
             current_pid = Some(pid);
             continue;
         }
@@ -1206,7 +1286,11 @@ fn linux_proc_listening_ports_by_pid() -> HashMap<u32, Vec<u16>> {
         return map;
     };
     for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
             continue;
         };
         let Ok(fds) = std::fs::read_dir(entry.path().join("fd")) else {
@@ -1308,7 +1392,11 @@ fn process_disk_totals_by_pid() -> HashMap<u32, (u64, u64)> {
     let mut map = HashMap::new();
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
-            let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
                 continue;
             };
             let io_path = entry.path().join("io");
@@ -1343,14 +1431,32 @@ fn disk_info() -> DiskInfo {
         if parts.len() < 6 {
             continue;
         }
-        let total = parts.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0).saturating_mul(1024);
-        let used = parts.get(2).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0).saturating_mul(1024);
-        let free = parts.get(3).and_then(|value| value.parse::<u64>().ok()).unwrap_or(0).saturating_mul(1024);
+        let total = parts
+            .get(1)
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+            .saturating_mul(1024);
+        let used = parts
+            .get(2)
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+            .saturating_mul(1024);
+        let free = parts
+            .get(3)
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0)
+            .saturating_mul(1024);
         let mount_point = parts.get(5).copied().unwrap_or("").to_string();
-        if mount_point.is_empty() || mount_point.starts_with("/System/Volumes") && mount_point != "/System/Volumes/Data" {
+        if mount_point.is_empty()
+            || mount_point.starts_with("/System/Volumes") && mount_point != "/System/Volumes/Data"
+        {
             continue;
         }
-        let usage_percent = if total > 0 { Some(used as f64 / total as f64 * 100.0) } else { None };
+        let usage_percent = if total > 0 {
+            Some(used as f64 / total as f64 * 100.0)
+        } else {
+            None
+        };
         mounts.push(DiskMount {
             name: parts.first().copied().unwrap_or("disk").to_string(),
             mount_point,
@@ -1369,7 +1475,11 @@ fn disk_info() -> DiskInfo {
         total_bytes: total,
         used_bytes: used,
         free_bytes: free,
-        usage_percent: if total > 0 { Some(used as f64 / total as f64 * 100.0) } else { None },
+        usage_percent: if total > 0 {
+            Some(used as f64 / total as f64 * 100.0)
+        } else {
+            None
+        },
         read_bytes_per_second: None,
         write_bytes_per_second: None,
     }
@@ -1619,9 +1729,13 @@ pub fn kill_process(pid: u32) -> Result<(), String> {
         return Err("Choose a process PID to kill.".to_string());
     }
     let status = if cfg!(target_os = "windows") {
-        Command::new("taskkill").args(["/PID", &pid.to_string(), "/T"]).status()
+        Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T"])
+            .status()
     } else {
-        Command::new("kill").args(["-TERM", &pid.to_string()]).status()
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
     }
     .map_err(|error| error.to_string())?;
     if status.success() {
@@ -1665,10 +1779,10 @@ mod tests {
         parse_lsof_port, parse_macos_top_cpu, parse_process_command_line, parse_process_line,
     };
 
-    #[cfg(target_os = "linux")]
-    use super::{parse_proc_net_tcp_listener, parse_socket_inode_link, parse_ss_listening_port};
     #[cfg(target_os = "macos")]
     use super::parse_nettop_process_line;
+    #[cfg(target_os = "linux")]
+    use super::{parse_proc_net_tcp_listener, parse_socket_inode_link, parse_ss_listening_port};
 
     #[test]
     fn derives_readable_app_names_from_bundle_paths() {
@@ -1809,20 +1923,35 @@ mod tests {
     #[test]
     fn parses_cloudflared_tunnels_and_configs() {
         use super::{
-            parse_port_from_service_url, parse_port_from_cmdline,
             parse_config_path_from_cmdline, parse_logfile_path_from_cmdline,
+            parse_port_from_cmdline, parse_port_from_service_url,
         };
         use std::path::PathBuf;
 
-        assert_eq!(parse_port_from_service_url("http://localhost:8009"), Some(8009));
+        assert_eq!(
+            parse_port_from_service_url("http://localhost:8009"),
+            Some(8009)
+        );
         assert_eq!(parse_port_from_service_url("tcp://127.0.0.1:22"), Some(22));
         assert_eq!(parse_port_from_service_url("invalid"), None);
 
-        assert_eq!(parse_port_from_cmdline("cloudflared tunnel --url http://localhost:8009"), Some(8009));
-        assert_eq!(parse_port_from_cmdline("cloudflared tunnel --url=http://127.0.0.1:3000"), Some(3000));
+        assert_eq!(
+            parse_port_from_cmdline("cloudflared tunnel --url http://localhost:8009"),
+            Some(8009)
+        );
+        assert_eq!(
+            parse_port_from_cmdline("cloudflared tunnel --url=http://127.0.0.1:3000"),
+            Some(3000)
+        );
         assert_eq!(parse_port_from_cmdline("cloudflared tunnel run"), None);
 
-        assert_eq!(parse_config_path_from_cmdline("cloudflared tunnel run --config /etc/cloudflared.yml"), Some(PathBuf::from("/etc/cloudflared.yml")));
-        assert_eq!(parse_logfile_path_from_cmdline("cloudflared --logfile /var/log/cf.log"), Some(PathBuf::from("/var/log/cf.log")));
+        assert_eq!(
+            parse_config_path_from_cmdline("cloudflared tunnel run --config /etc/cloudflared.yml"),
+            Some(PathBuf::from("/etc/cloudflared.yml"))
+        );
+        assert_eq!(
+            parse_logfile_path_from_cmdline("cloudflared --logfile /var/log/cf.log"),
+            Some(PathBuf::from("/var/log/cf.log"))
+        );
     }
 }

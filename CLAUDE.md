@@ -25,6 +25,7 @@ auri subtab close [id]                                                         C
 auri subtab select <id>                                                        Focus a horizontal subtab.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
 auri folder list [path]                                                        List a directory.
+auri folder toggle <path>                                                     Expand or collapse a folder row.
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
 auri file open <path>                                                          Open a file in the viewer.
 auri file external [path]                                                      Open a file with the operating system.

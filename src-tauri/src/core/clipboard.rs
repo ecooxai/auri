@@ -2,10 +2,9 @@ use super::workspace::home_dir;
 use arboard::{Clipboard, ImageData};
 use image::{ImageBuffer, Rgba};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,17 +58,31 @@ fn now_millis() -> Result<u64, String> {
         .as_millis() as u64)
 }
 
-fn hash_value<T: Hash>(value: &T) -> String {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+fn finalize_sha256(hasher: Sha256) -> String {
+    format!("{:x}", hasher.finalize())
+}
+
+fn text_fingerprint(text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"text\0");
+    hasher.update(text.as_bytes());
+    finalize_sha256(hasher)
+}
+
+fn image_fingerprint(width: usize, height: usize, bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"image\0");
+    hasher.update(width.to_le_bytes());
+    hasher.update(height.to_le_bytes());
+    hasher.update(bytes);
+    finalize_sha256(hasher)
 }
 
 fn current_clipboard() -> Option<CurrentClipboard> {
     let mut clipboard = Clipboard::new().ok()?;
     if let Ok(image) = clipboard.get_image() {
         let bytes = image.bytes.into_owned();
-        let fingerprint = hash_value(&(image.width, image.height, &bytes));
+        let fingerprint = image_fingerprint(image.width, image.height, &bytes);
         return Some(CurrentClipboard::Image {
             width: image.width,
             height: image.height,
@@ -82,7 +95,7 @@ fn current_clipboard() -> Option<CurrentClipboard> {
         .ok()
         .filter(|text| !text.is_empty())
         .map(|text| {
-            let fingerprint = hash_value(&text);
+            let fingerprint = text_fingerprint(&text);
             CurrentClipboard::Text { text, fingerprint }
         })
 }
@@ -171,12 +184,18 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
             if ignored.is_some() {
                 clear_ignored_fingerprint(&ignored_path)?;
             }
-            let duplicate = entries
-                .first()
-                .and_then(|entry| entry.fingerprint.as_deref())
-                == Some(fingerprint.as_str());
-            if !duplicate {
-                let now = now_millis()?;
+            let now = now_millis()?;
+            if let Some(duplicate_index) = entries
+                .iter()
+                .position(|entry| entry.fingerprint.as_deref() == Some(fingerprint.as_str()))
+            {
+                if duplicate_index != 0 {
+                    let mut existing = entries.remove(duplicate_index);
+                    existing.created_at = now;
+                    entries.insert(0, existing);
+                    changed = true;
+                }
+            } else {
                 let id = format!("clip-{now}");
                 let entry = match current {
                     CurrentClipboard::Text { text, fingerprint } => ClipboardEntry {

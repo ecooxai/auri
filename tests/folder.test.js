@@ -17,6 +17,18 @@ test("folder entries sort by name, newest date, or type without mutating source"
   assert.deepEqual(entries.map((item) => item.name), ["zeta.txt", "alpha.png", "Beta.md", "Folder"]);
 });
 
+test("hidden entries sort after normal entries within folders and files", () => {
+  const sorted = sortFolderEntries([
+    { name: ".git", kind: "directory" },
+    { name: "src", kind: "directory" },
+    { name: ".env", kind: "text" },
+    { name: "README.md", kind: "text" },
+    { name: "assets", kind: "directory" }
+  ], "name");
+
+  assert.deepEqual(sorted.map((item) => item.name), ["assets", "src", ".git", "README.md", ".env"]);
+});
+
 test("native folder bridge exposes creation, metadata, modification dates, and registered commands", async () => {
   const backend = await readFile("src/services/backend.js", "utf8");
   const files = await readFile("src-tauri/src/core/files.rs", "utf8");

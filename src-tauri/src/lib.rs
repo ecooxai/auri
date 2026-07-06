@@ -259,15 +259,23 @@ async fn cloudflared_start_tunnel(
         return Ok(existing.info.clone());
     }
 
-    let process = tauri::async_runtime::spawn_blocking(move || system::start_cloudflared_tunnel(port, install_if_missing))
-        .await
-        .map_err(|error| format!("cloudflared tunnel task failed: {error}"))??;
+    let process = tauri::async_runtime::spawn_blocking(move || {
+        system::start_cloudflared_tunnel(port, install_if_missing)
+    })
+    .await
+    .map_err(|error| format!("cloudflared tunnel task failed: {error}"))??;
     let info = process.info.clone();
     state
         .0
         .lock()
         .map_err(|_| "Cloudflare tunnel state is unavailable.".to_string())?
-        .insert(port, ManagedCloudflaredTunnel { info: process.info, child: process.child });
+        .insert(
+            port,
+            ManagedCloudflaredTunnel {
+                info: process.info,
+                child: process.child,
+            },
+        );
     Ok(info)
 }
 
@@ -279,8 +287,9 @@ async fn cloudflared_active_tunnels(
         .0
         .lock()
         .map_err(|_| "Cloudflare tunnel state is unavailable.".to_string())?;
-    let mut active: Vec<system::CloudflaredTunnel> = tunnels.values().map(|t| t.info.clone()).collect();
-    
+    let mut active: Vec<system::CloudflaredTunnel> =
+        tunnels.values().map(|t| t.info.clone()).collect();
+
     let discovered = system::discover_active_tunnels();
     for disc in discovered {
         if !active.iter().any(|t| t.port == disc.port) {
@@ -330,7 +339,9 @@ async fn cloudflared_stop_tunnel(
                 .find(|tunnel| tunnel.port == port)
                 .ok_or_else(|| format!("No Cloudflare tunnel is running for port {port}."))?;
             let pid = found.pid;
-            tauri::async_runtime::spawn_blocking(move || system::kill_process(pid)).await.map_err(|error| format!("cloudflared stop task failed: {error}"))??;
+            tauri::async_runtime::spawn_blocking(move || system::kill_process(pid))
+                .await
+                .map_err(|error| format!("cloudflared stop task failed: {error}"))??;
             found
         }
     };
@@ -340,6 +351,11 @@ async fn cloudflared_stop_tunnel(
 #[tauri::command]
 fn save_settings(settings: Value) -> Result<(), String> {
     workspace::save_configuration(&settings)
+}
+
+#[tauri::command]
+fn app_exit(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 #[cfg(desktop)]
@@ -413,6 +429,22 @@ fn window_start_dragging(window: tauri::Window) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
 
+#[cfg(desktop)]
+#[tauri::command]
+fn window_set_visible_on_all_workspaces(
+    window: tauri::Window,
+    state: tauri::State<'_, lifecycle::DesktopVisibilityState>,
+    enabled: bool,
+) -> Result<(), String> {
+    lifecycle::set_visible_on_all_workspaces(&window, &state, enabled)
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+fn window_set_visible_on_all_workspaces(_enabled: bool) -> Result<(), String> {
+    Err("Desktop workspace visibility is available only in the desktop build.".into())
+}
+
 #[tauri::command]
 fn webview_show(
     app: tauri::AppHandle,
@@ -478,6 +510,23 @@ pub fn run() {
             app.manage(command_server);
             app.manage(SystemMonitorState::default());
             app.manage(CloudflaredTunnelState::default());
+            app.manage(lifecycle::DesktopVisibilityState::new(true));
+            let main_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .ok_or_else(|| std::io::Error::other("The main window config is missing."))?
+                .clone();
+            let main_window =
+                tauri::window::WindowBuilder::from_config(app, &main_config)?.build()?;
+            let main_webview = tauri::webview::WebviewBuilder::from_config(&main_config);
+            main_window.add_child(
+                main_webview,
+                tauri::LogicalPosition::new(0, 0),
+                main_window.inner_size()?,
+            )?;
 
             #[cfg(desktop)]
             {
@@ -507,8 +556,11 @@ pub fn run() {
                 }
             }
 
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_visible_on_all_workspaces(true)?;
+            if let Some(window) = app.get_window("main") {
+                lifecycle::apply_self_managed_chrome(&window).map_err(std::io::Error::other)?;
+                let state = app.state::<lifecycle::DesktopVisibilityState>();
+                lifecycle::set_visible_on_all_workspaces(&window, &state, true)
+                    .map_err(std::io::Error::other)?;
             }
 
             Ok(())
@@ -539,6 +591,7 @@ pub fn run() {
             terminal_resize,
             terminal_stop,
             window_start_dragging,
+            window_set_visible_on_all_workspaces,
             capture_screenshot,
             media_permission_status,
                 request_media_permission,
@@ -555,6 +608,7 @@ pub fn run() {
             cloudflared_active_tunnels,
             cloudflared_stop_tunnel,
             save_settings,
+            app_exit,
             set_wake_shortcut,
             save_media_file,
             open_external,

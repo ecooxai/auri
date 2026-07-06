@@ -21,6 +21,10 @@ function quoteArg(value) {
   return `"${String(value ?? "").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
+function folderPaneWidth(value) {
+  return Math.min(420, Math.max(160, Number(value) || 230));
+}
+
 function scheduleFrame(callback) {
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
   else callback();
@@ -131,6 +135,7 @@ export class AppController {
     this.terminalCompletionRange = null;
     this.terminalEnterHoldTimer = null;
     this.terminalEnterHeld = false;
+    this.folderResizeDrag = null;
     this.systemTunnelPromptResolver = null;
   }
 
@@ -167,7 +172,8 @@ export class AppController {
         insertText: (text) => this.insertIntoTerminal(text),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
         showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
-        refreshSystemMonitor: () => this.refreshSystemMonitor()
+        refreshSystemMonitor: () => this.refreshSystemMonitor(),
+        exitApp: () => this.backend.exitApp()
       }
     };
   }
@@ -322,21 +328,34 @@ export class AppController {
         this.nativeWebviewUrls.delete(id);
       }
     }
-    this.render(changesWorkspace ? { ...options, preserveInput: false } : options);
+    const targetWorkspaceId = event.payload?.workspaceId || this.state.activeTabId;
+    const shouldFocusTerminal = Boolean(
+      options.focusTerminal
+      || (changesWorkspace && activeSubtab(this.state)?.type === "terminal")
+      || (event.type === "WORKDIR_SET" && targetWorkspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal")
+    );
+    const renderOptions = { ...options, focusTerminal: shouldFocusTerminal };
+    this.render(changesWorkspace ? { ...renderOptions, preserveInput: false } : renderOptions);
     if (this.configurationReady && WORKSPACE_PERSIST_EVENTS.has(event.type)) {
       this.persistConfiguration().catch((error) => this.reportError("Workspace save", error));
     }
   }
 
   render(options = {}) {
-    this.view.render(this.state, { native: this.native, ...options });
+    this.view.render(this.state, { native: this.native, nativeWebview: this.native, ...options });
     const terminalHost = this.view.root.querySelector?.("#terminal-emulator");
     if (terminalHost) {
       const workspace = activeWorkspace(this.state);
       const terminalTarget = this.resolveTerminalTarget();
       if (terminalTarget) {
         const session = this.terminalSessionFor(terminalTarget.subtab.id);
-        requestAnimationFrame(() => session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines).catch((error) => this.reportError("Terminal", error)));
+        requestAnimationFrame(() => {
+          session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines)
+            .then(() => {
+              if (options.focusTerminal && !this.isTerminalComposerFocused()) session.focus?.();
+            })
+            .catch((error) => this.reportError("Terminal", error));
+        });
       }
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
@@ -344,6 +363,11 @@ export class AppController {
     if (this.backend.systemSnapshot && this.isSystemMonitorActive() && this.state.system.status === "idle") {
       scheduleFrame(() => this.refreshSystemMonitor().catch((error) => this.reportError("System", error)));
     }
+  }
+
+  isTerminalComposerFocused() {
+    const input = this.view.getTerminalInput?.();
+    return Boolean(input && input.ownerDocument?.activeElement === input);
   }
 
   isSystemMonitorActive(state = this.state) {
@@ -544,6 +568,16 @@ export class AppController {
           });
         }
       }
+      if (this.backend.setVisibleOnAllWorkspaces) {
+        try {
+          await this.backend.setVisibleOnAllWorkspaces(this.state.settings.visibleOnAllWorkspaces);
+        } catch (error) {
+          this.state = reduceState(this.state, {
+            type: "INFO_ADD",
+            payload: { level: "warning", title: "Desktop visibility", message: error?.message || String(error) }
+          });
+        }
+      }
       const root = initialized?.root || "~";
       if (!restoredWorkspaces) {
         this.state = reduceState(this.state, { type: "WORKDIR_SET", payload: { path: root } });
@@ -582,6 +616,7 @@ export class AppController {
     this.view.root.addEventListener("click", (event) => this.handleClick(event));
     this.view.root.addEventListener("dblclick", (event) => this.handleDoubleClick(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleLiveRecordPointerDown(event));
+    this.view.root.addEventListener("pointerdown", (event) => this.handleFolderResizePointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
     this.view.root.addEventListener("keyup", (event) => this.handleKeyup(event));
@@ -594,6 +629,9 @@ export class AppController {
     window.addEventListener("keyup", (event) => this.handleGlobalKeyup(event));
     window.addEventListener("pointerup", (event) => this.handleLiveRecordPointerEnd(event));
     window.addEventListener("pointercancel", (event) => this.handleLiveRecordPointerEnd(event));
+    window.addEventListener("pointermove", (event) => this.handleFolderResizePointerMove(event));
+    window.addEventListener("pointerup", (event) => this.handleFolderResizePointerEnd(event));
+    window.addEventListener("pointercancel", (event) => this.handleFolderResizePointerEnd(event));
     window.addEventListener("focus", () => {
       this.wakeLiveSession?.resume?.().catch?.(() => {});
       this.refreshMediaPermissions().catch?.(() => {});
@@ -675,6 +713,44 @@ export class AppController {
     } finally {
       this.liveRecordStartPromise = null;
     }
+  }
+
+  handleFolderResizePointerDown(event) {
+    const target = event.target?.closest?.('[data-action="folder-resize"]');
+    if (!target || event.button !== 0) return false;
+    event.preventDefault?.();
+    const pane = this.view.root.querySelector?.(".folder-pane");
+    const startWidth = folderPaneWidth(pane?.getBoundingClientRect?.().width || this.state.settings.folderPaneWidth);
+    this.folderResizeDrag = {
+      pointerId: event.pointerId,
+      startX: Number(event.clientX) || 0,
+      startWidth,
+      width: startWidth
+    };
+    target.setPointerCapture?.(event.pointerId);
+    return true;
+  }
+
+  handleFolderResizePointerMove(event) {
+    const drag = this.folderResizeDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return false;
+    event.preventDefault?.();
+    const width = folderPaneWidth(drag.startWidth + ((Number(event.clientX) || 0) - drag.startX));
+    if (width === drag.width) return true;
+    drag.width = width;
+    this.view.setFolderPaneWidth?.(width);
+    this.activeTerminalSession().resize?.();
+    this.syncNativeWebview().catch((error) => this.reportError("Webview", error));
+    return true;
+  }
+
+  async handleFolderResizePointerEnd(event) {
+    const drag = this.folderResizeDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return false;
+    event.preventDefault?.();
+    this.folderResizeDrag = null;
+    await this.runInternal(`settings set folderPaneWidth ${folderPaneWidth(drag.width)}`);
+    return true;
   }
 
   handleTopbarPointerDown(event) {
@@ -768,12 +844,16 @@ export class AppController {
     const insideProcessDetail = event.target?.closest?.(".system-process-detail");
     const insideSystemTunnelPrompt = event.target?.closest?.(".system-tunnel-prompt");
     const insideTunnelUrlMenu = event.target?.closest?.(".process-detail-port-url-menu, .process-detail-port-url");
+    const insideCommandMenu = event.target?.closest?.(".command-menu-wrap");
     const target = event.target?.closest?.("[data-action]");
     if (hasAssistantActionPopup(this.state) && !insideAssistantPopup) {
       await this.runInternal("transcript dismiss");
     }
     if (this.state.ui.tunnelUrlMenuPort && !insideTunnelUrlMenu) {
       this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
+    }
+    if (this.state.ui.commandMenuOpen && !insideCommandMenu) {
+      this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
     }
     const action = target?.dataset?.action || "";
     if (this.state.system.selectedProcessPid && !insideProcessDetail && !insideSystemTunnelPrompt && !action.startsWith("system-tunnel-prompt-") && action !== "system-process-select") {
@@ -798,11 +878,11 @@ export class AppController {
         }
         case "tab-new":
           await this.runInternal("tab new");
-          await this.refreshFolder();
+          await this.refreshFolder({ focusTerminal: true });
           break;
         case "tab-select":
           await this.runInternal(`tab select ${target.dataset.id}`);
-          await this.refreshFolder();
+          await this.refreshFolder({ focusTerminal: true });
           break;
         case "tab-close":
           await this.runInternal(`tab close ${target.dataset.id || ""}`.trim());
@@ -818,12 +898,23 @@ export class AppController {
           await this.runInternal(`subtab close ${target.dataset.id}`);
           break;
         case "subtab-menu":
-          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, webMenuOpen: false, webDialog: null } });
+          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, commandMenuOpen: false, webMenuOpen: false, webDialog: null } });
           break;
         case "subtab-new":
           this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } });
           await this.runInternal(`subtab new ${target.dataset.type}`);
           if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
+          break;
+        case "command-menu":
+          this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: !this.state.ui.commandMenuOpen, addSubtabMenuOpen: false, webMenuOpen: false, webDialog: null } });
+          break;
+        case "command-menu-tab":
+          this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
+          await this.runInternal(`subtab select ${target.dataset.id}`);
+          break;
+        case "app-exit":
+          this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
+          await this.runInternal("app exit");
           break;
         case "system-tunnel-prompt-confirm":
           this.resolveSystemTunnelPrompt(true);
@@ -930,6 +1021,10 @@ export class AppController {
           this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
           await this.runInternal("folder info");
           break;
+        case "folder-toggle":
+          this.cancelFolderPathNavigation();
+          await this.runInternal(`folder toggle ${quoteArg(target.dataset.path || "")}`);
+          break;
         case "file-entry":
           this.cancelFolderPathNavigation();
           await this.openFolderEntry(target.dataset.path, target.dataset.kind);
@@ -998,9 +1093,19 @@ export class AppController {
         case "clipboard-filter-pinned":
           this.dispatch({
             type: "UI_SET",
-            payload: { clipboardPinnedOnly: !this.state.ui.clipboardPinnedOnly, clipboardMenuId: null }
+            payload: { clipboardPinnedOnly: !this.state.ui.clipboardPinnedOnly, clipboardMenuId: null, clipboardPage: 0 }
           }, { preserveInput: true });
           break;
+        case "clipboard-page-prev":
+        case "clipboard-page-next": {
+          const pinnedOnly = Boolean(this.state.ui.clipboardPinnedOnly);
+          const items = pinnedOnly ? this.state.clipboard.items.filter((item) => item.pinned) : this.state.clipboard.items;
+          const maxPage = Math.max(0, Math.ceil(items.length / 50) - 1);
+          const direction = action === "clipboard-page-next" ? 1 : -1;
+          const clipboardPage = Math.min(maxPage, Math.max(0, (Number(this.state.ui.clipboardPage) || 0) + direction));
+          this.dispatch({ type: "UI_SET", payload: { clipboardPage, clipboardMenuId: null } }, { preserveInput: true });
+          break;
+        }
         case "clipboard-refresh":
           this.dispatch({ type: "UI_SET", payload: { clipboardMenuId: null } }, { preserveInput: true });
           await this.runInternal("clipboard list");
@@ -1705,8 +1810,9 @@ export class AppController {
 
   async syncDirectory(path, workspaceId = this.state.activeTabId) {
     const entries = await this.backend.listDirectory(path);
-    this.dispatch({ type: "WORKDIR_SET", payload: { workspaceId, path } });
-    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
+    const focusTerminal = workspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal";
+    this.dispatch({ type: "WORKDIR_SET", payload: { workspaceId, path } }, { preserveInput: true, focusTerminal });
+    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } }, { preserveInput: true, focusTerminal });
   }
 
   async changeDirectory(path, { echoInTerminal = false } = {}) {
@@ -1718,14 +1824,19 @@ export class AppController {
     await this.syncDirectory(result.cwd);
   }
 
-  async refreshFolder() {
+  async refreshFolder({ focusTerminal = false } = {}) {
     const path = activeWorkspace(this.state).folder.path;
     const entries = await this.backend.listDirectory(path);
-    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } });
+    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } }, { preserveInput: true, focusTerminal });
   }
 
   async openFolderEntry(path, kind, { forceOpen = false } = {}) {
     if (kind === "directory") {
+      const workspace = activeWorkspace(this.state);
+      if (!forceOpen && workspace.folder.selectedPath !== path) {
+        this.dispatch({ type: "FOLDER_ENTRY_SELECT", payload: { path } }, { preserveInput: true });
+        return;
+      }
       await this.changeDirectory(path, { echoInTerminal: true });
       return;
     }
@@ -2034,7 +2145,7 @@ export class AppController {
       await this.backend.hideWebviews?.();
       return;
     }
-    const rect = host.getBoundingClientRect();
+    const rect = this.nativeWebviewBounds(host);
     const url = subtab.url || "https://www.google.com/";
     const navigate = this.nativeWebviewUrls.get(subtab.id) !== url;
     if (this.backend.showWebview) {
@@ -2047,6 +2158,15 @@ export class AppController {
       this.nativeWebviewUrls.set(subtab.id, url);
     }
     await this.syncBrowserOverlay(subtab, rect);
+  }
+
+  nativeWebviewBounds(host) {
+    const hostRect = host.getBoundingClientRect();
+    const frameRect = host.closest?.(".web-frame-wrap")?.getBoundingClientRect?.();
+    if (frameRect && frameRect.width > 0 && frameRect.height > 0) {
+      return frameRect;
+    }
+    return hostRect;
   }
 
   async runWebviewAction(action, value = null) {

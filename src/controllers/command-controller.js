@@ -143,6 +143,13 @@ export async function executeCommand(input, context) {
       return { ok: true };
     }
 
+    if (domain === "app") {
+      if (action !== "exit") throw new Error(`Unknown app action: ${action}`);
+      if (!actions.exitApp) throw new Error("App exit is unavailable in this runtime.");
+      await actions.exitApp();
+      return { ok: true };
+    }
+
     if (domain === "subtab") {
       if (action === "new") {
         if (!args[0]) throw new Error("Choose a subtab type.");
@@ -160,6 +167,17 @@ export async function executeCommand(input, context) {
         if (!["name", "date", "type"].includes(sortBy)) throw new Error("Folder sort must be name, date, or type.");
         dispatch({ type: "FOLDER_SORT_SET", payload: { sortBy } });
         return { sortBy };
+      }
+      if (action === "toggle") {
+        const path = args.join(" ").trim();
+        if (!path) throw new Error("Choose a folder to expand.");
+        if (workspace.folder.expanded?.[path]) {
+          dispatch({ type: "FOLDER_EXPANDED_REMOVE", payload: { path } });
+          return { path, expanded: false };
+        }
+        const entries = await backend.listDirectory(path);
+        dispatch({ type: "FOLDER_EXPANDED_SET", payload: { path, entries } });
+        return { path, entries, expanded: true };
       }
       if (action === "create-file" || action === "create-folder") {
         const name = args.join(" ").trim();
@@ -535,6 +553,10 @@ export async function executeCommand(input, context) {
         if (!shortcut) throw new Error("Press a valid wake shortcut.");
         await backend.setWakeShortcut?.(shortcut);
         value = shortcut;
+      }
+      if (key === "visibleOnAllWorkspaces") {
+        await backend.setVisibleOnAllWorkspaces?.(Boolean(value));
+        value = Boolean(value);
       }
       dispatch({ type: "SETTING_SET", payload: { key, value } });
       await persistConfiguration(backend, getState());

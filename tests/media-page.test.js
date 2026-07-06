@@ -118,10 +118,12 @@ test("text files render an editable CodeMirror-backed viewer", () => {
     mime: "text/plain",
     title: "notes.txt",
     path: "/tmp/notes.txt",
-    text: "hello"
+    text: "hello",
+    codemirrorModuleUrl: "app://local/codemirror-viewer.js"
   });
 
-  assert.match(html, /@codemirror\/state/);
+  assert.match(html, /app:\/\/local\/codemirror-viewer\.js/);
+  assert.doesNotMatch(html, /esm\.sh/);
   assert.match(html, /CodeMirror/);
   assert.match(html, /save-text/);
   assert.match(html, /parent\.postMessage/);
@@ -156,8 +158,8 @@ test("autoplay is passed into media viewers", () => {
   const video = fileViewerPageHtml({ resourceUrl: "blob:video", mime: "video/mp4", title: "clip.mp4", path: "/tmp/clip.mp4", autoplay: true });
 
   assert.match(audio, /"autoplay":true/);
-  assert.match(audio, /audio\.play\(\)\.catch/);
-  assert.match(video, /video\.play\(\)\.catch/);
+  assert.match(audio, /playMedia\(audio\)/);
+  assert.match(video, /playMedia\(video\)/);
 });
 
 test("legacy mediaPageHtml export now returns the same rich viewer shell", () => {

@@ -89,7 +89,10 @@ export function renderSubtabs(state, { native = false } = {}) {
           ${button("＋", "New tab", "subtab-menu", 'data-chrome-control="true"')}
           ${state.ui.addSubtabMenuOpen && !nativeWebviewActive ? renderSubtabMenu() : ""}
         </div>
-        ${button("⌘", "Command palette", "command-palette", 'data-chrome-control="true"')}
+        <div class="command-menu-wrap">
+          ${button("⌘", "Open tabs and app commands", "command-menu", `data-chrome-control="true" aria-haspopup="menu" aria-expanded="${state.ui.commandMenuOpen ? "true" : "false"}"`)}
+          ${state.ui.commandMenuOpen ? renderCommandMenu(tab) : ""}
+        </div>
       </div>
     </div>`;
 }
@@ -102,6 +105,14 @@ function renderSubtabMenu() {
   ];
   return `<div class="pop-menu" role="menu">
     ${items.map(([type, icon, label]) => `<button type="button" data-action="subtab-new" data-type="${type}"><span>${icon}</span>${label}</button>`).join("")}
+  </div>`;
+}
+
+function renderCommandMenu(tab) {
+  return `<div class="command-menu pop-menu" role="menu" aria-label="Open tabs and app commands">
+    ${tab.subtabs.map((item) => `<button type="button" role="menuitem" data-action="command-menu-tab" data-id="${escapeHtml(item.id)}" class="${item.id === tab.activeSubtabId ? "is-active" : ""}"><span>${subtabIcons[item.type] || "·"}</span>${escapeHtml(item.title)}</button>`).join("")}
+    <span class="pop-menu-separator" role="separator"></span>
+    <button type="button" role="menuitem" class="danger" data-action="app-exit"><span>×</span>Exit Auri</button>
   </div>`;
 }
 
@@ -127,18 +138,37 @@ export function renderFolder(state) {
         ${state.ui.folderCreateKind ? renderFolderCreateForm(state.ui.folderCreateKind) : ""}
       </div>
       <div class="folder-list" role="list" data-folder-path="${escapeHtml(tab.folder.path)}">
-        ${entries.length ? entries.map((entry) => {
-          const selected = entry.path === tab.folder.selectedPath;
-          return `<button type="button" class="file-row ${selected ? "is-selected" : ""}" data-action="file-entry"
-            data-path="${escapeHtml(entry.path)}" data-kind="${escapeHtml(entry.kind)}">
-            <span class="file-icon">${iconForEntry(entry)}</span>
-            <span class="file-name">${escapeHtml(entry.name)}</span>
-            <span class="file-size">${entry.kind === "directory" ? "" : formatBytes(entry.size)}</span>
-          </button>`;
-        }).join("") : `<div class="empty-small"><span>◇</span><p>This folder is empty.</p></div>`}
+        ${entries.length ? renderFolderRows(entries, tab) : `<div class="empty-small"><span>◇</span><p>This folder is empty.</p></div>`}
       </div>
       <div class="folder-footer"><span>${entries.length} items</span><span>Synced with terminal</span></div>
+      <button type="button" class="folder-resize-handle" data-action="folder-resize" aria-label="Resize folder pane" title="Resize folder pane"></button>
     </aside>`;
+}
+
+function renderFolderRows(entries, tab, depth = 0) {
+  const sortBy = tab.folder.sortBy;
+  const expandedMap = tab.folder.expanded || {};
+  return sortFolderEntries(entries || [], sortBy).map((entry) => {
+    const selected = entry.path === tab.folder.selectedPath;
+    const isDirectory = entry.kind === "directory";
+    const expanded = Boolean(expandedMap[entry.path]);
+    const childEntries = expandedMap[entry.path]?.entries || [];
+    const row = `<div class="file-row-wrap ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}" role="listitem" style="--depth:${depth}">
+      ${isDirectory
+        ? `<button type="button" class="folder-toggle" data-action="folder-toggle" data-path="${escapeHtml(entry.path)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(entry.name)}" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "▾" : "▸"}</button>`
+        : `<span class="folder-toggle-placeholder" aria-hidden="true"></span>`}
+      <button type="button" class="file-row ${isDirectory ? "is-directory" : ""}" data-action="file-entry"
+        data-path="${escapeHtml(entry.path)}" data-kind="${escapeHtml(entry.kind)}">
+        ${isDirectory ? "" : `<span class="file-icon">${iconForEntry(entry)}</span>`}
+        <span class="file-name">${escapeHtml(entry.name)}</span>
+      </button>
+    </div>`;
+    if (!expanded) return row;
+    const children = childEntries.length
+      ? renderFolderRows(childEntries, tab, depth + 1)
+      : `<div class="folder-child-empty" role="listitem" style="--depth:${depth + 1}">Empty</div>`;
+    return `${row}<div class="folder-children" role="group">${children}</div>`;
+  }).join("");
 }
 
 function renderFolderCreateForm(kind) {
@@ -258,7 +288,7 @@ export function renderViewer(state) {
   if (meta.kind === "text") preview = `<pre class="text-preview">${escapeHtml(meta.preview || "Select Open to load the native file contents.")}</pre>`;
   return `<section class="viewer-panel">
     <header class="panel-title"><div><span>${iconForEntry(meta)}</span><div><small>FILE</small><h2>${escapeHtml(meta.name || viewer.path.split("/").pop())}</h2></div></div>${button("↗", "Open externally", "file-external")}</header>
-    <div class="viewer-layout"><div class="viewer-stage">${viewer.mode === "open" ? preview : `<div class="inspect-hint"><span>◎</span><p>Click the selected file again to open a preview.</p></div>`}</div><aside class="metadata-panel"><span class="eyebrow">DETAILS</span>${metadataRows(meta)}<p class="full-path">${escapeHtml(viewer.path)}</p></aside></div>
+    <div class="viewer-layout"><div class="viewer-stage">${preview}</div><aside class="metadata-panel"><span class="eyebrow">DETAILS</span>${metadataRows(meta)}<p class="full-path">${escapeHtml(viewer.path)}</p></aside></div>
   </section>`;
 }
 
@@ -372,7 +402,7 @@ export function renderWebview(state, { native = false } = {}) {
     : `<div id="native-webview-host" class="native-webview-host" data-webview-id="${escapeHtml(subtab.id)}" data-url="${escapeHtml(url)}"><div class="native-webview-fallback"><span>◎</span><p>Website content opens in the native Auri webview.</p><small>Browser preview cannot bypass site embedding restrictions.</small></div></div>`;
   return `<section class="web-panel">
     <div class="url-bar">${button("←", "Back", "web-back")}${button("→", "Forward", "web-forward")}${button("↻", "Reload", "web-reload")}<input id="web-url" value="${escapeHtml(displayUrl)}" aria-label="URL"><button type="button" class="go-button" data-action="web-go">Go</button><div class="web-menu-wrap">${button("⋮", "Browser menu", "web-menu", `aria-haspopup="menu" aria-expanded="${state.ui.webMenuOpen}"`)}${state.ui.webMenuOpen && !native ? `<button class="web-menu-dismiss" type="button" data-action="web-menu-close" aria-label="Close browser menu"></button>${renderWebMenu(subtab)}` : ""}</div></div>
-    <div class="web-frame-wrap">${content}</div>
+    <div class="web-frame-wrap ${subtab.filePath ? "is-file" : "is-native"}">${content}</div>
   </section>`;
 }
 
@@ -437,8 +467,12 @@ export function renderInfo(state) {
 export function renderClipboard(state) {
   const pinnedOnly = Boolean(state.ui.clipboardPinnedOnly);
   const items = pinnedOnly ? state.clipboard.items.filter((item) => item.pinned) : state.clipboard.items;
+  const pageSize = 50;
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const page = Math.min(totalPages - 1, Math.max(0, Number(state.ui.clipboardPage) || 0));
+  const visibleItems = items.slice(page * pageSize, page * pageSize + pageSize);
   const filterLabel = pinnedOnly ? "Show all clipboard items" : "Show pinned clipboard items";
-  const cards = items.map((item) => {
+  const cards = visibleItems.map((item) => {
     const menuOpen = state.ui.clipboardMenuId === item.id;
     const content = item.kind === "image" && item.assetUrl
       ? `<button class="clipboard-content clipboard-image-content" type="button" data-action="clipboard-insert" data-id="${item.id}" aria-label="Paste clipboard image"><img class="clipboard-image" src="${escapeHtml(item.assetUrl)}" alt="Clipboard image"></button>`
@@ -460,6 +494,9 @@ export function renderClipboard(state) {
   const emptyTitle = pinnedOnly ? "No pinned clipboard items" : "No clipboard history";
   const emptyCopy = pinnedOnly ? "Pin an item from its menu to keep it easy to find." : "Copied text and images appear here automatically.";
   return `<section class="clipboard-panel"><header class="panel-title"><div><span>▣</span><h2>Clipboard</h2></div><div class="clipboard-toolbar">
+      <button class="icon-button" type="button" data-action="clipboard-page-prev" aria-label="Previous clipboard page" title="Previous clipboard page" ${page <= 0 ? "disabled" : ""}>‹</button>
+      <span class="clipboard-page-label">Page ${page + 1} / ${totalPages}</span>
+      <button class="icon-button" type="button" data-action="clipboard-page-next" aria-label="Next clipboard page" title="Next clipboard page" ${page >= totalPages - 1 ? "disabled" : ""}>›</button>
       <button class="icon-button ${pinnedOnly ? "is-active" : ""}" type="button" data-action="clipboard-filter-pinned" aria-label="${filterLabel}" title="${filterLabel}" aria-pressed="${pinnedOnly}">📌</button>
       ${button("↻", "Refresh clipboard", "clipboard-refresh")}
     </div></header>
@@ -577,7 +614,7 @@ export function renderSettings(state) {
       ${renderMediaPermissions(state)}
       <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div><div class="model-list">${models}</div>${renderModelEditor(editingModel)}
       <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type">${renderModelTypeOptions("gemini")}</select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" placeholder="Optional"></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></div></section>
-      <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label><label><span>Terminal retained lines<small>Oldest lines are discarded · 100–100,000</small></span><input data-setting="terminalMaxLines" type="number" min="100" max="100000" step="100" value="${state.settings.terminalMaxLines}"></label></div></section>
+      <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label><label><span>Terminal retained lines<small>Oldest lines are discarded · 100–100,000</small></span><input data-setting="terminalMaxLines" type="number" min="100" max="100000" step="100" value="${state.settings.terminalMaxLines}"></label><label><span>Show on every desktop<small>Linux X11 workspaces and supported desktops</small></span><input data-setting="visibleOnAllWorkspaces" type="checkbox" ${state.settings.visibleOnAllWorkspaces ? "checked" : ""}></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Terminal completion</h3><p>Recent shell commands are loaded from zsh and bash history.</p></div><div class="settings-card terminal-completion-card"><div class="settings-textarea-row"><label class="settings-field-heading" for="custom-completions"><span>Custom commands<small>One command per line · available in every workspace</small></span></label><div class="custom-completions-shell"><div class="custom-completions-gutter" id="custom-completions-lines" aria-hidden="true">${customCompletionLineNumbers(state.settings.customCompletions)}</div><textarea id="custom-completions" rows="8" spellcheck="false" placeholder="git status&#10;npm test">${escapeHtml(state.settings.customCompletions || "")}</textarea></div><div class="custom-completions-footer"><small id="custom-completions-count">${customCompletionCountLabel(state.settings.customCompletions)}</small><button class="action-button secondary settings-save-button" type="button" data-action="custom-completions-save">Save commands</button></div></div></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Press the shortcut you want to use</small></span><input id="wake-shortcut-input" class="shortcut-capture" data-setting="wakeShortcut" type="text" readonly autocomplete="off" spellcheck="false" aria-label="Wake shortcut. Focus this field and press a key combination." value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>No-reply disconnect<small>Seconds after audio input stops or reply activity</small></span><input data-setting="liveDisconnectSeconds" type="number" min="1" max="3600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>

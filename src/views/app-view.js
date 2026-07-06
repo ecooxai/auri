@@ -128,18 +128,19 @@ export class AppView {
     const processSortBy = state.system?.sortBy || "";
     const resetProcessScroll = this.lastProcessSortBy !== null && this.lastProcessSortBy !== processSortBy;
     const processScrollTop = resetProcessScroll ? 0 : captureProcessScroll(this.root);
+    const nativeWebview = options.nativeWebview !== undefined ? Boolean(options.nativeWebview) : Boolean(options.native);
     this.root.innerHTML = `
       <div class="auri-shell">
         ${renderMainTabs(state)}
         <main class="app-surface">
-          ${renderSubtabs(state, { native: Boolean(options.native) })}
-          <div class="workspace-grid">
+          ${renderSubtabs(state, { native: nativeWebview })}
+          <div class="workspace-grid" style="--folder-pane-width:${state.settings.folderPaneWidth}px">
             ${renderFolder(state)}
-            <div class="content-pane">${renderActivePanel(state, { native: Boolean(options.native) })}${renderAssistantTranscriptPopup(state)}</div>
+            <div class="content-pane">${renderActivePanel(state, { native: nativeWebview })}${renderAssistantTranscriptPopup(state)}</div>
           </div>
         </main>
       </div>
-      ${renderWebOverlay(state, { native: Boolean(options.native) })}
+      ${renderWebOverlay(state, { native: nativeWebview })}
       ${renderSystemTunnelPrompt(state)}
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
     const active = activeSubtab(state);
@@ -185,6 +186,12 @@ export class AppView {
 
   renderCommandPalette() {
     return `<div class="palette-backdrop" data-action="palette-close"><section class="command-palette" role="dialog" aria-modal="true" aria-label="Auri command palette" onclick="event.stopPropagation()"><div class="palette-input"><span>⌘</span><input id="palette-input" autocomplete="off" placeholder="Type an Auri command…"></div><div class="palette-hints"><button type="button" data-action="palette-command" data-value="tab new">＋ New workspace</button><button type="button" data-action="palette-command" data-value="subtab new terminal">⌘ New terminal</button><button type="button" data-action="palette-command" data-value="clipboard list">▣ Clipboard</button><button type="button" data-action="palette-command" data-value="settings set alwaysAttachScreenshot true">◇ Attach screenshots</button><button type="button" data-action="palette-command" data-value="help">ⓘ Command help</button></div></section></div>`;
+  }
+
+  setFolderPaneWidth(width) {
+    const value = Math.min(420, Math.max(160, Number(width) || 230));
+    this.root.querySelector?.(".workspace-grid")?.style?.setProperty("--folder-pane-width", `${value}px`);
+    return value;
   }
 
   getTerminalInput() {

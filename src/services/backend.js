@@ -131,6 +131,25 @@ function nativeAssetUrl(path) {
   try { return convertFileSrc ? convertFileSrc(path) : null; } catch { return null; }
 }
 
+function appAssetUrl(name) {
+  if (typeof document === "undefined") return "";
+  try {
+    return new URL(name, document.baseURI || window.location.href).href;
+  } catch {
+    return "";
+  }
+}
+
+export function isLinuxPlatform() {
+  const nav = typeof window !== "undefined"
+    ? window.navigator
+    : typeof navigator !== "undefined"
+      ? navigator
+      : null;
+  const value = `${nav?.platform || ""} ${nav?.userAgent || ""}`.toLowerCase();
+  return value.includes("linux") && !value.includes("android");
+}
+
 function objectUrlForBinary(item) {
   if (!item?.base64 || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
   try {
@@ -254,6 +273,19 @@ export class Backend {
 
   async startWindowDragging() { return this.call("window_start_dragging"); }
 
+  async exitApp() {
+    if (!this.invoke) {
+      if (typeof window !== "undefined") window.close?.();
+      return { ok: true };
+    }
+    return this.call("app_exit");
+  }
+
+  async setVisibleOnAllWorkspaces(enabled) {
+    if (!this.invoke) return { supported: false, enabled: Boolean(enabled), mode: "browser-preview" };
+    return this.call("window_set_visible_on_all_workspaces", { enabled: Boolean(enabled) });
+  }
+
   async showWebview(id, url, bounds, navigate = false) {
     return this.call("webview_show", { id, url, navigate, ...bounds });
   }
@@ -363,7 +395,15 @@ export class Backend {
 
 
   createFileViewPage({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false }) {
-    const page = new Blob([fileViewerPageHtml({ resourceUrl, mime, title, path, text, autoplay })], { type: "text/html" });
+    const page = new Blob([fileViewerPageHtml({
+      resourceUrl,
+      mime,
+      title,
+      path,
+      text,
+      autoplay,
+      codemirrorModuleUrl: appAssetUrl("codemirror-viewer.js")
+    })], { type: "text/html" });
     return URL.createObjectURL(page);
   }
 
@@ -389,8 +429,9 @@ export class Backend {
     }
 
     const streamedKind = viewerKindForFile(path, firstMime);
-    const streamedUrl = (streamedKind === "audio" || streamedKind === "video") ? nativeAssetUrl(path) : null;
-    if (streamedUrl) {
+    const isNativeMedia = streamedKind === "audio" || streamedKind === "video";
+    const streamedUrl = isNativeMedia ? nativeAssetUrl(path) : null;
+    if (streamedUrl && !(isNativeMedia && isLinuxPlatform())) {
       const title = metadata.name || titleForPath(path);
       const url = this.createFileViewPage({ resourceUrl: streamedUrl, mime: firstMime, title, path, autoplay });
       return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: streamedKind };

@@ -37,7 +37,7 @@ export function createWorkspace(title = "Home", options = {}) {
     title,
     activeSubtabId: options.activeSubtabType === "system" ? system.id : terminal.id,
     subtabs,
-    folder: { visible: true, path: "~", entries: [], selectedPath: null, selectedCount: 0, sortBy: "name" },
+    folder: { visible: true, path: "~", entries: [], expanded: {}, selectedPath: null, selectedCount: 0, sortBy: "name" },
     terminal: { cwd: "~", history: [], commandHistory: [], draft: "", running: false },
     viewer: { path: null, metadata: null, mode: "empty" }
   };
@@ -61,10 +61,12 @@ export function createInitialState() {
     settings: {
       theme: "aurora-light",
       fontSize: 20,
+      folderPaneWidth: 230,
       terminalMaxLines: 4000,
       wakeShortcut: "Alt+Space",
       wakeHoldSeconds: 2,
       liveDisconnectSeconds: 60,
+      visibleOnAllWorkspaces: true,
       alwaysAttachScreenshot: true,
       screenshotFormat: "jpg",
       audioFormat: "m4a",
@@ -73,7 +75,7 @@ export function createInitialState() {
       commandUsage: []
     },
     media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, tunnelUrlMenuPort: null }
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, tunnelUrlMenuPort: null }
   };
 }
 
@@ -177,13 +179,39 @@ export function reduceState(state, event) {
     case "WORKDIR_SET":
       return updateTab(state, event.payload.workspaceId, (tab) => ({
         ...tab,
-        folder: { ...tab.folder, path: event.payload.path },
+        folder: { ...tab.folder, path: event.payload.path, expanded: {}, selectedPath: null, selectedCount: 0 },
         terminal: { ...tab.terminal, cwd: event.payload.path }
       }));
     case "FOLDER_ENTRIES_SET":
       return updateTab(state, event.payload.workspaceId, (tab) => ({ ...tab, folder: { ...tab.folder, entries: event.payload.entries } }));
     case "FOLDER_SORT_SET":
       return updateTab(state, event.payload.workspaceId, (tab) => ({ ...tab, folder: { ...tab.folder, sortBy: event.payload.sortBy } }));
+    case "FOLDER_EXPANDED_SET":
+      return updateTab(state, event.payload.workspaceId, (tab) => ({
+        ...tab,
+        folder: {
+          ...tab.folder,
+          expanded: {
+            ...(tab.folder.expanded || {}),
+            [event.payload.path]: { entries: Array.isArray(event.payload.entries) ? event.payload.entries : [] }
+          }
+        }
+      }));
+    case "FOLDER_EXPANDED_REMOVE":
+      return updateTab(state, event.payload.workspaceId, (tab) => {
+        const expanded = { ...(tab.folder.expanded || {}) };
+        delete expanded[event.payload.path];
+        return { ...tab, folder: { ...tab.folder, expanded } };
+      });
+    case "FOLDER_ENTRY_SELECT":
+      return updateActiveTab(state, (tab) => ({
+        ...tab,
+        folder: {
+          ...tab.folder,
+          selectedPath: event.payload.path,
+          selectedCount: tab.folder.selectedPath === event.payload.path ? tab.folder.selectedCount + 1 : 1
+        }
+      }));
     case "FILE_SELECT":
       return updateActiveTab(state, (tab) => ({
         ...tab,
@@ -257,6 +285,8 @@ export function reduceState(state, event) {
       let value = event.payload.value;
       if (event.payload.key === "fontSize") {
         value = Math.min(30, Math.max(14, Number(value) || 20));
+      } else if (event.payload.key === "folderPaneWidth") {
+        value = Math.min(420, Math.max(160, Number(value) || 230));
       } else if (event.payload.key === "terminalMaxLines") {
         value = Math.min(100000, Math.max(100, Number(value) || 4000));
       } else if (event.payload.key === "liveDisconnectSeconds") {
@@ -290,8 +320,12 @@ export function reduceState(state, event) {
         }
       };
     }
-    case "CLIPBOARD_SET":
-      return { ...state, clipboard: { items: event.payload.items } };
+    case "CLIPBOARD_SET": {
+      const items = Array.isArray(event.payload.items) ? event.payload.items : [];
+      const maxPage = Math.max(0, Math.ceil(items.length / 50) - 1);
+      const clipboardPage = Math.min(maxPage, Math.max(0, Number(state.ui.clipboardPage) || 0));
+      return { ...state, clipboard: { items }, ui: { ...state.ui, clipboardPage } };
+    }
     case "SYSTEM_STATUS_SET":
       return { ...state, system: { ...state.system, status: event.payload.status, error: event.payload.error || null } };
     case "SYSTEM_SNAPSHOT_SET":

@@ -32,10 +32,31 @@ import { createInitialState, reduceState } from "../src/model/state.js";
 test("website tabs use a native webview host instead of an iframe", () => {
   let state = createInitialState();
   state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
-  const html = renderWebview(state);
+  const html = renderWebview(state, { native: true });
   assert.match(html, /id="native-webview-host"/);
   assert.doesNotMatch(html, /<iframe/);
   assert.match(html, /https:\/\/www\.google\.com\//);
+});
+
+test("website tabs never fall back to an iframe for real websites", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
+  const html = renderWebview(state, { native: false });
+  assert.match(html, /id="native-webview-host"/);
+  assert.doesNotMatch(html, /<iframe/);
+  assert.doesNotMatch(html, /browser-frame/);
+});
+
+test("linux website webviews are embedded child webviews, not top-level windows", () => {
+  const rust = readFileSync(new URL("../src-tauri/src/core/webview.rs", import.meta.url), "utf8");
+  const backend = readFileSync(new URL("../src/services/backend.js", import.meta.url), "utf8");
+  const panels = readFileSync(new URL("../src/views/panels.js", import.meta.url), "utf8");
+
+  assert.match(rust, /\.add_child\(/);
+  assert.doesNotMatch(rust, /WebviewWindowBuilder/);
+  assert.doesNotMatch(rust, /\.always_on_top\(true\)/);
+  assert.doesNotMatch(backend, /supportsNativeChildWebviews/);
+  assert.doesNotMatch(panels, /browser-frame/);
 });
 
 
@@ -69,7 +90,10 @@ test("native large video preview streams from the file URL without reading the w
   const previousWindow = globalThis.window;
   const previousUrl = globalThis.URL;
   const objectUrls = [];
-  globalThis.window = { __TAURI__: { core: { convertFileSrc: (path) => `asset://${path}` } } };
+  globalThis.window = {
+    navigator: { platform: "MacIntel", userAgent: "Auri macOS" },
+    __TAURI__: { core: { convertFileSrc: (path) => `asset://${path}` } }
+  };
   globalThis.URL = {
     createObjectURL(value) {
       objectUrls.push(value);
@@ -99,6 +123,57 @@ test("native large video preview streams from the file URL without reading the w
     globalThis.window = previousWindow;
     globalThis.URL = previousUrl;
   }
+});
+
+test("linux media previews avoid asset range requests by using a blob resource", async () => {
+  const previousWindow = globalThis.window;
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const previousUrl = globalThis.URL;
+  const objectUrls = [];
+  Object.defineProperty(globalThis, "navigator", { value: { platform: "Linux x86_64", userAgent: "Auri Linux" }, configurable: true });
+  globalThis.window = {
+    navigator: { platform: "Linux x86_64", userAgent: "Auri Linux" },
+    __TAURI__: { core: { convertFileSrc: (path) => `asset://${path}` } }
+  };
+  globalThis.URL = {
+    createObjectURL(value) {
+      objectUrls.push(value);
+      return `blob:viewer-${objectUrls.length}`;
+    },
+    revokeObjectURL() {}
+  };
+  try {
+    const backend = new Backend();
+    const calls = [];
+    backend.invoke = async (command, payload) => {
+      calls.push({ command, payload });
+      if (command === "read_binary_file") {
+        return { path: payload.path, name: "test.m4a", mime: "audio/mp4", base64: "AAAA" };
+      }
+      return {};
+    };
+
+    const view = await backend.createFileView("/home/a/Desktop/test.m4a", { name: "test.m4a", mime: "audio/mp4" });
+
+    assert.equal(view.viewerKind, "audio");
+    assert.deepEqual(calls, [{ command: "read_binary_file", payload: { path: "/home/a/Desktop/test.m4a" } }]);
+    const html = await objectUrls[1].text();
+    assert.match(html, /blob:viewer-1/);
+    assert.doesNotMatch(html, /asset:\/\/\/home\/a\/Desktop\/test\.m4a/);
+  } finally {
+    globalThis.window = previousWindow;
+    if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+    else delete globalThis.navigator;
+    globalThis.URL = previousUrl;
+  }
+});
+
+test("custom audio viewer controls catch unsupported play promises", () => {
+  const source = readFileSync(new URL("../src/services/file-viewer-page.js", import.meta.url), "utf8");
+
+  assert.match(source, /function playMedia\(mediaElement\)/);
+  assert.match(source, /mediaElement\.play\(\)\?\.catch/);
+  assert.doesNotMatch(source, /audio\.paused \? audio\.play\(\) : audio\.pause\(\)/);
 });
 
 

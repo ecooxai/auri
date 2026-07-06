@@ -43,10 +43,10 @@ export function viewerKindForFile(path, mime = "") {
   return "file";
 }
 
-export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false }) {
+export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false, codemirrorModuleUrl = "" }) {
   const kind = viewerKindForFile(path || title, mime);
   const safeTitle = escapeHtml(title);
-  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title), autoplay });
+  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title), autoplay, codemirrorModuleUrl });
   const mediaMenu = kind === "audio" || kind === "video"
     ? `<button id="more-button" class="icon-button" type="button" aria-haspopup="menu" aria-expanded="false" title="More">⋮</button>
        <div id="convert-menu" class="convert-menu" hidden>
@@ -101,12 +101,10 @@ async function renderText(){
   const host = document.getElementById('editor');
   let getContent = () => file.text || '';
   try {
-    const [{EditorState}, {EditorView, basicSetup}] = await Promise.all([
-      import('https://esm.sh/@codemirror/state@6.5.2'),
-      import('https://esm.sh/codemirror@6.0.1')
-    ]);
-    const view = new EditorView({ state: EditorState.create({ doc: file.text || '', extensions: [basicSetup] }), parent: host });
-    getContent = () => view.state.doc.toString();
+    if (!file.codemirrorModuleUrl) throw new Error('Missing local CodeMirror module.');
+    const editorModule = await import(file.codemirrorModuleUrl);
+    const editor = editorModule.createTextEditor(host, file.text || '');
+    getContent = () => editor.getContent();
   } catch (error) {
     host.innerHTML = '<textarea class="fallback-editor" spellcheck="false"></textarea>';
     host.firstElementChild.value = file.text || '';
@@ -246,31 +244,43 @@ function attachMediaMenu(mediaElement) {
     menu.hidden = true; more.setAttribute('aria-expanded', 'false'); showConvertPanel(button.dataset.format, mediaElement);
   });
 }
+function showMediaError(error){
+  const message = document.getElementById('media-error');
+  if (!message) return;
+  message.textContent = 'Playback is not supported by this WebView codec stack. Use More to convert the file, or open it externally.';
+}
+function playMedia(mediaElement){
+  try {
+    mediaElement.play()?.catch((error) => showMediaError(error));
+  } catch (error) {
+    showMediaError(error);
+  }
+}
 function renderAudio(){
-  setStage('<section class="audio-card"><div class="audio-hero"><span class="audio-badge">♪</span><div><strong>' + escapeText(file.title) + '</strong><p class="muted">Drag across the waveform to loop a range.</p></div></div><audio id="audio" preload="metadata" src="' + file.resourceUrl + '"></audio><div class="wave-wrap"><canvas id="waveform" aria-label="Audio waveform"></canvas><span id="loop-pill" class="loop-pill" hidden></span></div><div class="media-controls"><button id="play" class="clean-button" type="button">Play</button><button id="back5" class="clean-button" type="button">−5s</button><button id="forward5" class="clean-button" type="button">+5s</button><input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"><select id="speed" class="speed-select" aria-label="Speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select><span id="time" class="time-readout">0:00 / 0:00</span></div></section>');
+  setStage('<section class="audio-card"><div class="audio-hero"><span class="audio-badge">♪</span><div><strong>' + escapeText(file.title) + '</strong><p class="muted">Drag across the waveform to loop a range.</p><p id="media-error" class="muted" role="status"></p></div></div><audio id="audio" preload="metadata" src="' + file.resourceUrl + '"></audio><div class="wave-wrap"><canvas id="waveform" aria-label="Audio waveform"></canvas><span id="loop-pill" class="loop-pill" hidden></span></div><div class="media-controls"><button id="play" class="clean-button" type="button">Play</button><button id="back5" class="clean-button" type="button">−5s</button><button id="forward5" class="clean-button" type="button">+5s</button><input id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume"><select id="speed" class="speed-select" aria-label="Speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select><span id="time" class="time-readout">0:00 / 0:00</span></div></section>');
   const audio = document.getElementById('audio'); const canvas = document.getElementById('waveform'); const play = document.getElementById('play'); const time = document.getElementById('time'); const loopPill = document.getElementById('loop-pill');
   let peaks = []; let loop = null; let dragStart = null; let pointerDown = false; let selection = null;
   const positionForEvent = (event) => Math.min(1, Math.max(0, (event.clientX - canvas.getBoundingClientRect().left) / canvas.getBoundingClientRect().width));
   const secondsForEvent = (event) => positionForEvent(event) * (audio.duration || 0);
   const refresh = () => { const duration = audio.duration || 0; const progress = duration ? audio.currentTime / duration : 0; drawBars(canvas, peaks, progress, selection); time.textContent = formatTime(audio.currentTime || 0) + ' / ' + formatTime(duration); play.textContent = audio.paused ? 'Play' : 'Pause'; };
   audioPeaks(file.resourceUrl).then((value)=>{ peaks = value; refresh(); });
-  audio.addEventListener('loadedmetadata', () => { refresh(); if (file.autoplay) audio.play().catch(() => {}); }, { once: true });
+  audio.addEventListener('loadedmetadata', () => { refresh(); if (file.autoplay) playMedia(audio); }, { once: true });
   audio.addEventListener('timeupdate', () => { if (loop && audio.currentTime >= loop.end) audio.currentTime = loop.start; refresh(); }); audio.addEventListener('play', refresh); audio.addEventListener('pause', refresh);
   window.addEventListener('resize', refresh);
-  play.addEventListener('click', () => audio.paused ? audio.play() : audio.pause());
+  play.addEventListener('click', () => audio.paused ? playMedia(audio) : audio.pause());
   document.getElementById('back5').addEventListener('click', () => { audio.currentTime = Math.max(0, audio.currentTime - 5); refresh(); });
   document.getElementById('forward5').addEventListener('click', () => { audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + 5); refresh(); });
   document.getElementById('volume').addEventListener('input', (event) => { audio.volume = Number(event.target.value); });
   document.getElementById('speed').addEventListener('change', (event) => { audio.playbackRate = Number(event.target.value) || 1; });
-  canvas.addEventListener('pointerdown', (event) => { pointerDown = true; dragStart = secondsForEvent(event); loop = null; loopPill.hidden = true; canvas.setPointerCapture?.(event.pointerId); audio.currentTime = dragStart; audio.play(); refresh(); });
+  canvas.addEventListener('pointerdown', (event) => { pointerDown = true; dragStart = secondsForEvent(event); loop = null; loopPill.hidden = true; canvas.setPointerCapture?.(event.pointerId); audio.currentTime = dragStart; playMedia(audio); refresh(); });
   canvas.addEventListener('pointermove', (event) => { if (!pointerDown) return; const now = secondsForEvent(event); const start = Math.min(dragStart, now); const end = Math.max(dragStart, now); selection = audio.duration ? { start: start / audio.duration, end: end / audio.duration } : null; refresh(); });
-  canvas.addEventListener('pointerup', (event) => { if (!pointerDown) return; pointerDown = false; const endTime = secondsForEvent(event); const start = Math.min(dragStart, endTime); const end = Math.max(dragStart, endTime); selection = null; if (end - start > .25) { loop = { start, end }; audio.currentTime = start; loopPill.textContent = 'Loop ' + formatTime(start) + '–' + formatTime(end); loopPill.hidden = false; audio.play(); } else { audio.currentTime = endTime; audio.play(); } refresh(); });
+  canvas.addEventListener('pointerup', (event) => { if (!pointerDown) return; pointerDown = false; const endTime = secondsForEvent(event); const start = Math.min(dragStart, endTime); const end = Math.max(dragStart, endTime); selection = null; if (end - start > .25) { loop = { start, end }; audio.currentTime = start; loopPill.textContent = 'Loop ' + formatTime(start) + '–' + formatTime(end); loopPill.hidden = false; playMedia(audio); } else { audio.currentTime = endTime; playMedia(audio); } refresh(); });
   attachMediaMenu(audio);
 }
 function renderVideo(){
   setStage('<video id="video" class="video-viewer" controls preload="metadata">' + sourceTag() + 'This video format is not supported.</video>');
   const video = document.getElementById('video');
-  if (file.autoplay) video.addEventListener('loadedmetadata', () => video.play().catch(() => {}), { once: true });
+  if (file.autoplay) video.addEventListener('loadedmetadata', () => playMedia(video), { once: true });
   attachMediaMenu(video);
 }
 function renderImage(){ setStage('<img class="image-viewer" src="' + file.resourceUrl + '" alt="' + escapeText(file.title) + '">'); }

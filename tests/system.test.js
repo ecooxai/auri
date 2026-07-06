@@ -50,14 +50,14 @@ test("system snapshot normalization derives memory and swap usage", () => {
 });
 
 
-test("default process sorting puts port users first then falls back to CPU", () => {
+test("process CPU sorting puts the highest CPU user first even without ports", () => {
   const sorted = sortSystemProcesses([
     { pid: 1, name: "busy", cpuPercent: 90, memoryBytes: 1_000, ports: [] },
     { pid: 2, name: "web", cpuPercent: 5, memoryBytes: 1_000, ports: [8080] },
     { pid: 3, name: "api", cpuPercent: 8, memoryBytes: 1_000, ports: [3000] }
   ], "cpu");
 
-  assert.deepEqual(sorted.map((item) => item.pid), [3, 2, 1]);
+  assert.deepEqual(sorted.map((item) => item.pid), [1, 3, 2]);
 });
 
 test("process sorting supports combined network traffic", () => {

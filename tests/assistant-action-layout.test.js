@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 test("assistant action popup is rendered inside the terminal content pane", async () => {
   const source = await readFile("src/views/app-view.js", "utf8");
-  assert.ok(source.includes('<div class="content-pane">${renderActivePanel(state, { native: Boolean(options.native) })}${renderAssistantTranscriptPopup(state)}</div>'));
+  assert.ok(source.includes('<div class="content-pane">${renderActivePanel(state, { native: nativeWebview })}${renderAssistantTranscriptPopup(state)}</div>'));
   assert.doesNotMatch(source, /renderWebOverlay[^\n]*\n\s*\$\{renderAssistantTranscriptPopup\(state\)\}/);
 });
 

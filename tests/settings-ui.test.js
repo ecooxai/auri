@@ -91,6 +91,14 @@ test("wake shortcut is a readonly press-to-capture field", () => {
   assert.match(html, /Press the shortcut you want to use/);
 });
 
+test("settings expose an all-workspaces desktop visibility toggle", () => {
+  const html = renderSettings(createInitialState());
+
+  assert.match(html, /data-setting="visibleOnAllWorkspaces"/);
+  assert.match(html, /type="checkbox"[^>]*checked/);
+  assert.match(html, /Show on every desktop/);
+});
+
 test("settings expose a light numbered custom terminal completion editor", async () => {
   let state = createInitialState();
   state = reduceState(state, {

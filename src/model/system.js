@@ -30,10 +30,6 @@ export function normalizeSystemSort(sortBy) {
   return VALID_SORTS.has(sortBy) ? sortBy : "cpu";
 }
 
-function hasProcessPort(process) {
-  return normalizePortList(process?.ports).length > 0;
-}
-
 function combinedNetworkBytes(process) {
   return finiteNumber(process?.downloadBytes) + finiteNumber(process?.uploadBytes);
 }
@@ -47,9 +43,6 @@ export function sortSystemProcesses(processes = [], sortBy = "cpu") {
   const normalizedSort = normalizeSystemSort(sortBy);
   const items = Array.isArray(processes) ? processes.map((item) => ({ ...item, ports: normalizePortList(item?.ports) })) : [];
   return items.sort((left, right) => {
-    const leftHasPort = hasProcessPort(left);
-    const rightHasPort = hasProcessPort(right);
-    if (normalizedSort === "cpu" && leftHasPort !== rightHasPort) return leftHasPort ? -1 : 1;
     if (normalizedSort === "port") {
       const leftPort = primaryProcessPort(left);
       const rightPort = primaryProcessPort(right);

@@ -108,12 +108,15 @@ dependencies = [
  "objc2-core-graphics",
  "once_cell",
  "portable-pty",
+ "raw-window-handle",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "url",
+ "x11-dl",
 ]
 
 [[package]]

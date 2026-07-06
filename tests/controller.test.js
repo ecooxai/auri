@@ -142,6 +142,88 @@ test("system process RAM, Port, and CPU headers sort through the command layer",
   assert.deepEqual(commands, ["system sort ram", "system sort port", "system sort cpu"]);
 });
 
+test("workspace and cwd renders refocus the active terminal session", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const previousAnimationFrame = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (callback) => callback();
+  const terminalHost = {};
+  let rendersTerminal = false;
+  const sessions = [];
+  const view = {
+    root: { querySelector: (selector) => selector === "#terminal-emulator" && rendersTerminal ? terminalHost : null },
+    render(state) { rendersTerminal = activeSubtab(state)?.type === "terminal"; },
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+
+  try {
+    const controller = new AppController({
+      view,
+      backend: { isNative: true },
+      terminalSessionFactory: () => {
+        const session = {
+          initialize: async () => {},
+          mount: async () => {},
+          focusCount: 0,
+          focus() { this.focusCount += 1; }
+        };
+        sessions.push(session);
+        return session;
+      }
+    });
+    const terminal = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "terminal");
+    controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: terminal.id } });
+    await Promise.resolve();
+
+    controller.dispatch({ type: "TAB_NEW", payload: { title: "Build" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(sessions.at(-1).focusCount, 1);
+
+    sessions.at(-1).focusCount = 0;
+    controller.dispatch({ type: "WORKDIR_SET", payload: { path: "/tmp/build" } });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(sessions.at(-1).focusCount, 1);
+  } finally {
+    globalThis.requestAnimationFrame = previousAnimationFrame;
+  }
+});
+
+test("topbar command menu selects opened tabs and exits through the command layer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+
+  await controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action: "command-menu" } } : null },
+    preventDefault() {}
+  });
+  assert.equal(controller.state.ui.commandMenuOpen, true);
+
+  await controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action: "command-menu-tab", id: "subtab-1" } } : null },
+    preventDefault() {}
+  });
+  await controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action: "app-exit" } } : null },
+    preventDefault() {}
+  });
+
+  assert.deepEqual(commands, ["subtab select subtab-1", "app exit"]);
+});
+
 test("attachment remove is a state command", async () => {
   const h = harness();
   h.dispatch({ type: "ATTACHMENT_ADD", payload: { id: "a-1", name: "x.png", kind: "image" } });
@@ -165,6 +247,16 @@ test("CLI events use the main command controller", async () => {
   await controller.handleExternalCommand("tab new External");
   assert.equal(controller.state.tabs.length, 2);
   assert.equal(controller.state.tabs[1].title, "External");
+});
+
+test("app exit command delegates to the platform action", async () => {
+  const h = harness();
+  let exited = false;
+  h.actions = { exitApp: async () => { exited = true; } };
+
+  await executeCommand("app exit", h);
+
+  assert.equal(exited, true);
 });
 
 
@@ -216,6 +308,101 @@ test("folder file double-click opens the file directly in the webview app", asyn
   assert.equal(active.type, "webview");
   assert.equal(active.filePath, "/tmp/notes.txt");
   assert.equal(active.url, "blob:auri-file-viewer");
+});
+
+test("folder directory rows select first and open on the second click", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commandCalls = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: false,
+      runCommand: async (command, cwd) => {
+        commandCalls.push({ command, cwd });
+        return { code: 0, cwd: "/tmp/src", stdout: "", stderr: "" };
+      },
+      listDirectory: async () => []
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state.tabs[0].folder.path = "/tmp";
+
+  await controller.openFolderEntry("/tmp/src", "directory");
+  assert.equal(controller.state.tabs[0].folder.selectedPath, "/tmp/src");
+  assert.deepEqual(commandCalls, []);
+
+  await controller.openFolderEntry("/tmp/src", "directory");
+  assert.deepEqual(commandCalls, [{ command: "cd '/tmp/src'", cwd: "~" }]);
+  assert.equal(controller.state.tabs[0].folder.path, "/tmp/src");
+});
+
+test("folder triangle toggles expansion through the command layer", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: false,
+      listDirectory: async (path) => path === "/tmp/src" ? [{ name: "index.js", path: "/tmp/src/index.js", kind: "text" }] : []
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  await controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action: "folder-toggle", path: "/tmp/src" } } : null },
+    preventDefault() {}
+  });
+
+  assert.equal(controller.state.tabs[0].folder.expanded["/tmp/src"].entries[0].name, "index.js");
+
+  await controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action: "folder-toggle", path: "/tmp/src" } } : null },
+    preventDefault() {}
+  });
+
+  assert.equal(controller.state.tabs[0].folder.expanded["/tmp/src"], undefined);
+});
+
+test("dragging the folder edge previews panel resize and persists through settings command", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const widths = [];
+  let terminalResizes = 0;
+  let webviewSyncs = 0;
+  const handle = {
+    dataset: { action: "folder-resize" },
+    setPointerCapture() {}
+  };
+  const view = {
+    root: {
+      querySelector: (selector) => selector === ".folder-pane" ? { getBoundingClientRect: () => ({ width: 230 }) } : null
+    },
+    render() {},
+    getTerminalInputValue: () => "",
+    setFolderPaneWidth: (width) => widths.push(width),
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {}, resize: () => { terminalResizes += 1; } })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  controller.syncNativeWebview = async () => { webviewSyncs += 1; };
+
+  controller.handleFolderResizePointerDown({
+    button: 0,
+    pointerId: 5,
+    clientX: 100,
+    target: { closest: (selector) => selector === '[data-action="folder-resize"]' ? handle : null },
+    preventDefault() {}
+  });
+  controller.handleFolderResizePointerMove({ pointerId: 5, clientX: 190, preventDefault() {} });
+  await controller.handleFolderResizePointerEnd({ pointerId: 5, preventDefault() {} });
+
+  assert.deepEqual(widths, [320]);
+  assert.deepEqual(commands, ["settings set folderPaneWidth 320"]);
+  assert.equal(terminalResizes, 1);
+  assert.equal(webviewSyncs, 1);
 });
 
 test("file viewer save messages write text through the backend", async () => {
@@ -1294,6 +1481,35 @@ test("wake shortcut settings replace the registered native accelerator before pe
   assert.equal(saved.at(-1).settings.wakeShortcut, "Control+Shift+K");
 });
 
+test("all-workspaces visibility setting applies natively before persisting", async () => {
+  const h = harness();
+  const applied = [];
+  const saved = [];
+  h.backend.setVisibleOnAllWorkspaces = async (enabled) => applied.push(enabled);
+  h.backend.saveSettings = async (configuration) => saved.push(configuration);
+
+  await executeCommand("settings set visibleOnAllWorkspaces false", h);
+
+  assert.deepEqual(applied, [false]);
+  assert.equal(h.state().settings.visibleOnAllWorkspaces, false);
+  assert.equal(saved.at(-1).settings.visibleOnAllWorkspaces, false);
+});
+
+test("failed all-workspaces visibility change leaves the previous setting intact", async () => {
+  const h = harness();
+  let saveCount = 0;
+  h.backend.setVisibleOnAllWorkspaces = async () => { throw new Error("X11 desktop visibility is unavailable"); };
+  h.backend.saveSettings = async () => { saveCount += 1; };
+
+  await assert.rejects(
+    () => executeCommand("settings set visibleOnAllWorkspaces false", h),
+    /X11 desktop visibility is unavailable/
+  );
+
+  assert.equal(h.state().settings.visibleOnAllWorkspaces, true);
+  assert.equal(saveCount, 0);
+});
+
 test("failed wake shortcut registration leaves the previous setting intact", async () => {
   const h = harness();
   let saveCount = 0;
@@ -1403,6 +1619,40 @@ test("native startup applies the restored wake shortcut", async () => {
   try {
     await controller.initialize();
     assert.deepEqual(registrations, ["Command+Shift+U"]);
+  } finally {
+    if (controller.clipboardPollTimer) clearInterval(controller.clipboardPollTimer);
+    globalThis.window = previousWindow;
+    globalThis.requestAnimationFrame = previousAnimationFrame;
+  }
+});
+
+test("native startup applies the restored all-workspaces visibility preference", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const previousWindow = globalThis.window;
+  const previousAnimationFrame = globalThis.requestAnimationFrame;
+  globalThis.window = { addEventListener() {} };
+  globalThis.requestAnimationFrame = (callback) => callback();
+  const applied = [];
+  const controller = new AppController({
+    view: { root: { addEventListener() {}, querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: true,
+      listenForCommands: async () => {},
+      listen: async () => {},
+      initialize: async () => ({ root: "~", configuration: { settings: { visibleOnAllWorkspaces: false } } }),
+      setWakeShortcut: async () => {},
+      setVisibleOnAllWorkspaces: async (enabled) => applied.push(enabled),
+      listDirectory: async () => [],
+      readShellHistory: async () => [],
+      readClipboardHistory: async () => [],
+      mediaPermissionStatus: async () => ({ microphone: "authorized", screenRecording: "authorized" })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => true, mount: async () => {} })
+  });
+
+  try {
+    await controller.initialize();
+    assert.deepEqual(applied, [false]);
   } finally {
     if (controller.clipboardPollTimer) clearInterval(controller.clipboardPollTimer);
     globalThis.window = previousWindow;

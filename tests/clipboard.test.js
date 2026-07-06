@@ -98,6 +98,45 @@ test("clipboard pinned filter renders only pinned entries", async () => {
   assert.match(html, /Show all clipboard items/);
 });
 
+test("clipboard panel renders 50 items per page with previous and next controls", async () => {
+  const { renderClipboard } = await import("../src/views/panels.js");
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  const items = Array.from({ length: 120 }, (_, index) => ({
+    id: `clip-${index + 1}`,
+    kind: "text",
+    text: `item ${index + 1}`,
+    createdAt: index + 1,
+    pinned: false
+  }));
+  let state = createInitialState();
+  state = reduceState(state, { type: "CLIPBOARD_SET", payload: { items } });
+  state = reduceState(state, { type: "UI_SET", payload: { clipboardPage: 1 } });
+
+  const html = renderClipboard(state);
+
+  assert.match(html, /data-action="clipboard-page-prev"/);
+  assert.match(html, /data-action="clipboard-page-next"/);
+  assert.match(html, /Page 2 \/ 3/);
+  assert.doesNotMatch(html, /data-id="clip-50"/);
+  assert.match(html, /data-id="clip-51"/);
+  assert.match(html, /data-id="clip-100"/);
+  assert.doesNotMatch(html, /data-id="clip-101"/);
+});
+
+test("native clipboard history uses sha256 fingerprints and moves duplicate entries to the top", () => {
+  const clipboard = readFileSync(new URL("../src-tauri/src/core/clipboard.rs", import.meta.url), "utf8");
+  const readStart = clipboard.indexOf("pub fn read_history");
+  const readEnd = clipboard.indexOf("pub fn set_text", readStart);
+  const implementation = clipboard.slice(readStart, readEnd);
+
+  assert.match(clipboard, /Sha256/);
+  assert.doesNotMatch(clipboard, /DefaultHasher/);
+  assert.match(implementation, /entries\s*\.iter\(\)\s*\.position\(\|entry\| entry\.fingerprint\.as_deref\(\) == Some\(fingerprint\.as_str\(\)\)\)/);
+  assert.match(implementation, /let mut existing = entries\.remove\(duplicate_index\)/);
+  assert.match(implementation, /existing\.created_at = now/);
+  assert.match(implementation, /entries\.insert\(0, existing\)/);
+});
+
 test("native clipboard history uses a 1000-item soft limit and removes evicted image files", () => {
   const clipboard = readFileSync(new URL("../src-tauri/src/core/clipboard.rs", import.meta.url), "utf8");
   assert.match(clipboard, /const MAX_HISTORY_ITEMS: usize = 1000/);

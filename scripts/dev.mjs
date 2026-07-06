@@ -39,6 +39,17 @@ const ctx = await context({
 });
 await ctx.watch();
 
+const codemirrorCtx = await context({
+  entryPoints: [path.join(root, "src/services/codemirror-viewer-entry.js")],
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  target: ["safari15"],
+  outfile: path.join(dist, "codemirror-viewer.js"),
+  sourcemap: "inline"
+});
+await codemirrorCtx.watch();
+
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -78,6 +89,7 @@ server.listen(port, "127.0.0.1", () => {
 async function shutdown() {
   server.close();
   await ctx.dispose();
+  await codemirrorCtx.dispose();
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

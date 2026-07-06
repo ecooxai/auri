@@ -37,14 +37,22 @@ test("the outer app shell uses a flat minimalist surface", async () => {
 test("the app uses one Chrome-style top tab bar without the redundant window header", async () => {
   const source = await readFile("src/views/app-view.js", "utf8");
   const panels = await readFile("src/views/panels.js", "utf8");
+  const config = await readFile("src-tauri/tauri.conf.json", "utf8");
+  const native = await readFile("src-tauri/src/core/lifecycle.rs", "utf8");
 
   assert.doesNotMatch(source, /class="window-bar"/);
   assert.doesNotMatch(source, /class="window-title"/);
   assert.match(panels, /class="subtab-bar chrome-tabbar"/);
   assert.match(panels, /"subtab-menu"/);
-  assert.match(panels, /"command-palette"/);
+  assert.match(panels, /"command-menu"/);
   assert.match(panels, /\["settings", "⚙", "Settings"\]/);
   assert.match(panels, /\["info", "ⓘ", "Info"\]/);
+  assert.match(config, /"decorations":\s*false/);
+  assert.match(native, /set_decorations\(false\)/);
+  assert.match(native, /_MOTIF_WM_HINTS/);
+  assert.match(native, /_NET_WM_DESKTOP/);
+  assert.match(native, /0xFFFFFFFF/);
+  assert.match(native, /windowraise/);
 });
 
 test("workspace rail keeps workspace navigation and workspace actions", async () => {
@@ -79,7 +87,7 @@ test("workspace controls stay in the vertical rail while tab controls stay at th
   assert.doesNotMatch(topbar, /"settings-open"/);
   assert.match(topbar, /class="chrome-actions"/);
   assert.match(topbar, /"subtab-menu"/);
-  assert.match(topbar, /"command-palette"/);
+  assert.match(topbar, /"command-menu"/);
 });
 
 test("the vertical rail starts below the title tab row", async () => {
@@ -171,6 +179,34 @@ test("folder navigation controls sit above an editable compact path field", asyn
   assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s);
 });
 
+test("folder rows expose a separate expander and wrap long names compactly", async () => {
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(panels, /data-action="folder-toggle"/);
+  assert.match(panels, /aria-expanded="\$\{expanded \? "true" : "false"\}"/);
+  assert.match(panels, /file-row \$\{isDirectory \? "is-directory" : ""\}/);
+  assert.match(panels, /isDirectory \? "" : `<span class="file-icon">\$\{iconForEntry\(entry\)\}<\/span>`/);
+  assert.doesNotMatch(panels, /class="file-size"/);
+  assert.match(css, /\.file-name\s*\{[^}]*-webkit-line-clamp:\s*3/s);
+  assert.match(css, /\.file-name\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(css, /\.file-name\s*\{[^}]*font-size:\s*\.68rem/s);
+  assert.match(css, /\.file-row\.is-directory\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.doesNotMatch(css, /\.file-size\s*\{/);
+});
+
+test("folder pane exposes a right-edge resize handle and drives the workspace grid width", async () => {
+  const view = await readFile("src/views/app-view.js", "utf8");
+  const panels = await readFile("src/views/panels.js", "utf8");
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(view, /--folder-pane-width:\$\{state\.settings\.folderPaneWidth\}px/);
+  assert.match(view, /setFolderPaneWidth\(width\)/);
+  assert.match(panels, /data-action="folder-resize"/);
+  assert.match(css, /\.workspace-grid\s*\{[^}]*grid-template-columns:\s*var\(--folder-pane-width,\s*230px\) minmax\(0,\s*1fr\)/s);
+  assert.match(css, /\.folder-resize-handle\s*\{[^}]*cursor:\s*col-resize/s);
+});
+
 test("folder More menu contains sorting, creation, and folder info actions", async () => {
   const panels = await readFile("src/views/panels.js", "utf8");
   const css = await readFile("styles.css", "utf8");
@@ -187,6 +223,26 @@ test("folder More menu contains sorting, creation, and folder info actions", asy
   assert.match(folder, /data-action="folder-info"/);
   assert.match(css, /\.folder-more-wrap\s*\{[^}]*position:\s*relative/s);
   assert.match(css, /\.folder-menu\s*\{[^}]*position:\s*absolute/s);
+});
+
+test("inspected media files render an immediate local preview", async () => {
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  const { renderViewer } = await import("../src/views/panels.js");
+  let state = createInitialState();
+
+  state = reduceState(state, {
+    type: "FILE_SELECT",
+    payload: {
+      path: "/tmp/song.mp3",
+      metadata: { name: "song.mp3", kind: "audio", assetUrl: "asset:///tmp/song.mp3" },
+      open: false
+    }
+  });
+
+  const html = renderViewer(state);
+  assert.match(html, /<audio controls/);
+  assert.match(html, /asset:\/\/\/tmp\/song\.mp3/);
+  assert.doesNotMatch(html, /inspect-hint/);
 });
 
 test("new file and folder use an inline floating name form below the path", async () => {
