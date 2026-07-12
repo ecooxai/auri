@@ -2000,7 +2000,7 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .process-detail-kill:hover { color: #fff; background: var(--danger); }
 .system-process-detail .process-detail-close:hover { color: #a13f4d; background: rgba(216, 107, 120, .14); }
 
-.terminal-link-preview { position: fixed; z-index: 1200; width: min(300px, calc(100vw - 16px)); height: 220px; display: grid; grid-template-rows: 38px 1fr; overflow: hidden; border: 1px solid rgba(74, 96, 133, .2); border-radius: 14px; background: rgba(255, 255, 255, .98); box-shadow: 0 18px 48px rgba(29, 43, 70, .24); color: #24324a; }
+.terminal-link-preview { position: fixed; z-index: 1200; width: min(450px, calc(100vw - 16px)); height: min(330px, calc(100vh - 16px)); display: grid; grid-template-rows: 38px 1fr; overflow: hidden; border: 1px solid rgba(74, 96, 133, .2); border-radius: 14px; background: rgba(255, 255, 255, .98); box-shadow: 0 18px 48px rgba(29, 43, 70, .24); color: #24324a; }
 .terminal-link-preview > header { position: relative; z-index: 2; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 7px; padding: 0 7px 0 11px; border-bottom: 1px solid rgba(74, 96, 133, .12); background: rgba(250, 252, 255, .96); }
 .terminal-link-preview > header strong { overflow: hidden; font: 650 .7rem/1.2 Inter, ui-sans-serif, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-link-preview > header small { color: #738097; font: 600 .58rem/1.2 Inter, ui-sans-serif, sans-serif; white-space: nowrap; }
@@ -2009,4 +2009,7 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .terminal-link-preview-body { position: relative; min-height: 0; overflow: hidden; background: #eef3f8; cursor: pointer; outline: none; }
 .terminal-link-preview-body:focus-visible { box-shadow: inset 0 0 0 2px #7089f8; }
 .terminal-link-preview-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; pointer-events: none; }
+.terminal-link-preview.is-image { grid-template-rows: 1fr; background: #eef3f8; }
+.terminal-link-preview.is-image .terminal-link-preview-body { width: 100%; height: 100%; display: grid; place-items: center; background: #eef3f8; }
+.terminal-link-preview-image { display: block; width: 100%; height: 100%; object-fit: contain; background: #eef3f8; pointer-events: none; }
 .terminal-link-preview-loading { position: absolute; inset: 0; display: grid; place-items: center; padding: 18px; color: #748198; background: linear-gradient(145deg, #f8fbff, #edf2f7); font: 600 .68rem/1.4 Inter, ui-sans-serif, sans-serif; text-align: center; }

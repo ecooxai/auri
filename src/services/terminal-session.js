@@ -99,11 +99,11 @@ export function extractTerminalPreviewTarget(input, cwd = "", cursorIndex = null
   return { kind: candidate.kind, value: candidate.value, text: candidate.text };
 }
 
-export function terminalPreviewPlacement(anchor, viewport, size = { width: 300, height: 220 }) {
+export function terminalPreviewPlacement(anchor, viewport, size = { width: 450, height: 330 }) {
   const margin = 8;
   const gap = 8;
-  const width = Math.max(1, Number(size.width) || 300);
-  const height = Math.max(1, Number(size.height) || 220);
+  const width = Math.max(1, Number(size.width) || 450);
+  const height = Math.max(1, Number(size.height) || 330);
   const viewportWidth = Math.max(width + margin * 2, Number(viewport.width) || width + margin * 2);
   const viewportHeight = Math.max(height + margin * 2, Number(viewport.height) || height + margin * 2);
   const left = Math.min(viewportWidth - width - margin, Math.max(margin, Number(anchor.left) || margin));
@@ -496,8 +496,8 @@ export class TerminalSession {
       width: Number(view.innerWidth) || 1024,
       height: Number(view.innerHeight) || 768
     }, {
-      width: element.offsetWidth || 300,
-      height: element.offsetHeight || 220
+      width: element.offsetWidth || 450,
+      height: element.offsetHeight || 330
     });
     element.style.left = `${placement.left}px`;
     element.style.top = `${placement.top}px`;
@@ -588,6 +588,20 @@ export class TerminalSession {
         this.previewData = prepared;
         title.textContent = prepared.title || target.text;
         status.textContent = prepared.viewerKind === "web" ? "Website · click to open" : `${prepared.viewerKind || "file"} · click to open`;
+        if (prepared.viewerKind === "image" && prepared.resourceUrl) {
+          const image = document.createElement("img");
+          image.className = "terminal-link-preview-image";
+          image.alt = prepared.title || target.text || "Image preview";
+          image.addEventListener("load", () => loading.remove());
+          image.addEventListener("error", () => {
+            loading.textContent = "Image preview is unavailable. Click to open it.";
+          });
+          preview.classList.add("is-image");
+          header.remove();
+          frame.replaceWith(image);
+          image.src = prepared.resourceUrl;
+          return;
+        }
         if (!prepared.url) throw new Error("Preview URL is unavailable.");
         frame.src = prepared.url;
       })

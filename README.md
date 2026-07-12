@@ -36,7 +36,7 @@ Implemented now:
 - A loopback cloud-disk file web app with folder browsing, text/HTML editing, raw file serving, PDF/DOCX/3D/media viewers, and image/audio/video conversion.
 - Shell command execution and explicit `cd` synchronization.
 - Terminal composer where Enter inserts a newline and Command/Ctrl+Enter runs.
-- Clicked terminal paths and HTTP(S) URLs open a compact 300 px preview near the text; drag selections containing a target do the same. Relative `./` and `../` paths resolve against that terminal session's current working directory, and clicking the preview opens a new file or web subtab. Right-click selection copy remains unchanged.
+- Clicked terminal paths and HTTP(S) URLs open a 450 × 330 preview near the text; drag selections containing a target do the same. Image paths show only the raw image with no filename/path chrome, while URL and non-image previews retain their normal viewer surface. Relative `./` and `../` paths resolve against that terminal session's current working directory, and clicking the preview opens a new file or web subtab. Right-click selection copy remains unchanged.
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
 - Assistant replies can expose allowlisted shell-command and input-ready actions in a floating panel, with Run, Insert, and Copy controls.
 - Local model/settings management and an Info tab for errors, notices, and sanitized AI request details with text plus playable image/audio previews.

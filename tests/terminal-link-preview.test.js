@@ -77,7 +77,7 @@ test("terminal mini preview stays below normal text and flips above near the bot
     terminalPreviewPlacement(
       { left: 180, right: 181, top: 80, bottom: 96 },
       { width: 1000, height: 800 },
-      { width: 300, height: 220 }
+      { width: 450, height: 330 }
     ),
     { left: 180, top: 104, above: false }
   );
@@ -85,19 +85,25 @@ test("terminal mini preview stays below normal text and flips above near the bot
     terminalPreviewPlacement(
       { left: 900, right: 901, top: 740, bottom: 756 },
       { width: 1000, height: 800 },
-      { width: 300, height: 220 }
+      { width: 450, height: 330 }
     ),
-    { left: 692, top: 512, above: true }
+    { left: 542, top: 402, above: true }
   );
 });
 
-test("terminal preview UI uses a compact iframe card and leaves right-click copy in place", async () => {
+test("terminal image previews are chrome-free, 1.5x larger, and remain click-to-open", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const css = await readFile("styles.css", "utf8");
   assert.match(terminal, /terminal-link-preview/);
   assert.match(terminal, /createElement\("iframe"\)/);
+  assert.match(terminal, /createElement\("img"\)/);
+  assert.match(terminal, /prepared\.viewerKind === "image" && prepared\.resourceUrl/);
+  assert.match(terminal, /preview\.classList\.add\("is-image"\)/);
   assert.match(terminal, /event\.button !== 0/);
   assert.match(terminal, /contextmenu[\s\S]*copySelection/);
-  assert.match(css, /\.terminal-link-preview\s*\{[^}]*width:\s*min\(300px/s);
+  assert.match(css, /\.terminal-link-preview\s*\{[^}]*width:\s*min\(450px/s);
+  assert.match(css, /\.terminal-link-preview\s*\{[^}]*height:\s*min\(330px/s);
+  assert.match(css, /\.terminal-link-preview\.is-image[^}]*grid-template-rows:\s*1fr/s);
+  assert.match(css, /\.terminal-link-preview-image[^}]*object-fit:\s*contain/s);
   assert.match(css, /\.terminal-link-preview-frame/);
 });

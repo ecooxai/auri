@@ -474,6 +474,7 @@ export class Backend {
     const isHtml = mediaMime.toLowerCase() === "text/html" || /\.html?$/i.test(String(path || ""));
     return {
       url: localFileViewerUrl(path, server.port, mode),
+      resourceUrl: localFileUrl(path, server.port),
       title,
       filePath: path,
       mime: "text/html",

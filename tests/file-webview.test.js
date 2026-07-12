@@ -162,6 +162,22 @@ test("native large video preview streams through the active local HTTP viewer", 
   }
 });
 
+test("native image previews expose both the full viewer and raw image resource URLs", async () => {
+  const backend = new Backend();
+  const calls = [];
+  backend.invoke = async (command, payload) => {
+    calls.push({ command, payload });
+    return {};
+  };
+
+  const view = await backend.createFileView("/Users/me/Pictures/photo one.jpg", { name: "photo one.jpg", mime: "image/jpeg" });
+
+  assert.equal(view.viewerKind, "image");
+  assert.equal(view.url, "http://localhost:8890/Users/me/Pictures/photo%20one.jpg?view=1");
+  assert.equal(view.resourceUrl, "http://localhost:8890/Users/me/Pictures/photo%20one.jpg");
+  assert.deepEqual(calls, [{ command: "fileserver_start", payload: {} }]);
+});
+
 test("native HTML files open in the HTTP app and preview through the raw sibling-aware path", async () => {
   const backend = new Backend();
   const calls = [];

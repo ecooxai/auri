@@ -39,7 +39,7 @@ test("terminal sessions receive file and URL mini-preview actions", async () => 
   const backend = {
     isNative: true,
     inspectFile: async (path) => ({ path, name: "test.png", kind: "image", mime: "image/png" }),
-    createFileView: async (path) => ({ url: `http://localhost:8890${path}?view=1`, title: "test.png", filePath: path, mime: "text/html", viewerKind: "image" }),
+    createFileView: async (path) => ({ url: `http://localhost:8890${path}?view=1`, resourceUrl: `http://localhost:8890${path}`, title: "test.png", filePath: path, mime: "text/html", viewerKind: "image" }),
     releaseFileView: (url) => calls.push(["release", url])
   };
   const view = {
@@ -68,6 +68,7 @@ test("terminal sessions receive file and URL mini-preview actions", async () => 
 
   assert.equal(filePreview.url, "http://localhost:8890/tmp/test.png?view=1");
   assert.equal(filePreview.viewerKind, "image");
+  assert.equal(filePreview.resourceUrl, "http://localhost:8890/tmp/test.png");
   assert.equal(webPreview.url, "https://example.com/page");
   assert.equal(webPreview.title, "example.com");
   assert.deepEqual(commands, [
