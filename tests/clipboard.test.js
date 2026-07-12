@@ -164,6 +164,9 @@ test("clipboard info popup shows text stats and image details", async () => {
   html = renderClipboard(reduceState(state, { type: "UI_SET", payload: { clipboardInfoId: "clip-image" } }));
   assert.match(html, /Resolution<\/span><strong>640 × 480/);
   assert.match(html, /Type<\/span><strong>PNG/);
+  assert.match(html, /data-action="clipboard-copy-path"/);
+  assert.match(html, /data-value="\/tmp\/a\.png"/);
+  assert.match(html, />\/tmp\/a\.png<\/button>/);
 });
 
 test("clipboard info command opens the panel and marks the item for its info popup", async () => {

@@ -196,7 +196,7 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - Use Unicode icons only when system fonts reliably render them; retain accessible labels and tooltips.
 - Keep the aurora-light, modern, clean visual language and avoid boxes around every element.
 - Every click has hover, pressed, focus, busy, success, or error feedback as appropriate.
-- Clipboard text longer than 150 characters renders the first 100 and last 50 characters only.
+- Clipboard text longer than 150 characters renders the first 100 and last 50 characters only. Clipboard image Info must show the complete persisted image path; the path is a command-backed copy target and successful clicks show a `Copied` toast.
 - Unrenderable content and network errors also appear in Info.
 - Assistant reply actions recognize only the two allowlisted command and input-ready markers. Escape every extracted value and never render arbitrary assistant HTML.
 - Reuse an active Gemini Live wake connection for later shortcut or hold-to-talk turns. Refresh the screenshot and microphone input without reconnecting, and honor `liveDisconnectSeconds` exactly within its validated range.

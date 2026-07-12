@@ -40,7 +40,7 @@ Implemented now:
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
 - Assistant replies can expose allowlisted shell-command and input-ready actions in a floating panel, with Run, Insert, and Copy controls.
 - Local model/settings management and an Info tab for errors, notices, and sanitized AI request details with text plus playable image/audio previews.
-- Clipboard text history with the 100 + 100 character long-text preview rule.
+- Clipboard text and image history with the 100 + 50 character long-text preview rule; image Info shows the full stored file path, and clicking that path copies it with a visible confirmation.
 - Audio/video recording through the WebView media APIs, with native persistence under `~/auri/media`.
 - Native screenshot capture, workspace creation, local configuration, file access, and external file opening.
 - A real external `auri` CLI that sends commands to the running desktop app over a user-only Unix socket.

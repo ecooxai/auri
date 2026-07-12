@@ -705,11 +705,16 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .clipboard-menu button[data-action="clipboard-remove"] { color: var(--danger); }
 .clipboard-image-badge { flex: 1; min-width: 0; margin: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #72829b; font-size: .55rem; font-weight: 650; letter-spacing: .01em; }
 .clipboard-info-popup { min-width: 168px; padding: 9px 10px 8px; position: absolute; top: calc(100% + 3px); left: 0; z-index: 46; display: grid; gap: 4px; border: 1px solid rgba(88, 108, 140, .1); border-radius: 11px; background: rgba(255, 255, 255, .98); box-shadow: 0 14px 34px rgba(43, 59, 91, .16); }
+.clipboard-info-popup.has-path { width: min(320px, calc(100vw - 24px)); }
 .clipboard-info-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; color: var(--blue-dark); font-size: .62rem; font-weight: 700; }
 .clipboard-info-head .icon-button { width: 20px; height: 20px; min-width: 0; padding: 0; font-size: .8rem; }
 .clipboard-info-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: .6rem; }
 .clipboard-info-row > span { color: #72829b; }
 .clipboard-info-row > strong { color: #3c4a63; font-weight: 650; font-variant-numeric: tabular-nums; word-break: break-word; text-align: right; }
+.clipboard-info-path-row { align-items: flex-start; flex-direction: column; gap: 3px; padding-top: 2px; }
+.clipboard-info-path { max-width: 300px; padding: 3px 5px; border: 0; border-radius: 6px; background: transparent; color: #5369b8; font: 600 .58rem/1.35 "SFMono-Regular", Consolas, monospace; overflow-wrap: anywhere; text-align: left; cursor: pointer; }
+.clipboard-info-path:hover { background: rgba(112, 137, 248, .1); color: #4058b8; }
+.clipboard-info-path:focus-visible { outline: 2px solid rgba(112, 137, 248, .55); outline-offset: 1px; }
 .clipboard-content { width: 100%; min-width: 0; padding: 0; border: 0; display: block; cursor: pointer; text-align: left; background: transparent; }
 .clipboard-content:focus-visible { outline: 2px solid rgba(112, 137, 248, .35); outline-offset: 2px; border-radius: 8px; }
 .clipboard-card pre { height: 55px; margin: 5px 0 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; color: #536078; font-size: .64rem; line-height: 1.38; }

@@ -919,6 +919,38 @@ test("clipboard insert delegates paste-back to the native action", async () => {
   assert.deepEqual(result, { pasted: "clip-9" });
 });
 
+
+test("clicking an image clipboard path copies the full stored path and confirms success", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const toasts = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast(message, level) { toasts.push([message, level]); }
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  await controller.handleClick({
+    target: {
+      closest(selector) {
+        if (selector === "[data-action]") return { dataset: { action: "clipboard-copy-path", value: "/tmp/Auri Clipboard/image 1.png" } };
+        if (selector === ".clipboard-info-popup") return {};
+        return null;
+      }
+    },
+    preventDefault() {}
+  });
+
+  assert.deepEqual(commands, ['clipboard copy "/tmp/Auri Clipboard/image 1.png"']);
+  assert.deepEqual(toasts, [["Copied", "success"]]);
+});
+
 test("clipboard polling updates state only when history changes", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   let items = [{ id: "clip-1", kind: "text", text: "one", createdAt: 1 }];

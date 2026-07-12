@@ -1336,6 +1336,10 @@ export class AppController {
           await this.runInternal(`clipboard copy-item ${target.dataset.id}`);
           this.view.showToast("Copied to clipboard", "success");
           break;
+        case "clipboard-copy-path":
+          await this.runInternal(`clipboard copy ${quoteArg(target.dataset.value || "")}`);
+          this.view.showToast("Copied", "success");
+          break;
         case "clipboard-info":
           await this.runInternal(`clipboard info ${target.dataset.id}`);
           break;

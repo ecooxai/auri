@@ -561,7 +561,6 @@ function clipboardInfoRows(item) {
     if (item.width && item.height) rows.push(["Resolution", `${item.width} × ${item.height}`]);
     const badgeSize = meta.split(" · ").at(-1);
     if (item.byteSize != null && badgeSize) rows.push(["Size", badgeSize]);
-    if (item.path) rows.push(["Path", String(item.path).split("/").pop()]);
     return rows;
   }
   const stats = describeClipboardText(item.text);
@@ -579,9 +578,14 @@ export function renderClipboardInfoPopup(item) {
   const body = rows.length
     ? rows.map(([label, value]) => `<div class="clipboard-info-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("")
     : `<div class="clipboard-info-row"><span>No details available</span></div>`;
-  return `<div class="clipboard-info-popup" role="dialog" aria-label="${escapeHtml(title)}">
+  const path = item.kind === "image" ? String(item.path || "") : "";
+  const pathRow = path
+    ? `<div class="clipboard-info-row clipboard-info-path-row"><span>Path</span><button type="button" class="clipboard-info-path" data-action="clipboard-copy-path" data-value="${escapeHtml(path)}" title="Copy image file path">${escapeHtml(path)}</button></div>`
+    : "";
+  return `<div class="clipboard-info-popup${path ? " has-path" : ""}" role="dialog" aria-label="${escapeHtml(title)}">
     <div class="clipboard-info-head"><strong>${escapeHtml(title)}</strong><button type="button" class="icon-button" data-action="clipboard-info-close" aria-label="Close info">×</button></div>
     ${body}
+    ${pathRow}
   </div>`;
 }
 
