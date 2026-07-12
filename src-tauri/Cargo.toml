@@ -34,8 +34,8 @@ url = "2"
 portable-pty = "0.9.0"
 once_cell = "1.21.4"
 tauri-plugin-global-shortcut = "2"
-arboard = "3.6"
-image = { version = "0.25", default-features = false, features = ["png"] }
+arboard = { version = "3.6", features = ["wayland-data-control"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 sha2 = "0.10"
 raw-window-handle = "0.6"
 

@@ -1,4 +1,4 @@
-import { context } from "esbuild";
+import { build, context } from "esbuild";
 import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -27,6 +27,17 @@ async function copyStatic() {
 
 await rm(dist, { recursive: true, force: true });
 await copyStatic();
+
+await build({
+  entryPoints: [path.join(root, "src/services/three-viewer-entry.js")],
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  target: ["safari15"],
+  outfile: path.join(root, "src-tauri/src/core/three-viewer.js"),
+  minify: true
+});
+await cp(path.join(root, "src-tauri/src/core/three-viewer.js"), path.join(dist, "three-viewer.js"));
 
 const ctx = await context({
   entryPoints: [path.join(root, "src/main.js")],

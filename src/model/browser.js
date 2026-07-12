@@ -62,3 +62,54 @@ export function nextWebZoom(current, direction) {
 export function webZoomPercent(value) {
   return `${Math.round((Number(value) || 1) * 100)}%`;
 }
+
+const BUILTIN_WEB_AI_ITEMS = Object.freeze([
+  { id: "ask", label: "Ask", prompt: "{text}", speak: false },
+  {
+    id: "translate",
+    label: "Translate",
+    prompt: "Translate the following. If it is not in English translate it to English; if it is in English translate it to the user's likely native language based on the page context, otherwise to Chinese. Reply with the translation only.\n\n{text}",
+    speak: false
+  },
+  {
+    id: "tts",
+    label: "Speak",
+    prompt: "Read the following text aloud verbatim. Do not add commentary.\n\n{text}",
+    speak: true
+  }
+]);
+
+/// Parse custom web-AI prompts from settings. One prompt per line in the form
+/// "Label | prompt template"; "{text}" inside the template is replaced with
+/// the selected text.
+export function webAiMenuItems(customText = "") {
+  const custom = String(customText || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const separator = line.indexOf("|");
+      if (separator <= 0) return null;
+      const label = line.slice(0, separator).trim();
+      const prompt = line.slice(separator + 1).trim();
+      if (!label || !prompt) return null;
+      return { id: `custom-${index}`, label, prompt, speak: false };
+    })
+    .filter(Boolean);
+  return [...BUILTIN_WEB_AI_ITEMS, ...custom];
+}
+
+export function webAiMenuPayload(customText = "") {
+  return JSON.stringify(webAiMenuItems(customText).map(({ id, label }) => ({ id, label })));
+}
+
+export function webAiPrompt(item, payload = {}) {
+  const text = String(payload.text || "").trim();
+  let prompt = String(item?.prompt || "{text}");
+  prompt = prompt.includes("{text}") ? prompt.replaceAll("{text}", text) : `${prompt}\n\n${text}`;
+  if (payload.kind === "image" && !text) {
+    prompt = prompt.trim() || "Describe this image.";
+    if (payload.imageUrl && !payload.image) prompt += `\n\nImage URL: ${payload.imageUrl}`;
+  }
+  return prompt.trim();
+}

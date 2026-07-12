@@ -24,3 +24,20 @@ test("configured shortcut matching is exact and key release can ignore released 
   assert.equal(shortcutMatchesKeyboardEvent({ code: "Space", key: " ", altKey: true }, "Control+Alt+J"), false);
   assert.equal(shortcutKeyMatchesKeyboardEvent({ code: "KeyJ", key: "j" }, "Control+Alt+J"), true);
 });
+
+test("Alt+digit maps to a workspace switch and Ctrl+digit to a subtab switch", async () => {
+  const { tabSwitchFromKeyboardEvent } = await import("../src/model/shortcut.js");
+  assert.deepEqual(tabSwitchFromKeyboardEvent({ code: "Digit1", altKey: true }), { kind: "workspace", index: 0 });
+  assert.deepEqual(tabSwitchFromKeyboardEvent({ code: "Digit9", altKey: true }), { kind: "workspace", index: 8 });
+  assert.deepEqual(tabSwitchFromKeyboardEvent({ code: "Digit2", ctrlKey: true }), { kind: "subtab", index: 1 });
+});
+
+test("tab switching ignores other digits, modifiers, and combined chords", async () => {
+  const { tabSwitchFromKeyboardEvent } = await import("../src/model/shortcut.js");
+  assert.equal(tabSwitchFromKeyboardEvent({ code: "Digit0", altKey: true }), null);
+  assert.equal(tabSwitchFromKeyboardEvent({ code: "Digit1" }), null);
+  assert.equal(tabSwitchFromKeyboardEvent({ code: "Digit1", altKey: true, ctrlKey: true }), null);
+  assert.equal(tabSwitchFromKeyboardEvent({ code: "Digit1", altKey: true, metaKey: true }), null);
+  assert.equal(tabSwitchFromKeyboardEvent({ code: "Digit1", ctrlKey: true, shiftKey: true }), null);
+  assert.equal(tabSwitchFromKeyboardEvent({ code: "KeyA", altKey: true }), null);
+});

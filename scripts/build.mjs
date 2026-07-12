@@ -24,6 +24,17 @@ await build({
   sourcemap: true
 });
 
+await build({
+  entryPoints: ["src/services/three-viewer-entry.js"],
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  target: ["safari15"],
+  outfile: "src-tauri/src/core/three-viewer.js",
+  minify: true
+});
+await cp("src-tauri/src/core/three-viewer.js", "dist/three-viewer.js");
+
 const index = (await readFile("index.html", "utf8"))
   .replace('src="src/main.js"', 'src="app.js?v=3"');
 await writeFile("dist/index.html", index);

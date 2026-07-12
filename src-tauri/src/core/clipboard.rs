@@ -24,6 +24,14 @@ pub struct ClipboardEntry {
     pub pinned: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 enum CurrentClipboard {
@@ -36,7 +44,36 @@ enum CurrentClipboard {
         height: usize,
         bytes: Vec<u8>,
         fingerprint: String,
+        extension: String,
+        encoded: bool,
     },
+}
+
+struct CopiedImageFile {
+    extension: String,
+    bytes: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+fn copied_image_file(paths: &[PathBuf]) -> Option<CopiedImageFile> {
+    const IMAGE_EXTENSIONS: &[&str] = &[
+        "bmp", "gif", "ico", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+    ];
+    paths.iter().find_map(|path| {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        if !IMAGE_EXTENSIONS.contains(&extension.as_str()) || !path.is_file() {
+            return None;
+        }
+        let (width, height) = image::image_dimensions(path).ok()?;
+        let bytes = fs::read(path).ok()?;
+        Some(CopiedImageFile {
+            extension,
+            bytes,
+            width: width as usize,
+            height: height as usize,
+        })
+    })
 }
 
 fn clipboard_directory() -> Result<PathBuf, String> {
@@ -80,6 +117,19 @@ fn image_fingerprint(width: usize, height: usize, bytes: &[u8]) -> String {
 
 fn current_clipboard() -> Option<CurrentClipboard> {
     let mut clipboard = Clipboard::new().ok()?;
+    if let Ok(paths) = clipboard.get().file_list() {
+        if let Some(image) = copied_image_file(&paths) {
+            let fingerprint = image_fingerprint(image.width, image.height, &image.bytes);
+            return Some(CurrentClipboard::Image {
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes,
+                fingerprint,
+                extension: image.extension,
+                encoded: true,
+            });
+        }
+    }
     if let Ok(image) = clipboard.get_image() {
         let bytes = image.bytes.into_owned();
         let fingerprint = image_fingerprint(image.width, image.height, &bytes);
@@ -88,6 +138,8 @@ fn current_clipboard() -> Option<CurrentClipboard> {
             height: image.height,
             bytes,
             fingerprint,
+            extension: "png".to_string(),
+            encoded: false,
         });
     }
     clipboard
@@ -150,6 +202,41 @@ fn enforce_history_limit(entries: &mut Vec<ClipboardEntry>, images: &Path) -> Re
     Ok(changed)
 }
 
+// Older history entries (and any written before image metadata was tracked)
+// lack dimensions and size. Backfill them cheaply from the saved PNG so the
+// clipboard panel can show type, resolution, and size for every image.
+fn backfill_image_metadata(entries: &mut [ClipboardEntry]) -> bool {
+    let mut changed = false;
+    for entry in entries.iter_mut() {
+        if entry.kind != "image" {
+            continue;
+        }
+        let Some(path) = entry.path.clone() else {
+            continue;
+        };
+        if entry.width.is_none() || entry.height.is_none() {
+            if let Ok((width, height)) = image::image_dimensions(&path) {
+                entry.width = Some(width);
+                entry.height = Some(height);
+                changed = true;
+            }
+        }
+        if entry.byte_size.is_none() {
+            if let Ok(meta) = fs::metadata(&path) {
+                entry.byte_size = Some(meta.len());
+                changed = true;
+            }
+        }
+        if entry.format.is_none() {
+            if let Some(extension) = Path::new(&path).extension().and_then(|value| value.to_str()) {
+                entry.format = Some(extension.to_lowercase());
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 fn read_ignored_fingerprint(path: &Path) -> Option<String> {
     fs::read_to_string(path)
         .ok()
@@ -173,6 +260,9 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
     fs::create_dir_all(&images).map_err(|error| error.to_string())?;
     let mut entries = load_history(&path).unwrap_or_default();
     let mut changed = enforce_history_limit(&mut entries, &images)?;
+    if backfill_image_metadata(&mut entries) {
+        changed = true;
+    }
 
     if let Some(current) = current_clipboard() {
         let fingerprint = match &current {
@@ -206,15 +296,26 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
                         created_at: now,
                         pinned: false,
                         fingerprint: Some(fingerprint),
+                        width: None,
+                        height: None,
+                        byte_size: None,
+                        format: None,
                     },
                     CurrentClipboard::Image {
                         width,
                         height,
                         bytes,
                         fingerprint,
+                        extension,
+                        encoded,
                     } => {
-                        let image_path = images.join(format!("{id}.png"));
-                        save_image(&image_path, width, height, bytes)?;
+                        let image_path = images.join(format!("{id}.{extension}"));
+                        if encoded {
+                            fs::write(&image_path, bytes).map_err(|error| error.to_string())?;
+                        } else {
+                            save_image(&image_path, width, height, bytes)?;
+                        }
+                        let byte_size = fs::metadata(&image_path).map(|meta| meta.len()).ok();
                         ClipboardEntry {
                             id,
                             kind: "image".to_string(),
@@ -223,6 +324,10 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
                             created_at: now,
                             pinned: false,
                             fingerprint: Some(fingerprint),
+                            width: Some(width as u32),
+                            height: Some(height as u32),
+                            byte_size,
+                            format: Some(extension),
                         }
                     }
                 };
@@ -256,6 +361,22 @@ pub fn set_pinned(id: &str, pinned: bool) -> Result<Vec<ClipboardEntry>, String>
         .find(|entry| entry.id == id)
         .ok_or_else(|| "Clipboard item was not found.".to_string())?;
     entry.pinned = pinned;
+    persist_history(&path, &entries)?;
+    Ok(entries)
+}
+
+pub fn update_entry_text(id: &str, text: &str) -> Result<Vec<ClipboardEntry>, String> {
+    let path = history_path()?;
+    let mut entries = load_history(&path)?;
+    let entry = entries
+        .iter_mut()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| "Clipboard item was not found.".to_string())?;
+    if entry.kind != "text" {
+        return Err("Only text clipboard items can be edited.".to_string());
+    }
+    entry.text = Some(text.to_string());
+    entry.fingerprint = Some(text_fingerprint(text));
     persist_history(&path, &entries)?;
     Ok(entries)
 }
@@ -328,13 +449,22 @@ pub fn focus_previous_and_paste() -> Result<(), String> {
             ])
             .status()
     } else {
+        // Wayland sessions need wtype (or the ydotool daemon); X11 uses xdotool.
         Command::new("sh")
             .arg("-lc")
-            .arg("if command -v xdotool >/dev/null; then xdotool key --clearmodifiers alt+Tab && sleep 0.5 && xdotool key --clearmodifiers ctrl+v; elif command -v ydotool >/dev/null; then ydotool key 56:1 15:1 15:0 56:0; sleep 0.5; ydotool key 29:1 47:1 47:0 29:0; else exit 127; fi")
+            .arg(concat!(
+                "if [ -n \"$WAYLAND_DISPLAY\" ] && command -v wtype >/dev/null; then ",
+                "wtype -M alt -P Tab -p Tab -m alt && sleep 0.5 && wtype -M ctrl -P v -p v -m ctrl; ",
+                "elif [ -n \"$DISPLAY\" ] && command -v xdotool >/dev/null; then ",
+                "xdotool key --clearmodifiers alt+Tab && sleep 0.5 && xdotool key --clearmodifiers ctrl+v; ",
+                "elif command -v ydotool >/dev/null; then ",
+                "ydotool key 56:1 15:1 15:0 56:0; sleep 0.5; ydotool key 29:1 47:1 47:0 29:0; ",
+                "else exit 127; fi"
+            ))
             .status()
     }
     .map_err(|error| error.to_string())?;
-    status.success().then_some(()).ok_or_else(|| "Could not focus the previous application and paste. Accessibility permission or xdotool/ydotool may be required.".to_string())
+    status.success().then_some(()).ok_or_else(|| "Could not focus the previous application and paste. The item stays on the clipboard — paste it with Ctrl+V. (macOS needs Accessibility permission; Linux needs wtype on Wayland or xdotool on X11.)".to_string())
 }
 
 #[cfg(test)]
@@ -350,6 +480,10 @@ mod tests {
             created_at: 1,
             pinned,
             fingerprint: Some(id.to_string()),
+            width: None,
+            height: None,
+            byte_size: None,
+            format: None,
         }
     }
 
@@ -366,6 +500,79 @@ mod tests {
         assert!(!enforce_history_limit(&mut entries, &images).unwrap());
         assert_eq!(entries.len(), MAX_HISTORY_ITEMS + 1);
         assert!(entries.iter().all(|item| item.pinned));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backfill_fills_dimensions_size_and_format_for_image_entries() {
+        let root =
+            std::env::temp_dir().join(format!("auri-clipboard-meta-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("shot.png");
+        save_image(&image_path, 4, 2, vec![0u8; 4 * 2 * 4]).unwrap();
+
+        let mut entries = vec![
+            entry(
+                "img",
+                false,
+                Some(image_path.to_string_lossy().into_owned()),
+            ),
+            entry("text", false, None),
+        ];
+
+        assert!(backfill_image_metadata(&mut entries));
+        assert_eq!(entries[0].width, Some(4));
+        assert_eq!(entries[0].height, Some(2));
+        assert_eq!(entries[0].format.as_deref(), Some("png"));
+        assert!(entries[0].byte_size.unwrap() > 0);
+        // Text entries are left untouched.
+        assert_eq!(entries[1].width, None);
+        assert_eq!(entries[1].format, None);
+
+        // A second pass has nothing to do once metadata is present.
+        assert!(!backfill_image_metadata(&mut entries));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copied_image_file_keeps_its_original_bytes_and_extension() {
+        let root = std::env::temp_dir().join(format!(
+            "auri-clipboard-original-image-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let jpeg_path = root.join("photo.JPEG");
+        let pixels = [255u8, 0, 0];
+        image::save_buffer_with_format(
+            &jpeg_path,
+            &pixels,
+            1,
+            1,
+            image::ColorType::Rgb8,
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
+        let original = fs::read(&jpeg_path).unwrap();
+
+        let image = copied_image_file(&[root.join("notes.txt"), jpeg_path.clone()]).unwrap();
+
+        assert_eq!(image.extension, "jpeg");
+        assert_eq!(image.bytes, original);
+        assert_eq!((image.width, image.height), (1, 1));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copied_non_image_files_are_not_treated_as_clipboard_images() {
+        let root = std::env::temp_dir().join(format!(
+            "auri-clipboard-non-image-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let text_path = root.join("photo.txt");
+        fs::write(&text_path, b"not an image").unwrap();
+
+        assert!(copied_image_file(&[text_path]).is_none());
         let _ = fs::remove_dir_all(root);
     }
 

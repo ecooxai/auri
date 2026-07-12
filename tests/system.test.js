@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { normalizeSystemSnapshot, primaryProcessPort, sortSystemProcesses } from "../src/model/system.js";
-import { renderActivePanel, renderSubtabs } from "../src/views/panels.js";
+import { attachProcessNetworkRates, filterSystemProcesses, matchesProcessSearch, normalizeSystemSnapshot, primaryProcessPort, protocolForPort, sortSystemProcesses } from "../src/model/system.js";
+import { renderActivePanel, renderSubtabs, renderSystemKillPrompt } from "../src/views/panels.js";
 import { createInitialState, reduceState } from "../src/model/state.js";
 
 test("system state records snapshots and sort preference", () => {
@@ -70,6 +70,97 @@ test("process sorting supports combined network traffic", () => {
   assert.deepEqual(sorted.map((item) => item.pid), [2, 3, 1]);
 });
 
+test("protocolForPort maps common tcp and udp ports to their protocol", () => {
+  assert.equal(protocolForPort(80, "tcp"), "http");
+  assert.equal(protocolForPort(8080, "tcp"), "http");
+  assert.equal(protocolForPort(443, "tcp"), "https");
+  assert.equal(protocolForPort(22, "tcp"), "ssh");
+  assert.equal(protocolForPort(21, "tcp"), "ftp");
+  assert.equal(protocolForPort(5432, "tcp"), "postgres");
+  assert.equal(protocolForPort(53, "udp"), "dns");
+  assert.equal(protocolForPort(51999, "tcp"), "");
+});
+
+test("matchesProcessSearch is a vague, case-insensitive substring match", () => {
+  const chrome = { name: "Google Chrome Helper", commandLine: "/Applications/Chrome.app", path: "", ports: [] };
+  assert.equal(matchesProcessSearch(chrome, ""), true, "empty query matches everything");
+  assert.equal(matchesProcessSearch(chrome, "chrome"), true);
+  assert.equal(matchesProcessSearch(chrome, "CHROME"), true);
+  assert.equal(matchesProcessSearch(chrome, "helper"), true);
+  assert.equal(matchesProcessSearch(chrome, "safari"), false);
+});
+
+test("matchesProcessSearch treats spaces as OR across multiple keywords", () => {
+  const chrome = { name: "Google Chrome", ports: [] };
+  const claude = { name: "Claude", ports: [] };
+  const safari = { name: "Safari", ports: [] };
+  assert.equal(matchesProcessSearch(chrome, "chrome claude"), true);
+  assert.equal(matchesProcessSearch(claude, "chrome claude"), true);
+  assert.equal(matchesProcessSearch(safari, "chrome claude"), false);
+});
+
+test("matchesProcessSearch also searches port numbers and pid", () => {
+  const web = { name: "web", ports: [8080], pid: 4312 };
+  assert.equal(matchesProcessSearch(web, "8080"), true);
+  assert.equal(matchesProcessSearch(web, "4312"), true);
+});
+
+test("filterSystemProcesses returns all processes matching any keyword", () => {
+  const processes = [
+    { pid: 1, name: "Google Chrome", ports: [] },
+    { pid: 2, name: "Claude", ports: [] },
+    { pid: 3, name: "Safari", ports: [] }
+  ];
+  assert.deepEqual(filterSystemProcesses(processes, "chrome claude").map((item) => item.pid), [1, 2]);
+  assert.deepEqual(filterSystemProcesses(processes, "").map((item) => item.pid), [1, 2, 3]);
+});
+
+test("snapshot normalization derives structured portDetails with transport and protocol", () => {
+  const snapshot = normalizeSystemSnapshot({
+    processes: [
+      { pid: 5, name: "web", ports: [80, 443] },
+      { pid: 6, name: "dns", portDetails: [{ port: 53, transport: "udp" }] }
+    ]
+  });
+  assert.deepEqual(snapshot.processes[0].ports, [80, 443]);
+  assert.deepEqual(snapshot.processes[0].portDetails, [
+    { port: 80, transport: "tcp", protocol: "http" },
+    { port: 443, transport: "tcp", protocol: "https" }
+  ]);
+  assert.deepEqual(snapshot.processes[1].portDetails, [{ port: 53, transport: "udp", protocol: "dns" }]);
+  assert.deepEqual(snapshot.processes[1].ports, [53]);
+});
+
+test("attachProcessNetworkRates derives per-process throughput from consecutive snapshots", () => {
+  const previous = { capturedAt: "2026-01-01T00:00:00.000Z", processes: [{ pid: 5, downloadBytes: 1_000_000, uploadBytes: 500_000 }] };
+  const current = { capturedAt: "2026-01-01T00:00:05.000Z", processes: [{ pid: 5, downloadBytes: 6_000_000, uploadBytes: 500_000 }] };
+  const result = attachProcessNetworkRates(current, previous);
+  assert.equal(result.processes[0].downloadBytesPerSecond, 1_000_000);
+  assert.equal(result.processes[0].uploadBytesPerSecond, 0);
+});
+
+test("attachProcessNetworkRates yields zero rates without a usable previous snapshot", () => {
+  const current = { capturedAt: "2026-01-01T00:00:05.000Z", processes: [{ pid: 5, downloadBytes: 6_000_000, uploadBytes: 500_000 }] };
+  assert.equal(attachProcessNetworkRates(current, null).processes[0].downloadBytesPerSecond, 0);
+});
+
+test("SYSTEM_SNAPSHOT_SET computes process network rates against the prior snapshot", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ capturedAt: "2026-01-01T00:00:00.000Z", processes: [{ pid: 5, name: "web", downloadBytes: 1_000_000, uploadBytes: 0 }] }) } });
+  assert.equal(state.system.snapshot.processes[0].downloadBytesPerSecond, 0);
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ capturedAt: "2026-01-01T00:00:05.000Z", processes: [{ pid: 5, name: "web", downloadBytes: 6_000_000, uploadBytes: 0 }] }) } });
+  assert.equal(state.system.snapshot.processes[0].downloadBytesPerSecond, 1_000_000);
+});
+
+test("system state records the process search filter", () => {
+  let state = createInitialState();
+  assert.equal(state.system.filter, "");
+  state = reduceState(state, { type: "SYSTEM_FILTER_SET", payload: { filter: "  Chrome  " } });
+  assert.equal(state.system.filter, "Chrome");
+  state = reduceState(state, { type: "SYSTEM_FILTER_SET", payload: { filter: "" } });
+  assert.equal(state.system.filter, "");
+});
+
 test("system snapshot normalization keeps disk, process path, and read-write bytes", () => {
   const snapshot = normalizeSystemSnapshot({
     disk: { totalBytes: 4_000_000, usedBytes: 1_000_000, freeBytes: 3_000_000, readBytesPerSecond: 200_000, writeBytesPerSecond: 100_000 },
@@ -117,12 +208,12 @@ test("system panel uses compact cards and centered selected-process detail", () 
   state = reduceState(state, { type: "SYSTEM_TUNNEL_SET", payload: { port: 5173, url: "https://auri-preview.trycloudflare.com", pid: 222 } });
 
   const html = renderActivePanel(state);
-  assert.match(html, /<h2>System <em>auri-host<\/em><\/h2>/);
+  assert.match(html, /<h2>System <em data-system-host>auri-host<\/em><\/h2>/);
   assert.doesNotMatch(html, /<small>MONITOR<\/small><h2>System/);
-  assert.match(html, /Network<\/small><strong data-metric-value>0\.50 \| 1\.00 MB\/s<\/strong>/);
-  assert.match(html, /Swap<\/small><strong data-metric-value>50%<\/strong><span data-metric-detail>1\.00 GB \/ 2\.00 GB<\/span>/);
-  assert.match(html, /2\.00 MB/);
-  assert.match(html, /Net up \| down/);
+  assert.match(html, /Net<span class="system-metric-unit" data-metric-unit>MB\/s<\/span><\/small><strong data-metric-value>↓ 1\.00  ↑ 0\.50<\/strong><span data-metric-detail>download · upload<\/span>/);
+  assert.match(html, /Memory<span class="system-metric-unit" data-metric-unit>MB<\/span><\/small><strong data-metric-value>50%<\/strong><span data-metric-detail>1\.00 \/ 2\.00<\/span>/);
+  assert.match(html, /Swap<span class="system-metric-unit" data-metric-unit>GB<\/span><\/small><strong data-metric-value>50%<\/strong><span data-metric-detail>1\.00 \/ 2\.00<\/span>/);
+  assert.match(html, /data-sort="net"[^>]*>Net<\/button>/);
   assert.doesNotMatch(html, /Net ↓/);
   assert.doesNotMatch(html, /system-network-card/);
   assert.doesNotMatch(html, /Process monitor/);
@@ -138,10 +229,22 @@ test("system panel uses compact cards and centered selected-process detail", () 
   assert.match(html, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Process detail"/);
   assert.match(html, /data-action="system-process-copy-value"[^>]*data-value="10"/);
   assert.match(html, /data-action="system-process-copy-value"[^>]*data-value="\/usr\/bin\/web --serve very-long-project"/);
-  assert.doesNotMatch(html, /system-process-detail-close/);
+  assert.match(html, /data-action="system-process-detail-close"[^>]*aria-label="Close process detail"/);
   assert.doesNotMatch(html, /class="process-detail-stat is-pid"/);
   assert.match(html, /class="process-detail-header"[\s\S]*<strong[^>]*>web<\/strong>[\s\S]*PID <code[^>]*>10<\/code>[\s\S]*data-action="system-process-copy-value"[^>]*data-value="10"/);
-  assert.match(html, /class="process-detail-stat-row"[\s\S]*<small>CPU<\/small>[\s\S]*1\.0%[\s\S]*<small>RAM<\/small><span[^>]*>MB<\/span>[\s\S]*Memory[\s\S]*2\.00[\s\S]*<small>Net<\/small><span[^>]*>MB<\/span>[\s\S]*Upload[\s\S]*0\.50[\s\S]*Download[\s\S]*1\.00[\s\S]*<small>Disk<\/small><span[^>]*>MB<\/span>[\s\S]*Read[\s\S]*0\.20[\s\S]*Write[\s\S]*0\.10/);
+  // The copy icon sits immediately right of the PID, and open-path/kill are
+  // icon buttons at the top of the detail header instead of a footer.
+  const headerHtml = html.slice(html.indexOf('class="process-detail-header"'), html.indexOf('class="process-detail-stat-row"'));
+  assert.match(headerHtml, /data-action="system-process-copy-value"[^>]*data-value="10"[^>]*aria-label="Copy process PID"/);
+  assert.match(headerHtml, /data-action="system-process-open-path"[^>]*aria-label="Open process path"/);
+  assert.match(headerHtml, /data-action="system-process-kill"[^>]*aria-label="Kill process"/);
+  assert.ok(headerHtml.indexOf('data-action="system-process-copy-value"') < headerHtml.indexOf('data-action="system-process-open-path"'));
+  assert.doesNotMatch(html, /<footer>[\s\S]*data-action="system-process-kill"/);
+  assert.doesNotMatch(html, /Kill process<\/button>/);
+  assert.match(html, /class="process-detail-stat-row"[\s\S]*<small>CPU<\/small>[\s\S]*1\.0%[\s\S]*<small>RAM<\/small><span[^>]*>MB<\/span>[\s\S]*2\.00[\s\S]*<small>Net<\/small><span[^>]*>MB<\/span>[\s\S]*↓[\s\S]*1\.00[\s\S]*↑[\s\S]*0\.50[\s\S]*<small>Disk<\/small><span[^>]*>MB<\/span>[\s\S]*Read[\s\S]*0\.20[\s\S]*Write[\s\S]*0\.10/);
+  // The RAM value renders as a single large number; the truncated "Mem…"
+  // label row is gone since the MB unit already sits in the card head.
+  assert.doesNotMatch(html, /<b>Memory<\/b>/);
   assert.match(html, /<textarea class="process-detail-path-field"[^>]*readonly[^>]*rows="5"[^>]*>\/usr\/bin\/web --serve very-long-project<\/textarea>/);
   assert.match(html, /class="process-detail-ports"[\s\S]*<small[^>]*>Ports<\/small>/);
   assert.match(html, /class="process-detail-port-row"[\s\S]*<code[^>]*>3000<\/code>[\s\S]*data-action="system-process-tunnel-toggle"[^>]*data-port="3000"[\s\S]*Enable HTTPS tunnel/);
@@ -153,6 +256,73 @@ test("system panel uses compact cards and centered selected-process detail", () 
 
 
 
+function selectedProcessState() {
+  let state = createInitialState();
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: "system-tab", subtabs: [...state.tabs[0].subtabs, { id: "system-tab", type: "system", title: "System" }] }] };
+  state = reduceState(state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: { snapshot: normalizeSystemSnapshot({ processes: [
+      { pid: 42, name: "WindowServer", path: "/usr/bin/ws", commandLine: "/usr/bin/ws", memoryBytes: 1_000_000, cpuPercent: 3 }
+    ] }) }
+  });
+  return reduceState(state, { type: "SYSTEM_PROCESS_SELECT", payload: { pid: 42 } });
+}
+
+test("process detail uses a Kill text button plus a distinct close button", () => {
+  const html = renderActivePanel(selectedProcessState());
+  const headerHtml = html.slice(html.indexOf('class="process-detail-header"'), html.indexOf('class="process-detail-stat-row"'));
+  // Kill is now a labelled text button rather than an ✕ icon.
+  assert.match(headerHtml, /class="process-detail-kill"[^>]*data-action="system-process-kill"[^>]*>Kill<\/button>/);
+  // A separate close button hides the card without killing anything.
+  assert.match(headerHtml, /class="icon-copy-button process-detail-close"[^>]*data-action="system-process-detail-close"[^>]*aria-label="Close process detail"/);
+  assert.ok(headerHtml.indexOf('data-action="system-process-kill"') < headerHtml.indexOf('data-action="system-process-detail-close"'));
+});
+
+test("kill confirmation prompt renders only when armed and names the process and pid", () => {
+  const armed = reduceState(selectedProcessState(), { type: "UI_SET", payload: { systemKillPrompt: { pid: 42, name: "WindowServer" } } });
+  assert.equal(renderSystemKillPrompt(selectedProcessState()), "");
+  const html = renderSystemKillPrompt(armed);
+  assert.match(html, /class="system-tunnel-prompt-backdrop system-kill-prompt-backdrop"[^>]*data-action="system-kill-prompt-cancel"/);
+  assert.match(html, /role="dialog"[^>]*aria-modal="true"[^>]*aria-label="Confirm kill process"/);
+  assert.match(html, /Kill WindowServer\?/);
+  assert.match(html, /PID 42/);
+  assert.match(html, /data-action="system-kill-prompt-cancel">Cancel</);
+  assert.match(html, /data-action="system-kill-prompt-confirm">Kill process</);
+});
+
+test("selecting or closing another process clears a stale kill prompt", () => {
+  const armed = reduceState(selectedProcessState(), { type: "UI_SET", payload: { systemKillPrompt: { pid: 42, name: "WindowServer" } } });
+  const closed = reduceState(armed, { type: "SYSTEM_PROCESS_SELECT", payload: { pid: null } });
+  assert.equal(closed.ui.systemKillPrompt, null);
+  // Re-selecting the same pid keeps whatever prompt is showing.
+  const same = reduceState(armed, { type: "SYSTEM_PROCESS_SELECT", payload: { pid: 42 } });
+  assert.deepEqual(same.ui.systemKillPrompt, { pid: 42, name: "WindowServer" });
+});
+
+test("system search bar renders when open and filters the process list by keyword", () => {
+  let state = createInitialState();
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: "system-tab", subtabs: [...state.tabs[0].subtabs, { id: "system-tab", type: "system", title: "System" }] }] };
+  state = reduceState(state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: { snapshot: normalizeSystemSnapshot({ processes: [
+      { pid: 1, name: "Google Chrome", cpuPercent: 5 },
+      { pid: 2, name: "Claude", cpuPercent: 4 },
+      { pid: 3, name: "Safari", cpuPercent: 3 }
+    ] }) }
+  });
+
+  assert.match(renderActivePanel(state), /data-action="system-search-toggle"/);
+  assert.doesNotMatch(renderActivePanel(state), /id="system-search-input"/);
+
+  state = reduceState(state, { type: "UI_SET", payload: { systemSearchOpen: true } });
+  state = reduceState(state, { type: "SYSTEM_FILTER_SET", payload: { filter: "chrome claude" } });
+  const html = renderActivePanel(state);
+  assert.match(html, /id="system-search-input"[^>]*value="chrome claude"/);
+  assert.match(html, /data-process-row="1"/);
+  assert.match(html, /data-process-row="2"/);
+  assert.doesNotMatch(html, /data-process-row="3"/);
+});
+
 test("process table name column is wide enough and columns are ordered for scanning", () => {
   let state = createInitialState();
   state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: "system-tab", subtabs: [...state.tabs[0].subtabs, { id: "system-tab", type: "system", title: "System" }] }] };
@@ -162,15 +332,15 @@ test("process table name column is wide enough and columns are ordered for scann
   });
 
   const html = renderActivePanel(state);
-  assert.match(html, /Name[\s\S]*Port[\s\S]*RAM[\s\S]*CPU[\s\S]*Net up \| down[\s\S]*PID/);
+  assert.match(html, /Name[\s\S]*Port[\s\S]*RAM[\s\S]*CPU[\s\S]*>Net<[\s\S]*PID/);
   assert.match(html, /data-action="system-sort" data-sort="ram"/);
   assert.match(html, /data-action="system-sort" data-sort="port"/);
   assert.match(html, /data-action="system-sort" data-sort="cpu"/);
-  assert.match(html, /title="web">web<\/span>[\s\S]*<code[^>]*>3000<\/code> <code>17078<\/code>[\s\S]*2\.00MB[\s\S]*1\.0%[\s\S]*0\.50 MB \| 1\.00 MB[\s\S]*<code>10<\/code>/);
+  assert.match(html, /title="web">web<\/span>[\s\S]*<code[^>]*>3000<span[^>]*>http<\/span><\/code> <code[^>]*>17078<span[^>]*>tcp<\/span><\/code>[\s\S]*2\.00MB[\s\S]*1\.0%[\s\S]*↓ 0\.00MB  ↑ 0\.00MB[\s\S]*<code>10<\/code>/);
 
   const css = readFileSync("styles.css", "utf8");
-  assert.match(css, /\.process-row\s*\{[^}]*grid-template-columns:\s*minmax\(240px, 3fr\) minmax\(110px, 0.8fr\) 8ch 60px minmax\(130px, 1fr\) 62px/s);
-  assert.match(css, /\.process-row\.is-disk\s*\{[^}]*grid-template-columns:\s*minmax\(240px, 3fr\) minmax\(110px, 0.8fr\) 8ch 60px minmax\(130px, 1fr\) 62px/s);
+  assert.match(css, /\.process-row\s*\{[^}]*grid-template-columns:\s*minmax\(140px, 1.5fr\) minmax\(130px, 1.6fr\) 8ch 60px minmax\(150px, 1.7fr\) 62px/s);
+  assert.match(css, /\.process-row\.is-disk\s*\{[^}]*grid-template-columns:\s*minmax\(140px, 1.5fr\) minmax\(130px, 1.6fr\) 8ch 60px minmax\(150px, 1.7fr\) 62px/s);
   assert.match(css, /\.process-row > span:nth-child\(3\)\s*\{[^}]*padding-left:\s*4px;[^}]*padding-right:\s*4px/s);
   assert.ok(css.indexOf(".process-row > span {") < css.indexOf(".process-row > span:nth-child(3)"), "RAM cell override must come after the generic cell rule");
   assert.match(css, /\.process-row > span:first-child\s*\{[^}]*padding-left:\s*10px/s);
@@ -222,6 +392,137 @@ test("disk and net subtabs render beside the system monitor", () => {
   assert.match(netHtml, /8080/);
 });
 
+
+test("AppView.patchSystemMonitor updates the open system panel in place", async () => {
+  const { AppView } = await import("../src/views/app-view.js");
+
+  function fakeNode(children = {}) {
+    return {
+      textContent: "",
+      hidden: false,
+      scrollTop: 0,
+      innerHTML: "",
+      toggled: {},
+      classList: {
+        toggle(name, on) {}
+      },
+      querySelector(selector) { return children[selector] || null; },
+      insertAdjacentHTML(_, html) { this.appendedHtml = (this.appendedHtml || "") + html; },
+      remove() { this.removed = true; }
+    };
+  }
+
+  const metricKeys = ["cpu", "memory", "network", "disk", "swap", "uptime"];
+  const tiles = {};
+  const tileParts = {};
+  for (const key of metricKeys) {
+    const value = fakeNode();
+    const detail = fakeNode();
+    tileParts[key] = { value, detail };
+    tiles[`[data-metric="${key}"]`] = fakeNode({ "[data-metric-value]": value, "[data-metric-detail]": detail });
+  }
+  const statusEl = fakeNode();
+  const hostEl = fakeNode();
+  const table = fakeNode();
+  table.scrollTop = 40;
+  const monitor = fakeNode({ ".process-table": table });
+  const panel = fakeNode({
+    ...tiles,
+    "[data-system-status]": statusEl,
+    "[data-system-host]": hostEl,
+    ".process-monitor": monitor
+  });
+  const root = { querySelector: (selector) => (selector === ".system-panel" ? panel : null) };
+
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: {
+      snapshot: normalizeSystemSnapshot({
+        capturedAt: "2026-01-01T00:00:00.000Z",
+        host: { hostname: "auri-host", uptimeSeconds: 3600 },
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 7 },
+        memory: { totalBytes: 2_000_000, usedBytes: 1_000_000 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: [{ pid: 77, name: "node", cpuPercent: 1, memoryBytes: 10 }]
+      })
+    }
+  });
+
+  const view = new AppView(root);
+  assert.equal(view.patchSystemMonitor(state), true);
+  assert.equal(tileParts.cpu.value.textContent, "7.0%");
+  assert.match(statusEl.textContent, /Updated/);
+  assert.equal(hostEl.textContent, "auri-host");
+  assert.match(monitor.innerHTML, /process-row/);
+  assert.match(monitor.innerHTML, /77/);
+  assert.equal(table.scrollTop, 40);
+});
+
+test("AppView.patchSystemMonitor reports failure when the panel is missing so callers fall back to a full render", async () => {
+  const { AppView } = await import("../src/views/app-view.js");
+  const view = new AppView({ querySelector: () => null });
+  assert.equal(view.patchSystemMonitor(createInitialState()), false);
+});
+
+test("AppView.patchProcessRows updates process metrics in place", async () => {
+  const { AppView } = await import("../src/views/app-view.js");
+  const { buildProcessMonitorRows } = await import("../src/views/panels.js");
+
+  function cell(text = "") {
+    return { textContent: text, innerHTML: text, title: "", classList: { toggle() {} } };
+  }
+
+  const nameCell = cell("node");
+  const portCell = cell("");
+  const ramCell = cell("10MB");
+  const cpuCell = cell("1.0%");
+  const netCell = cell("0.00 | 0.00 MB");
+  const row = {
+    classList: { toggle() {} },
+    querySelector(selector) {
+      if (selector === "[data-process-name]") return nameCell;
+      if (selector === "[data-process-port]") return portCell;
+      if (selector === "[data-process-ram]") return ramCell;
+      if (selector === "[data-process-cpu]") return cpuCell;
+      if (selector === "[data-process-net]") return netCell;
+      return null;
+    }
+  };
+  const table = {
+    querySelector(selector) {
+      return selector === `[data-process-row="77"]` ? row : null;
+    },
+    querySelectorAll(selector) {
+      return selector === "[data-process-row]" ? [row] : [];
+    }
+  };
+  const countLabel = cell("1 shown");
+  const monitor = {
+    querySelector(selector) {
+      if (selector === ".process-table") return table;
+      if (selector === ".process-monitor-head span:last-child") return countLabel;
+      return null;
+    }
+  };
+
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: {
+      snapshot: normalizeSystemSnapshot({
+        processes: [{ pid: 77, name: "node", cpuPercent: 9, memoryBytes: 20_000_000, ports: [8080] }]
+      })
+    }
+  });
+
+  const view = new AppView({ querySelector: () => null });
+  const rows = buildProcessMonitorRows(state, "system");
+  assert.equal(view.patchProcessRows(monitor, rows), true);
+  assert.equal(cpuCell.textContent, "9.0%");
+  assert.match(portCell.innerHTML, /8080/);
+  assert.equal(countLabel.textContent, "1 shown");
+});
 
 test("process table scroll resets when the sort changes", async () => {
   const source = await import("node:fs/promises").then(({ readFile }) => readFile("src/views/app-view.js", "utf8"));

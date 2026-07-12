@@ -27,6 +27,19 @@ function titleForPath(path, fallback = "File") {
   return String(path || "").split("/").pop() || fallback;
 }
 
+export const LOCAL_FILE_SERVER_ORIGIN = "http://localhost:8890";
+
+export function localFileUrl(path) {
+  const absolute = String(path || "").replaceAll("\\", "/");
+  const pathname = absolute.startsWith("/") ? absolute : `/${absolute}`;
+  return `${LOCAL_FILE_SERVER_ORIGIN}${pathname.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function localFileViewerUrl(path) {
+  const relative = String(path || "").replaceAll("\\", "/").replace(/^\/+/, "");
+  return `${LOCAL_FILE_SERVER_ORIGIN}/view?file=${encodeURIComponent(relative)}`;
+}
+
 
 export function previewMimeForPath(path, reportedMime = "") {
   const ext = extension(path);
@@ -268,6 +281,7 @@ export class Backend {
   async startTerminal(sessionId, cwd, cols, rows) { return this.call("terminal_start", { sessionId, cwd, cols, rows }); }
   async writeTerminal(sessionId, data) { return this.call("terminal_write", { sessionId, data: Array.from(data) }); }
   async getTerminalCwd(sessionId) { return this.call("terminal_cwd", { sessionId }); }
+  async isTerminalBusy(sessionId) { return this.call("terminal_busy", { sessionId }); }
   async resizeTerminal(sessionId, cols, rows) { return this.call("terminal_resize", { sessionId, cols, rows }); }
   async stopTerminal(sessionId) { return this.call("terminal_stop", { sessionId }); }
 
@@ -286,8 +300,8 @@ export class Backend {
     return this.call("window_set_visible_on_all_workspaces", { enabled: Boolean(enabled) });
   }
 
-  async showWebview(id, url, bounds, navigate = false) {
-    return this.call("webview_show", { id, url, navigate, ...bounds });
+  async showWebview(id, url, bounds, navigate = false, aiPrompts = null) {
+    return this.call("webview_show", { id, url, navigate, aiPrompts, ...bounds });
   }
 
   async hideWebviews() {
@@ -368,6 +382,11 @@ export class Backend {
     return this.call("cloudflared_stop_tunnel", { port: Number(port) });
   }
 
+  async startFileServer(root) {
+    if (!this.invoke) throw new Error("The web file viewer needs the native Auri build.");
+    return this.call("fileserver_start");
+  }
+
   async listDirectory(path) {
     if (!this.invoke) return browserEntries(path);
     return this.call("list_directory", { path });
@@ -402,7 +421,8 @@ export class Backend {
       path,
       text,
       autoplay,
-      codemirrorModuleUrl: appAssetUrl("codemirror-viewer.js")
+      codemirrorModuleUrl: appAssetUrl("codemirror-viewer.js"),
+      threeModuleUrl: appAssetUrl("three-viewer.js")
     })], { type: "text/html" });
     return URL.createObjectURL(page);
   }
@@ -421,6 +441,12 @@ export class Backend {
     }
 
     const firstMime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime || "");
+    const isHtml = !options.asText && (firstMime === "text/html" || ["html", "htm"].includes(extension(path)));
+    if (isHtml) {
+      const title = metadata.name || titleForPath(path);
+      return { url: localFileUrl(path), title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "html" };
+    }
+    const streamedKind = viewerKindForFile(path, firstMime);
     if (options.asText || isEditableTextFile(path, firstMime)) {
       const text = await this.call("read_text_file", { path });
       const title = metadata.name || titleForPath(path);
@@ -428,22 +454,15 @@ export class Backend {
       return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "text" };
     }
 
-    const streamedKind = viewerKindForFile(path, firstMime);
-    const isNativeMedia = streamedKind === "audio" || streamedKind === "video";
-    const streamedUrl = isNativeMedia ? nativeAssetUrl(path) : null;
-    if (streamedUrl && !(isNativeMedia && isLinuxPlatform())) {
-      const title = metadata.name || titleForPath(path);
-      const url = this.createFileViewPage({ resourceUrl: streamedUrl, mime: firstMime, title, path, autoplay });
-      return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: streamedKind };
-    }
-
-    const file = await this.call("read_binary_file", { path });
-    const mime = previewMimeForPath(path, file.mime);
-    const mediaBlob = new Blob([base64ToBytes(file.base64)], { type: mime });
-    const resourceUrl = URL.createObjectURL(mediaBlob);
-    const url = this.createFileViewPage({ resourceUrl, mime, title: file.name, path: file.path || path, autoplay });
-    this.fileViewResources.set(url, [resourceUrl]);
-    return { url, title: file.name, filePath: file.path || path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
+    const title = metadata.name || titleForPath(path);
+    return {
+      url: localFileViewerUrl(path),
+      title,
+      filePath: path,
+      mime: "text/html",
+      mediaMime: firstMime,
+      viewerKind: streamedKind
+    };
   }
 
   releaseFileView(url) {
@@ -680,6 +699,27 @@ export class Backend {
       return this.decorateClipboardItems(this.browserClipboardHistory);
     }
     return this.decorateClipboardItems(await this.call("set_clipboard_pinned", { id, pinned: Boolean(pinned) }));
+  }
+
+  async updateClipboardItem(id, text) {
+    if (!this.invoke) {
+      const item = this.browserClipboardHistory.find((entry) => entry.id === id);
+      if (!item) throw new Error("Clipboard item was not found.");
+      if (item.kind !== "text") throw new Error("Only text clipboard items can be edited.");
+      item.text = String(text ?? "");
+      return this.decorateClipboardItems(this.browserClipboardHistory);
+    }
+    return this.decorateClipboardItems(await this.call("update_clipboard_entry", { id, text: String(text ?? "") }));
+  }
+
+  async copyClipboardItem(id) {
+    if (!this.invoke) {
+      const item = this.browserClipboardHistory.find((entry) => entry.id === id);
+      if (!item) throw new Error("Clipboard item was not found.");
+      if (item.kind === "text") return this.writeClipboardText(item.text || "");
+      throw new Error("Copying images to the clipboard needs the native build.");
+    }
+    return this.call("copy_clipboard_entry", { id });
   }
 
   async removeClipboardItem(id) {

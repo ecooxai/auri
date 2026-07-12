@@ -112,6 +112,18 @@ export function shortcutKeyMatchesKeyboardEvent(event, shortcut) {
   return Boolean(parsed && keyTokenFromEvent(event) === parsed.key);
 }
 
+/// Alt+1…9 focuses a workspace (space) and Control+1…9 focuses a horizontal
+/// subtab, by position. Returns null for any other combination so callers
+/// never hijack typing or other chords.
+export function tabSwitchFromKeyboardEvent(event) {
+  const digit = String(event?.code || "").match(/^Digit([1-9])$/);
+  if (!digit || event?.metaKey || event?.shiftKey) return null;
+  const index = Number(digit[1]) - 1;
+  if (event?.altKey && !event?.ctrlKey) return { kind: "workspace", index };
+  if (event?.ctrlKey && !event?.altKey) return { kind: "subtab", index };
+  return null;
+}
+
 export function shortcutMatchesKeyboardEvent(event, shortcut) {
   const parsed = parseShortcut(shortcut);
   if (!parsed || keyTokenFromEvent(event) !== parsed.key) return false;

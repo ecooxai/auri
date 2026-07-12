@@ -18,8 +18,9 @@ test("the workspace rail is visually integrated instead of a separate card", asy
   assert.match(rail, /z-index:\s*2/);
   assert.match(rail, /border-radius:\s*0/);
   assert.match(rail, /backdrop-filter:\s*none/);
-  assert.match(activeTab, /background:\s*transparent/);
-  assert.match(activeTab, /box-shadow:\s*none/);
+  // The focused workspace is marked with a light-blue fill so the active
+  // space stays visible at a glance.
+  assert.match(activeTab, /background:\s*rgba\(147, 187, 253/);
 });
 
 test("the outer app shell uses a flat minimalist surface", async () => {
@@ -110,9 +111,14 @@ test("the top tab bar spans behind the macOS traffic lights", async () => {
 });
 
 
-test("macOS traffic lights are vertically centered in the tab row", async () => {
-  const config = await readFile("src-tauri/tauri.conf.json", "utf8");
-  assert.match(config, /"trafficLightPosition": \{ "x": 14, "y": 24 \}/);
+test("decorationless macOS window does not request system titlebar controls", async () => {
+  const config = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
+  const mainWindow = config.app.windows.find((window) => window.label === "main");
+
+  assert.equal(mainWindow.decorations, false);
+  assert.equal(mainWindow.titleBarStyle, undefined);
+  assert.equal(mainWindow.hiddenTitle, undefined);
+  assert.equal(mainWindow.trafficLightPosition, undefined);
 });
 
 
@@ -125,14 +131,15 @@ test("empty topbar space remains draggable while tabs stay interactive", async (
   assert.match(css, /\.subtab \{[\s\S]*-webkit-app-region:\s*no-drag/);
 });
 
-test("workspace active state has no filled or rounded container", async () => {
+test("the focused workspace and subtab are marked with a light-blue background", async () => {
   const css = await readFile("styles.css", "utf8");
   const tab = rule(css, ".main-tab");
   const active = rule(css, ".main-tab.is-active");
+  const activeSubtab = rule(css, ".subtab.is-active");
 
   assert.match(tab, /border-radius:\s*0/);
-  assert.match(active, /background:\s*transparent !important/);
-  assert.match(active, /box-shadow:\s*none/);
+  assert.match(active, /background:\s*rgba\(147, 187, 253, \.28\) !important/);
+  assert.match(activeSubtab, /rgba\(184, 212, 254/);
 });
 
 test("empty topbar pointer down delegates to native window dragging", async () => {
@@ -175,8 +182,8 @@ test("folder navigation controls sit above an editable compact path field", asyn
   assert.doesNotMatch(folder, />LOCATION</);
   assert.match(css, /\.pane-heading\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*grid-template-rows:\s*auto auto/s);
   assert.match(css, /\.folder-toolbar\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*row[^}]*flex-wrap:\s*nowrap[^}]*width:\s*max-content/s);
-  assert.match(css, /\.folder-path-input\s*\{[^}]*background:\s*transparent[^}]*border:\s*0[^}]*box-shadow:\s*none[^}]*font-size:\s*\.6[0-9]*rem/s);
-  assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*transparent[^}]*box-shadow:\s*none/s);
+  assert.match(css, /\.folder-path-input\s*\{[^}]*background:\s*rgba\(255, 255, 255, \.56\)[^}]*border:\s*1px[^}]*border-radius:\s*9px[^}]*font-size:\s*\.6[0-9]*rem/s);
+  assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*white[^}]*box-shadow:/s);
 });
 
 test("folder rows expose a separate expander and wrap long names compactly", async () => {
@@ -186,12 +193,12 @@ test("folder rows expose a separate expander and wrap long names compactly", asy
   assert.match(panels, /data-action="folder-toggle"/);
   assert.match(panels, /aria-expanded="\$\{expanded \? "true" : "false"\}"/);
   assert.match(panels, /file-row \$\{isDirectory \? "is-directory" : ""\}/);
-  assert.match(panels, /isDirectory \? "" : `<span class="file-icon">\$\{iconForEntry\(entry\)\}<\/span>`/);
+  assert.match(panels, /file-icon \$\{isDirectory \? "is-directory" : ""\}/);
   assert.doesNotMatch(panels, /class="file-size"/);
   assert.match(css, /\.file-name\s*\{[^}]*-webkit-line-clamp:\s*3/s);
   assert.match(css, /\.file-name\s*\{[^}]*overflow-wrap:\s*anywhere/s);
   assert.match(css, /\.file-name\s*\{[^}]*font-size:\s*\.68rem/s);
-  assert.match(css, /\.file-row\.is-directory\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  assert.match(css, /\.file-row\.is-directory\s*\{[^}]*grid-template-columns:\s*20px minmax\(0,\s*1fr\)/s);
   assert.doesNotMatch(css, /\.file-size\s*\{/);
 });
 

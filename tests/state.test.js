@@ -26,6 +26,27 @@ test("new main tabs and subtabs become active", () => {
   assert.equal(tab.activeSubtabId, tab.subtabs.at(-1).id);
 });
 
+test("new terminal subtabs stay grouped immediately after the first terminal", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "terminal" } });
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "terminal" } });
+
+  assert.deepEqual(state.tabs[0].subtabs.slice(0, 3).map((item) => item.type), ["terminal", "terminal", "terminal"]);
+  assert.equal(state.tabs[0].subtabs[0].title, "Terminal");
+  assert.equal(state.tabs[0].subtabs[1].title, "Terminal 2");
+  assert.equal(state.tabs[0].subtabs[2].title, "Terminal 3");
+});
+
+test("folder-only navigation does not change any terminal working directory", () => {
+  const state = reduceState(createInitialState(), {
+    type: "FOLDER_PATH_SET", payload: { path: "/tmp/project" }
+  });
+  assert.equal(state.tabs[0].folder.path, "/tmp/project");
+  assert.equal(state.tabs[0].terminal.cwd, "~");
+  assert.equal(state.tabs[0].subtabs[0].cwd, "~");
+});
+
 test("folder and terminal working directories stay synchronized", () => {
   const state = reduceState(createInitialState(), {
     type: "WORKDIR_SET", payload: { path: "/tmp/project" }
@@ -39,6 +60,27 @@ test("errors and malformed render output are routed to Info", () => {
   state = reduceState(state, { type: "INFO_ADD", payload: { level: "error", message: "Network unavailable" } });
   assert.equal(state.info.items[0].message, "Network unavailable");
   assert.equal(state.info.unread, 1);
+});
+
+test("terminal output history stays bounded in long sessions", () => {
+  let state = createInitialState();
+  for (let index = 0; index < 260; index += 1) {
+    state = reduceState(state, { type: "TERMINAL_OUTPUT_ADD", payload: { stdout: `line ${index}` } });
+  }
+  const history = state.tabs[0].terminal.history;
+  assert.equal(history.length, 200);
+  assert.equal(history[history.length - 1].stdout, "line 259");
+  assert.equal(history[0].stdout, "line 60");
+});
+
+test("info notifications stay bounded while keeping the newest first", () => {
+  let state = createInitialState();
+  for (let index = 0; index < 260; index += 1) {
+    state = reduceState(state, { type: "INFO_ADD", payload: { level: "info", message: `event ${index}` } });
+  }
+  assert.equal(state.info.items.length, 200);
+  assert.equal(state.info.items[0].message, "event 259");
+  assert.equal(state.info.unread, 260);
 });
 
 test("model settings can be updated without replacing other providers", () => {

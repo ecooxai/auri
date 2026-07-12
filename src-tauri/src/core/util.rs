@@ -55,15 +55,34 @@ pub fn mime_type(path: &str) -> &'static str {
         "mp3" => "audio/mpeg",
         "ogg" => "audio/ogg",
         "flac" => "audio/flac",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
         "mov" => "video/quicktime",
         "webm" => "video/webm",
         "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        "tif" | "tiff" => "image/tiff",
+        "aac" => "audio/aac",
+        "opus" => "audio/opus",
+        "pdf" => "application/pdf",
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
+        "obj" => "model/obj",
+        "stl" => "model/stl",
+        "wasm" => "application/wasm",
+        "xml" => "application/xml",
+        "csv" => "text/csv",
         "json" => "application/json",
-        "html" => "text/html",
+        "html" | "htm" => "text/html",
         "css" => "text/css",
         "js" | "mjs" => "text/javascript",
-        "txt" | "md" | "rs" | "toml" | "yaml" | "yml" | "sh" | "py" => "text/plain",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "txt" | "md" | "rs" | "toml" | "yaml" | "yml" | "sh" | "py" | "ts" | "tsx" | "jsx"
+        | "log" | "ini" | "conf" => "text/plain",
         _ => "application/octet-stream",
     }
 }
@@ -208,4 +227,13 @@ pub fn recent_shell_history_commands(histories: &[String], limit: usize) -> Vec<
         }
     }
     commands
+}
+
+/// Physical bounds `(x, y, width, height)` the main webview must occupy so it
+/// always fills the window. The title bar is drawn inside the web content (the
+/// window has no OS decorations), so the webview starts at the origin and covers
+/// the entire client area. Keeping this pure lets the resize logic stay testable
+/// without a running window.
+pub fn main_fill_bounds(width: u32, height: u32) -> (i32, i32, u32, u32) {
+    (0, 0, width, height)
 }

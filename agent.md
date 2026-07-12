@@ -34,6 +34,7 @@ auri folder info [path]                                                        S
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
 auri file open <path>                                                          Open a file in the viewer.
 auri file external [path]                                                      Open a file with the operating system.
+auri file serve [path]                                                         Serve the current folder over local HTTP and open the file in the web viewer.
 auri terminal run <command...>                                                 Run a shell command in the active workspace.
 auri ai ask <prompt...>                                                        Ask the selected AI with the current screenshot.
 auri ai model add <name> <type> <model> <url> <key>                            Add an AI provider configuration.
@@ -46,11 +47,16 @@ auri clipboard pin <id>                                                       Pi
 auri clipboard unpin <id>                                                     Unpin a clipboard item.
 auri clipboard remove <id>                                                    Remove a clipboard item.
 auri clipboard copy <text>                                                     Copy text to the system clipboard.
+auri clipboard copy-item <id>                                                  Copy a clipboard history item back to the system clipboard.
+auri clipboard edit <id> <text...>                                             Replace the text of a clipboard history item.
+auri clipboard info <id>                                                       Show details for a clipboard item (text stats or image type, resolution, and size).
 auri attachment add <path>                                                     Attach a local file to the next AI request.
 auri attachment remove <id>                                                    Remove a prompt attachment.
 auri input insert <text>                                                       Insert text into the focused prompt input.
 auri transcript dismiss                                                        Close the completed voice-input text popup.
 auri web open <url>                                                            Navigate the active webview.
+auri web ask <prompt...>                                                       Ask the selected AI and show the reply in a floating panel on the web tab.
+auri web ask-close                                                             Close the floating web AI reply panel.
 auri web reload                                                                Reload the active webview.
 auri web back                                                                  Go back in the active webview.
 auri web forward                                                               Go forward in the active webview.
@@ -69,6 +75,11 @@ auri record audio                                                              O
 auri record video                                                              Open video recording.
 auri record start <audio|video>                                                Start media capture.
 auri record stop                                                               Stop the active media capture.
+auri record pause                                                              Pause the active media capture.
+auri record resume                                                             Resume the paused media capture.
+auri record photo                                                              Capture a photo with the camera.
+auri record mic <deviceId|default>                                             Switch the recording microphone, including during a recording.
+auri record mode <photo|video|screen>                                          Switch the video recorder mode.
 auri media attach <audio|video>                                                Attach the latest recording to the prompt.
 auri settings open                                                             Open Settings.
 auri settings set <key> <value>                                                Update an application setting.
@@ -76,6 +87,7 @@ auri permission status                                                         R
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri system open                                                              Open the System monitor.
 auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system search [keyword...]                                                   Filter the process list by keyword (space separates OR terms); empty clears.
 auri system refresh                                                           Refresh System monitor statistics.
 auri system select <pid>                                                    Select a System monitor process.
 auri system kill <pid>                                                      Kill the selected System monitor process.

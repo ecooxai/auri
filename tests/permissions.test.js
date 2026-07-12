@@ -63,6 +63,38 @@ test("backend exposes native media permission commands", async () => {
   ]);
 });
 
+test("refreshing permissions skips render when values are unchanged", async () => {
+  let renderCount = 0;
+  const controller = controllerHarness({
+    getMediaPermissions: async () => ({ microphone: "authorized", screenRecording: "authorized" })
+  });
+  controller.view.render = () => { renderCount += 1; };
+  controller.state = {
+    ...controller.state,
+    permissions: { microphone: "authorized", screenRecording: "authorized" }
+  };
+
+  await controller.refreshMediaPermissions();
+  assert.equal(renderCount, 0);
+  assert.deepEqual(controller.state.permissions, { microphone: "authorized", screenRecording: "authorized" });
+});
+
+test("window focus permission refresh updates state without rendering", async () => {
+  let renderCount = 0;
+  const controller = controllerHarness({
+    getMediaPermissions: async () => ({ microphone: "denied", screenRecording: "authorized" })
+  });
+  controller.view.render = () => { renderCount += 1; };
+  controller.state = {
+    ...controller.state,
+    permissions: { microphone: "authorized", screenRecording: "authorized" }
+  };
+
+  await controller.refreshMediaPermissions({ render: false });
+  assert.equal(renderCount, 0);
+  assert.deepEqual(controller.state.permissions, { microphone: "denied", screenRecording: "authorized" });
+});
+
 test("requesting a permission refreshes controller state", async () => {
   const calls = [];
   const controller = controllerHarness({

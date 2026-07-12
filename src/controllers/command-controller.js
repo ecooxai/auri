@@ -227,6 +227,30 @@ export async function executeCommand(input, context) {
         await actions.openExternal(path);
         return { path };
       }
+      if (action === "serve") {
+        if (!backend.startFileServer) throw new Error("The web file viewer needs the native Auri build.");
+        const metadata = await backend.inspectFile(path);
+        const served = await backend.startFileServer("/");
+        const relative = metadata.kind === "directory"
+          ? ""
+          : path.replaceAll("\\", "/").replace(/^\/+/, "");
+        const directory = metadata.kind === "directory"
+          ? path.replaceAll("\\", "/").replace(/^\/+/, "")
+          : "";
+        const query = relative
+          ? `view?file=${encodeURIComponent(relative)}`
+          : directory
+            ? `?dir=${encodeURIComponent(directory)}`
+            : "";
+        const url = `http://localhost:${served.port}/${query}`;
+        openSubtab("webview", context);
+        const current = activeSubtab(getState());
+        dispatch({
+          type: "SUBTAB_UPDATE",
+          payload: { id: current.id, patch: { url, title: metadata.name || "Files" } }
+        });
+        return { url, port: served.port, root: served.root };
+      }
       if (action !== "inspect" && action !== "open") throw new Error(`Unknown file action: ${action}`);
       const metadata = await backend.inspectFile(path);
       dispatch({ type: "FILE_SELECT", payload: { path, metadata, open: action === "open" } });
@@ -340,6 +364,46 @@ export async function executeCommand(input, context) {
 
 
     if (domain === "web") {
+      if (action === "ask") {
+        const prompt = extractActionTail(input, "web", "ask") || args.join(" ");
+        if (!prompt) throw new Error("Enter a prompt to ask.");
+        const state = getState();
+        const model = state.models.find((item) => item.id === state.selectedModelId);
+        const attachments = [...state.media.attachments];
+        dispatch({ type: "ATTACHMENTS_CLEAR", payload: {} });
+        dispatch({
+          type: "UI_SET",
+          payload: { webAiReply: { status: "loading", prompt, modelName: model?.name || "AI", text: "" }, webMagicMenuOpen: false }
+        });
+        try {
+          const result = await backend.askAi({
+            prompt,
+            model,
+            attachScreenshot: false,
+            attachments,
+            onRequest: (request) => addAiRequestInfo(dispatch, request, model?.name)
+          });
+          const audioUrl = prepareAssistantAudio(result.audioBlob);
+          const text = result.text || result.transcript || "";
+          dispatch({
+            type: "UI_SET",
+            payload: { webAiReply: { status: "ready", prompt, modelName: model?.name || "AI", text, audioUrl } }
+          });
+          return result;
+        } catch (error) {
+          const message = error?.message || String(error);
+          dispatch({
+            type: "UI_SET",
+            payload: { webAiReply: { status: "error", prompt, modelName: model?.name || "AI", text: message } }
+          });
+          dispatch({ type: "INFO_ADD", payload: { level: "error", title: "Web AI", message } });
+          return { error: message };
+        }
+      }
+      if (action === "ask-close") {
+        dispatch({ type: "UI_SET", payload: { webAiReply: null } });
+        return { ok: true };
+      }
       if (action === "open") {
         const url = normalizeWebUrl(args.join(" ") || extractActionTail(input, "web", "open"));
         const subtab = activeSubtab(getState());
@@ -461,6 +525,29 @@ export async function executeCommand(input, context) {
         await actions.copyText(text);
         return { copied: text.length };
       }
+      if (action === "copy-item") {
+        const id = args[0];
+        if (!id || !getState().clipboard.items.some((entry) => entry.id === id)) throw new Error("Clipboard item was not found.");
+        if (!backend.copyClipboardItem) throw new Error("Clipboard writing is unavailable.");
+        await backend.copyClipboardItem(id);
+        return { copied: id };
+      }
+      if (action === "edit") {
+        const id = args[0];
+        if (!id || !getState().clipboard.items.some((entry) => entry.id === id)) throw new Error("Clipboard item was not found.");
+        if (!backend.updateClipboardItem) throw new Error("Clipboard editing is unavailable.");
+        // Quoted GUI values arrive as a single token that keeps newlines and spacing.
+        const items = await backend.updateClipboardItem(id, args.slice(1).join(" "));
+        dispatch({ type: "CLIPBOARD_SET", payload: { items } });
+        return { updated: id };
+      }
+      if (action === "info") {
+        const id = args[0];
+        if (!id || !getState().clipboard.items.some((entry) => entry.id === id)) throw new Error("Clipboard item was not found.");
+        openSubtab("clipboard", context);
+        dispatch({ type: "UI_SET", payload: { clipboardInfoId: id, clipboardMenuId: null } });
+        return { info: id };
+      }
       throw new Error(`Unknown clipboard action: ${action}`);
     }
 
@@ -530,6 +617,37 @@ export async function executeCommand(input, context) {
         await actions.stopRecording();
         return { ok: true };
       }
+      if (action === "pause" || action === "resume") {
+        const handler = action === "pause" ? actions.pauseRecording : actions.resumeRecording;
+        if (!handler) throw new Error("Recording pause is unavailable in this runtime.");
+        await handler();
+        dispatch({ type: "MEDIA_SET", payload: { paused: action === "pause" } });
+        return { ok: true };
+      }
+      if (action === "photo") {
+        openSubtab("video", context);
+        if (!actions.capturePhoto) throw new Error("Photo capture is unavailable in this runtime.");
+        await actions.capturePhoto();
+        return { ok: true };
+      }
+      if (action === "mic") {
+        const deviceId = args[0];
+        if (!deviceId) throw new Error("Choose a microphone device id.");
+        const resolved = deviceId === "default" ? null : deviceId;
+        if (getState().media.status === "recording") {
+          if (!actions.switchMicrophone) throw new Error("Microphone switching is unavailable in this runtime.");
+          await actions.switchMicrophone(resolved);
+        }
+        dispatch({ type: "MEDIA_SET", payload: { audioDeviceId: resolved } });
+        return { deviceId: resolved };
+      }
+      if (action === "mode") {
+        const mode = args[0];
+        if (!["photo", "video", "screen"].includes(mode)) throw new Error("Choose photo, video, or screen mode.");
+        dispatch({ type: "MEDIA_SET", payload: { mode } });
+        openSubtab("video", context);
+        return { mode };
+      }
       throw new Error(`Unknown record action: ${action}`);
     }
 
@@ -597,6 +715,11 @@ export async function executeCommand(input, context) {
         const sortBy = normalizeSystemSort(args[0]);
         dispatch({ type: "SYSTEM_SORT_SET", payload: { sortBy } });
         return { sortBy };
+      }
+      if (action === "search") {
+        const filter = args.join(" ").trim();
+        dispatch({ type: "SYSTEM_FILTER_SET", payload: { filter } });
+        return { filter };
       }
       if (action === "refresh") {
         if (!backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");

@@ -52,7 +52,7 @@ DEV_URL="http://127.0.0.1:${AURI_DEV_PORT}/?auri-instance=${INSTANCE_ID}"
 export TAURI_CONFIG="$(node scripts/launch-config.mjs "$INSTANCE_ID" "$DEV_URL" "auri-dev")"
 FRONTEND_LOG="$RUN_DIR/frontend.log"
 
-npm run dev > "$FRONTEND_LOG" 2>&1 &
+npm run dev:web > "$FRONTEND_LOG" 2>&1 &
 SERVER_PID=$!
 
 for _ in {1..100}; do

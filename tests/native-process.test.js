@@ -42,7 +42,8 @@ test("native watch starts an isolated process without replacing another watcher 
   const script = await readFile("scripts/native-watch.sh", "utf8");
 
   assert.doesNotMatch(script, /PID_FILE|OLD_PID|SOCKET_PATH|lsof -t/);
-  assert.match(script, /AURI_DEV_PORT/);
+  assert.match(script, /npm run dev:web/);
+  assert.doesNotMatch(script, /npm run dev[^:]/);
   assert.match(script, /AURI_DIST_DIR/);
   assert.match(script, /TAURI_CONFIG/);
   assert.match(script, /launch-config\.mjs.*auri-dev/);

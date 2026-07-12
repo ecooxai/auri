@@ -115,6 +115,68 @@ test("system commands open refresh and sort the process monitor", async () => {
   assert.equal(h.state().system.sortBy, "port");
 });
 
+test("system search sets and clears the process filter through the command layer", async () => {
+  const h = harness();
+  await executeCommand("system search chrome claude", h);
+  assert.equal(h.state().system.filter, "chrome claude");
+  await executeCommand("system search", h);
+  assert.equal(h.state().system.filter, "");
+});
+
+test("system search toggle opens the filter box and clear runs the search command", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {},
+    patchSystemMonitor() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  const click = (action) => controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action } } : null },
+    preventDefault() {}
+  });
+
+  await click("system-search-toggle");
+  assert.equal(controller.state.ui.systemSearchOpen, true);
+  await click("system-search-clear");
+  assert.deepEqual(commands, ["system search"]);
+});
+
+test("tunnelling a non-http port warns the person but still starts the tunnel", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const toasts = [];
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast: (msg, kind) => toasts.push({ msg, kind })
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const ran = [];
+  controller.runInternal = async (command) => { ran.push(command); };
+
+  await controller.toggleSystemPortTunnel(22);
+  assert.equal(ran.at(-1), "system tunnel start 22");
+  assert.ok(toasts.some((t) => t.kind === "info" && /HTTP/.test(t.msg)), "non-http port should warn");
+
+  toasts.length = 0;
+  await controller.toggleSystemPortTunnel(3000);
+  assert.equal(ran.at(-1), "system tunnel start 3000");
+  assert.ok(!toasts.some((t) => t.kind === "info"), "http port should not warn");
+});
+
 test("system process RAM, Port, and CPU headers sort through the command layer", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const commands = [];
@@ -140,6 +202,70 @@ test("system process RAM, Port, and CPU headers sort through the command layer",
   await clickSort("cpu");
 
   assert.deepEqual(commands, ["system sort ram", "system sort port", "system sort cpu"]);
+});
+
+test("killing a process opens a confirmation prompt and only kills after confirm", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const { normalizeSystemSnapshot } = await import("../src/model/system.js");
+  const commands = [];
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  controller.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ processes: [{ pid: 42, name: "WindowServer" }] }) } });
+  controller.dispatch({ type: "SYSTEM_PROCESS_SELECT", payload: { pid: 42 } });
+
+  const click = (action, matches = []) => controller.handleClick({
+    target: {
+      closest: (selector) => {
+        if (selector === "[data-action]") return { dataset: { action } };
+        if (matches.includes(selector)) return {};
+        return null;
+      }
+    },
+    preventDefault() {}
+  });
+
+  // Clicking Kill arms the confirmation instead of killing immediately.
+  await click("system-process-kill", [".system-process-detail"]);
+  assert.deepEqual(commands, []);
+  assert.deepEqual(controller.state.ui.systemKillPrompt, { pid: 42, name: "WindowServer" });
+
+  // Confirming runs the kill command and clears the prompt.
+  await click("system-kill-prompt-confirm", [".system-kill-prompt"]);
+  assert.deepEqual(commands, ["system kill 42"]);
+  assert.equal(controller.state.ui.systemKillPrompt, null);
+});
+
+test("cancelling the kill confirmation dismisses it without killing", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const { normalizeSystemSnapshot } = await import("../src/model/system.js");
+  const commands = [];
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} };
+  const controller = new AppController({
+    view,
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  controller.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ processes: [{ pid: 42, name: "WindowServer" }] }) } });
+  controller.dispatch({ type: "SYSTEM_PROCESS_SELECT", payload: { pid: 42 } });
+  controller.dispatch({ type: "UI_SET", payload: { systemKillPrompt: { pid: 42, name: "WindowServer" } } });
+
+  await controller.handleClick({
+    target: {
+      closest: (selector) => ([".system-kill-prompt", "button"].includes(selector) ? {} : selector === "[data-action]" ? { dataset: { action: "system-kill-prompt-cancel" } } : null)
+    },
+    preventDefault() {}
+  });
+
+  assert.deepEqual(commands, []);
+  assert.equal(controller.state.ui.systemKillPrompt, null);
+  // The process stays selected so the detail card remains open.
+  assert.equal(controller.state.system.selectedProcessPid, 42);
 });
 
 test("workspace and cwd renders refocus the active terminal session", async () => {
@@ -332,7 +458,7 @@ test("folder directory rows select first and open on the second click", async ()
   assert.deepEqual(commandCalls, []);
 
   await controller.openFolderEntry("/tmp/src", "directory");
-  assert.deepEqual(commandCalls, [{ command: "cd '/tmp/src'", cwd: "~" }]);
+  assert.deepEqual(commandCalls, [{ command: "cd '/tmp/src'", cwd: "/tmp" }]);
   assert.equal(controller.state.tabs[0].folder.path, "/tmp/src");
 });
 
@@ -765,7 +891,7 @@ test("clipboard polling updates state only when history changes", async () => {
   items = [{ id: "clip-2", kind: "image", path: "/tmp/two.png", createdAt: 2 }, ...items];
   await controller.pollClipboard();
   assert.equal(controller.state.clipboard.items[0].id, "clip-2");
-  assert.equal(renders, afterFirst + 1);
+  assert.equal(renders, afterFirst);
 });
 
 test("folder navigation runs cd without the terminal cwd probe", async () => {
@@ -787,11 +913,103 @@ test("folder navigation runs cd without the terminal cwd probe", async () => {
     listDirectory: async () => []
   };
   const controller = new AppController({ view, backend, terminalSessionFactory: () => session });
+  const terminal = controller.state.tabs[0].subtabs.find((item) => item.type === "terminal");
+  controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: terminal.id } });
 
   await controller.changeDirectory("/tmp/project", { echoInTerminal: true });
 
   assert.deepEqual(calls, [["cd '/tmp/project'"]]);
   assert.equal(controller.state.tabs[0].terminal.cwd, "/tmp/project");
+});
+
+test("folder navigation opens a new adjacent terminal when the focused terminal is busy", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const runs = [];
+  const sessions = [];
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} };
+  const backend = {
+    isNative: true,
+    runCommand: async () => ({ code: 0, cwd: "/tmp/project", stdout: "", stderr: "" }),
+    listDirectory: async () => []
+  };
+  const controller = new AppController({
+    view,
+    backend,
+    terminalSessionFactory: () => {
+      const isFirstSession = sessions.length === 0;
+      const session = {
+        cwd: "~",
+        initialize: async () => {},
+        isBusy: async () => isFirstSession,
+        run: async (command) => { runs.push(command); session.cwd = "/tmp/project"; }
+      };
+      sessions.push(session);
+      return session;
+    }
+  });
+  const firstTerminalId = controller.state.tabs[0].subtabs[0].id;
+  controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: firstTerminalId } });
+
+  await controller.changeDirectory("/tmp/project", { echoInTerminal: true });
+
+  const tab = controller.state.tabs[0];
+  assert.equal(tab.subtabs.filter((item) => item.type === "terminal").length, 2);
+  assert.equal(tab.subtabs[0].id, firstTerminalId);
+  assert.equal(tab.subtabs[1].id, tab.activeSubtabId);
+  assert.equal(tab.subtabs[1].cwd, "/tmp/project");
+  assert.deepEqual(runs, []);
+});
+
+test("folder navigation outside a terminal changes only the folder path", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const runs = [];
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} };
+  const backend = {
+    isNative: true,
+    runCommand: async () => ({ code: 0, cwd: "/tmp/project", stdout: "", stderr: "" }),
+    listDirectory: async () => []
+  };
+  const controller = new AppController({
+    view,
+    backend,
+    terminalSessionFactory: () => ({ initialize: async () => {}, isBusy: async () => false, run: async (command) => runs.push(command) })
+  });
+  const system = controller.state.tabs[0].subtabs.find((item) => item.type === "system");
+  controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: system.id } });
+
+  await controller.changeDirectory("/tmp/project", { echoInTerminal: true });
+
+  assert.equal(controller.state.tabs[0].folder.path, "/tmp/project");
+  assert.equal(controller.state.tabs[0].subtabs[0].cwd, "~");
+  assert.deepEqual(runs, []);
+});
+
+test("selecting an idle terminal synchronizes it to the folder path but leaves a busy terminal alone", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const runs = [];
+  let busy = false;
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true, listDirectory: async () => [] },
+    terminalSessionFactory: () => ({
+      cwd: "~",
+      initialize: async () => {},
+      isBusy: async () => busy,
+      run: async (command) => runs.push(command)
+    })
+  });
+  controller.dispatch({ type: "FOLDER_PATH_SET", payload: { path: "/tmp/project" } });
+  const terminal = controller.state.tabs[0].subtabs.find((item) => item.type === "terminal");
+  controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: terminal.id } });
+
+  await controller.synchronizeActiveTerminalToFolder();
+  assert.deepEqual(runs, ["cd '/tmp/project'"]);
+
+  controller.dispatch({ type: "TERMINAL_CWD_SET", payload: { terminalId: controller.state.tabs[0].subtabs[0].id, path: "~" } });
+  busy = true;
+  await controller.synchronizeActiveTerminalToFolder();
+  assert.deepEqual(runs, ["cd '/tmp/project'"]);
 });
 
 test("typed terminal cd synchronizes the folder pane without a printf probe", async () => {
@@ -1966,4 +2184,136 @@ test("the dedicated open button opens the tunnel URL directly without requiring 
     preventDefault() {}
   });
   assert.deepEqual(opened, ["https://miniswetagentmcpmacneo.22222233.xyz"]);
+});
+
+test("syncDirectory applies the working directory and folder entries with a single render", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() { renderCount += 1; },
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      listDirectory: async () => [{ name: "a.txt", path: "/tmp/project/a.txt", kind: "file" }]
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+
+  await controller.syncDirectory("/tmp/project");
+
+  assert.equal(renderCount, 1);
+  const workspace = controller.state.tabs.find((tab) => tab.id === controller.state.activeTabId);
+  assert.equal(workspace.terminal.cwd, "/tmp/project");
+  assert.equal(workspace.folder.path, "/tmp/project");
+  assert.deepEqual(workspace.folder.entries.map((entry) => entry.name), ["a.txt"]);
+});
+
+test("clipboard polling updates state without re-rendering while the clipboard subtab is inactive", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() { renderCount += 1; },
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      readClipboardHistory: async () => [{ id: "clip-1", text: "copied elsewhere" }]
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const terminalSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "terminal");
+  controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: terminalSubtab.id } });
+
+  await controller.pollClipboard();
+
+  assert.equal(renderCount, 0);
+  assert.equal(controller.state.clipboard.items[0].id, "clip-1");
+
+  // With the clipboard subtab focused, the same change must still render.
+  const clipboardSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "clipboard")
+    || (() => {
+      controller.state = reduceState(controller.state, { type: "SUBTAB_NEW", payload: { type: "clipboard" } });
+      return controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "clipboard");
+    })();
+  controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: clipboardSubtab.id } });
+  controller.state = reduceState(controller.state, { type: "CLIPBOARD_SET", payload: { items: [] } });
+  await controller.pollClipboard();
+  assert.equal(renderCount, 1);
+  assert.equal(controller.state.clipboard.items[0].id, "clip-1");
+});
+
+test("quiet system polling patches the open monitor in place instead of a full re-render", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  let patchCount = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() { renderCount += 1; },
+    patchSystemMonitor() { patchCount += 1; return true; },
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({
+        capturedAt: "2026-06-30T08:00:00.000Z",
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 7 },
+        memory: { totalBytes: 1000, usedBytes: 500 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: [{ pid: 77, name: "node", cpuPercent: 1 }]
+      })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const systemSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "system");
+  controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: systemSubtab.id } });
+
+  await controller.refreshSystemMonitor({ quiet: true });
+
+  assert.equal(renderCount, 0);
+  assert.equal(patchCount, 1);
+  assert.equal(controller.state.system.snapshot.processes[0].pid, 77);
+});
+
+test("quiet system polling falls back to a full render when in-place patching is not possible", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  const view = {
+    root: { querySelector: () => null },
+    render() { renderCount += 1; },
+    patchSystemMonitor() { return false; },
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({
+        capturedAt: "2026-06-30T08:00:00.000Z",
+        cpu: { brand: "Test CPU", cores: 8, usagePercent: 7 },
+        memory: { totalBytes: 1000, usedBytes: 500 },
+        network: { interfaces: [], totalRxBytes: 1, totalTxBytes: 1 },
+        processes: []
+      })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const systemSubtab = controller.state.tabs[0].subtabs.find((subtab) => subtab.type === "system");
+  controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: systemSubtab.id } });
+
+  await controller.refreshSystemMonitor({ quiet: true });
+
+  assert.equal(renderCount, 1);
 });

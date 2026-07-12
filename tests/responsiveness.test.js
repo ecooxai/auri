@@ -66,7 +66,7 @@ test("terminal cwd notifications synchronize the folder UI", async () => {
   const source = await readFile("src/controllers/app-controller.js", "utf8");
   assert.match(source, /session\.onCwdChange/);
   assert.match(source, /handleTerminalCwdChange/);
-  assert.match(source, /await this\.syncDirectory\(path, workspaceId\)/);
+  assert.match(source, /await this\.syncDirectory\(path, workspaceId, terminalId\)/);
 });
 
 test("terminal visuals use the app light palette", async () => {
@@ -126,5 +126,29 @@ test("terminal uses the configured interface font size", async () => {
   assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
   assert.match(terminal, /const terminalFontSize = Math\.round/);
   assert.match(terminal, /fontSize: terminalFontSize/);
-  assert.match(controller, /session\.mount\(terminalHost, workspace\.terminal\.cwd, this\.state\.settings\.fontSize, this\.state\.settings\.terminalMaxLines\)/);
+  assert.match(controller, /session\.mount\(terminalHost, terminalTarget\.subtab\.cwd \|\| workspace\.terminal\.cwd, this\.state\.settings\.fontSize, this\.state\.settings\.terminalMaxLines\)/);
+});
+
+test("full renders restore non-terminal focus when preserveInput is set", async () => {
+  const source = await readFile("src/views/app-view.js", "utf8");
+  assert.match(source, /if \(focusSnapshot && !terminalWasFocused\) this\.restoreFocus\(focusSnapshot\)/);
+});
+
+test("terminal completion scoring is debounced during fast typing", async () => {
+  const source = await readFile("src/controllers/app-controller.js", "utf8");
+  assert.match(source, /scheduleTerminalCompletions\(input\.value, input\.selectionStart\)/);
+  assert.match(source, /this\.terminalCompletionTimer = setTimeout\(\(\) => \{/);
+  assert.match(source, /completionInputSnapshot\(pending\)/);
+  assert.match(source, /flushTerminalCompletions\(\)/);
+});
+
+test("system monitor render skips refresh when the snapshot is still fresh", async () => {
+  const source = await readFile("src/controllers/app-controller.js", "utf8");
+  assert.match(source, /systemSnapshotAgeMs\(this\.state\.system\?\.snapshot\) < 4000/);
+  assert.match(source, /&& !snapshotFresh/);
+});
+
+test("window focus refreshes permissions without forcing a full render", async () => {
+  const source = await readFile("src/controllers/app-controller.js", "utf8");
+  assert.match(source, /refreshMediaPermissions\(\{ render: false \}\)/);
 });

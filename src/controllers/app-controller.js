@@ -1,13 +1,13 @@
 import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
-import { normalizeSystemSnapshot } from "../model/system.js";
+import { normalizeSystemSnapshot, protocolForPort } from "../model/system.js";
 import { classifyTerminalInput } from "../model/presentation.js";
-import { MediaCapture } from "../services/media-recorder.js";
+import { MediaCapture, pickRecordingDevices } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
-import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
-import { AssistantStreamParser, parseAssistantReply } from "../model/assistant.js";
+import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl, webAiMenuItems, webAiMenuPayload, webAiPrompt } from "../model/browser.js";
+import { AssistantStreamParser, assistantPlainText, parseAssistantReply } from "../model/assistant.js";
 import { terminalCompletionContext, terminalCompletions } from "../model/terminal-completion.js";
-import { shortcutFromKeyboardEvent, shortcutKeyMatchesKeyboardEvent, shortcutMatchesKeyboardEvent } from "../model/shortcut.js";
+import { shortcutFromKeyboardEvent, shortcutKeyMatchesKeyboardEvent, shortcutMatchesKeyboardEvent, tabSwitchFromKeyboardEvent } from "../model/shortcut.js";
 
 function parentPath(path) {
   const value = String(path || "~").replace(/\/+$/, "");
@@ -64,7 +64,19 @@ function hasAssistantActionPopup(state) {
   return Boolean(state?.ui?.assistantActions?.length || state?.ui?.assistantTranscripts?.length);
 }
 
-const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "WORKDIR_SET", "TERMINAL_COMMAND_REMEMBER"]);
+function permissionsEqual(left, right) {
+  if (!left || !right) return false;
+  return left.microphone === right.microphone && left.screenRecording === right.screenRecording;
+}
+
+function systemSnapshotAgeMs(snapshot) {
+  const capturedAt = snapshot?.capturedAt;
+  if (!capturedAt) return Number.POSITIVE_INFINITY;
+  const age = Date.now() - new Date(capturedAt).getTime();
+  return Number.isFinite(age) && age >= 0 ? age : Number.POSITIVE_INFINITY;
+}
+
+const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "WORKDIR_SET", "FOLDER_PATH_SET", "TERMINAL_COMMAND_REMEMBER"]);
 
 function attachmentPreviewUrl(file, kind) {
   if (kind === "file" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
@@ -120,6 +132,14 @@ export class AppController {
     this.liveRecordHoldTimer = null;
     this.liveRecordLongPress = false;
     this.liveRecordSuppressClick = false;
+    this.magicPointerId = null;
+    this.magicStartPromise = null;
+    this.magicHoldTimer = null;
+    this.magicLongPress = false;
+    this.magicSuppressClick = false;
+    // Where live-session replies render: the terminal transcript or the
+    // floating panel on the current web tab.
+    this.wakePresentation = "terminal";
     this.native = backend.isNative;
     this.fileViewUrl = null;
     this.nativeWebviewUrls = new Map();
@@ -133,8 +153,12 @@ export class AppController {
     this.terminalCompletions = [];
     this.terminalCompletionIndex = -1;
     this.terminalCompletionRange = null;
+    this.terminalCompletionTimer = null;
+    this.terminalCompletionPending = null;
+    this.systemMonitorQuietPollCount = 0;
     this.terminalEnterHoldTimer = null;
     this.terminalEnterHeld = false;
+    this.zoomHoldTimer = null;
     this.folderResizeDrag = null;
     this.systemTunnelPromptResolver = null;
   }
@@ -147,6 +171,10 @@ export class AppController {
       actions: {
         startRecording: (kind) => this.startRecording(kind),
         stopRecording: () => this.capture.stop(),
+        pauseRecording: () => this.capture.pause(),
+        resumeRecording: () => this.capture.resume(),
+        capturePhoto: () => this.capturePhoto(),
+        switchMicrophone: (deviceId) => this.capture.switchMicrophone(deviceId),
         startLiveRecording: () => this.activateWakeSession(null, { captureScreenshot: true }),
         stopLiveRecording: () => this.stopWakeLiveRecording(),
         toggleLiveRecording: () => this.toggleLiveRecording(),
@@ -226,7 +254,7 @@ export class AppController {
         }
       }
     });
-    session.onCwdChange = (path) => this.handleTerminalCwdChange(target.workspace.id, path);
+    session.onCwdChange = (path) => this.handleTerminalCwdChange(target.workspace.id, target.subtab.id, path);
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
       this.reportError("Terminal", error);
       return false;
@@ -240,10 +268,50 @@ export class AppController {
   }
 
   clearTerminalCompletions(updateView = true) {
+    if (this.terminalCompletionTimer) {
+      clearTimeout(this.terminalCompletionTimer);
+      this.terminalCompletionTimer = null;
+    }
+    this.terminalCompletionPending = null;
     this.terminalCompletions = [];
     this.terminalCompletionIndex = -1;
     this.terminalCompletionRange = null;
     if (updateView) this.view.setTerminalCompletions?.([], -1);
+  }
+
+  completionInputSnapshot(pending) {
+    const input = this.view.getTerminalInput?.();
+    if (input && input.ownerDocument?.activeElement === input) {
+      return { value: input.value, cursor: input.selectionStart };
+    }
+    return pending;
+  }
+
+  scheduleTerminalCompletions(value = this.view.getTerminalInputValue?.() || "", cursor) {
+    this.terminalCompletionPending = { value, cursor };
+    if (this.terminalCompletionTimer) clearTimeout(this.terminalCompletionTimer);
+    this.terminalCompletionTimer = setTimeout(() => {
+      this.terminalCompletionTimer = null;
+      const pending = this.terminalCompletionPending;
+      this.terminalCompletionPending = null;
+      if (!pending) return;
+      const snapshot = this.completionInputSnapshot(pending);
+      this.refreshTerminalCompletions(snapshot.value, snapshot.cursor);
+    }, 75);
+    this.terminalCompletionTimer.unref?.();
+  }
+
+  flushTerminalCompletions() {
+    if (!this.terminalCompletionTimer && !this.terminalCompletionPending) return;
+    if (this.terminalCompletionTimer) {
+      clearTimeout(this.terminalCompletionTimer);
+      this.terminalCompletionTimer = null;
+    }
+    const pending = this.terminalCompletionPending;
+    this.terminalCompletionPending = null;
+    if (!pending) return;
+    const snapshot = this.completionInputSnapshot(pending);
+    this.refreshTerminalCompletions(snapshot.value, snapshot.cursor);
   }
 
   refreshTerminalCompletions(value = this.view.getTerminalInputValue?.() || "", cursor) {
@@ -335,7 +403,9 @@ export class AppController {
       || (event.type === "WORKDIR_SET" && targetWorkspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal")
     );
     const renderOptions = { ...options, focusTerminal: shouldFocusTerminal };
-    this.render(changesWorkspace ? { ...renderOptions, preserveInput: false } : renderOptions);
+    if (options.render !== false) {
+      this.render(changesWorkspace ? { ...renderOptions, preserveInput: false } : renderOptions);
+    }
     if (this.configurationReady && WORKSPACE_PERSIST_EVENTS.has(event.type)) {
       this.persistConfiguration().catch((error) => this.reportError("Workspace save", error));
     }
@@ -350,7 +420,7 @@ export class AppController {
       if (terminalTarget) {
         const session = this.terminalSessionFor(terminalTarget.subtab.id);
         requestAnimationFrame(() => {
-          session.mount(terminalHost, workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines)
+          session.mount(terminalHost, terminalTarget.subtab.cwd || workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines)
             .then(() => {
               if (options.focusTerminal && !this.isTerminalComposerFocused()) session.focus?.();
             })
@@ -359,8 +429,10 @@ export class AppController {
       }
     }
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
+    scheduleFrame(() => this.syncRecorderUi());
     this.syncSystemMonitorPolling();
-    if (this.backend.systemSnapshot && this.isSystemMonitorActive() && this.state.system.status === "idle") {
+    const snapshotFresh = systemSnapshotAgeMs(this.state.system?.snapshot) < 4000;
+    if (this.backend.systemSnapshot && this.isSystemMonitorActive() && this.state.system.status === "idle" && !snapshotFresh) {
       scheduleFrame(() => this.refreshSystemMonitor().catch((error) => this.reportError("System", error)));
     }
   }
@@ -403,21 +475,32 @@ export class AppController {
     if (this.systemMonitorRefreshing) return this.state.system.snapshot;
     if (!this.backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
     this.systemMonitorRefreshing = true;
-    const render = !quiet || this.isSystemMonitorActive();
+    // Quiet polls never trigger a full render: state updates silently and,
+    // when a monitor subtab is open, the visible values are patched in place.
+    const render = !quiet;
     if (!quiet && !this.state.system.snapshot) {
       this.applySystemMonitorEvent({ type: "SYSTEM_STATUS_SET", payload: { status: "loading" } }, { render });
     }
     try {
       const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot());
       this.applySystemMonitorEvent({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { render });
-      await this.refreshActiveTunnels({ render });
+      const syncTunnels = !quiet || (this.systemMonitorQuietPollCount += 1) % 3 === 0;
+      if (syncTunnels) await this.refreshActiveTunnels({ render });
+      if (quiet) this.patchOrRenderSystemMonitor();
       return snapshot;
     } catch (error) {
       this.applySystemMonitorEvent({ type: "SYSTEM_STATUS_SET", payload: { status: "error", error: error?.message || String(error) } }, { render });
+      if (quiet) this.patchOrRenderSystemMonitor();
       throw error;
     } finally {
       this.systemMonitorRefreshing = false;
     }
+  }
+
+  patchOrRenderSystemMonitor() {
+    if (!this.isSystemMonitorActive()) return;
+    const patched = this.view.patchSystemMonitor?.(this.state);
+    if (!patched) this.render({ preserveInput: true });
   }
 
   // Reconciles state.system.tunnels with tunnels actually running on the
@@ -486,6 +569,7 @@ export class AppController {
   async refreshMediaPermissions({ render = true } = {}) {
     if (!this.backend.getMediaPermissions) return this.state.permissions;
     const permissions = await this.backend.getMediaPermissions();
+    if (permissionsEqual(this.state.permissions, permissions)) return this.state.permissions;
     if (render) {
       this.dispatch({ type: "PERMISSIONS_SET", payload: permissions }, { preserveInput: true });
     } else {
@@ -526,6 +610,9 @@ export class AppController {
       this.externalUnlisten = await this.backend.listenForCommands?.((command) => this.handleExternalCommand(command));
       this.wakeUnlisten = await this.backend.listen?.("auri-wake", (payload) => this.activateWakeSession(payload));
       this.webNavigationUnlisten = await this.backend.listen?.("auri-web-navigation", (payload) => this.handleWebNavigation(payload));
+      this.webAiUnlisten = await this.backend.listen?.("auri-web-ai", (payload) => {
+        this.handleWebAiAction(payload).catch((error) => this.reportError("Web AI", error));
+      });
       this.browserOverlayUnlisten = await this.backend.listen?.("auri-browser-overlay-action", (payload) => this.handleBrowserOverlayAction(payload));
       const initialized = await this.backend.initialize();
       await this.refreshMediaPermissions({ render: false });
@@ -616,6 +703,7 @@ export class AppController {
     this.view.root.addEventListener("click", (event) => this.handleClick(event));
     this.view.root.addEventListener("dblclick", (event) => this.handleDoubleClick(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleLiveRecordPointerDown(event));
+    this.view.root.addEventListener("pointerdown", (event) => this.handleMagicPointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleFolderResizePointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -629,18 +717,20 @@ export class AppController {
     window.addEventListener("keyup", (event) => this.handleGlobalKeyup(event));
     window.addEventListener("pointerup", (event) => this.handleLiveRecordPointerEnd(event));
     window.addEventListener("pointercancel", (event) => this.handleLiveRecordPointerEnd(event));
+    window.addEventListener("pointerup", (event) => this.handleMagicPointerEnd(event));
+    window.addEventListener("pointercancel", (event) => this.handleMagicPointerEnd(event));
     window.addEventListener("pointermove", (event) => this.handleFolderResizePointerMove(event));
     window.addEventListener("pointerup", (event) => this.handleFolderResizePointerEnd(event));
     window.addEventListener("pointercancel", (event) => this.handleFolderResizePointerEnd(event));
     window.addEventListener("focus", () => {
       this.wakeLiveSession?.resume?.().catch?.(() => {});
-      this.refreshMediaPermissions().catch?.(() => {});
+      this.refreshMediaPermissions({ render: false }).catch?.(() => {});
     });
     if (typeof document !== "undefined") {
       document.addEventListener?.("visibilitychange", () => {
         if (!document.hidden) {
           this.wakeLiveSession?.resume?.().catch?.(() => {});
-          this.refreshMediaPermissions().catch?.(() => {});
+          this.refreshMediaPermissions({ render: false }).catch?.(() => {});
         }
       });
     }
@@ -712,6 +802,55 @@ export class AppController {
       return false;
     } finally {
       this.liveRecordStartPromise = null;
+    }
+  }
+
+  /// The webview magic button mirrors the terminal microphone: hold one
+  /// second to talk with the Live API (screenshot attached), release to send.
+  /// A short press falls through to the click handler, which opens the menu.
+  async handleMagicPointerDown(event) {
+    const target = event.target?.closest?.('[data-action="web-magic"]');
+    if (!target || event.button !== 0 || this.magicPointerId !== null) return false;
+    event.preventDefault?.();
+    this.magicPointerId = event.pointerId;
+    this.magicLongPress = false;
+    this.magicStartPromise = null;
+    clearTimeout(this.magicHoldTimer);
+    target.setPointerCapture?.(event.pointerId);
+    this.magicHoldTimer = setTimeout(() => {
+      if (this.magicPointerId !== event.pointerId) return;
+      this.magicLongPress = true;
+      this.magicStartPromise = Promise.resolve(this.runInternal("live record start"))
+        .then(() => true)
+        .catch((error) => {
+          this.view.showToast(error?.message || String(error), "error");
+          return false;
+        });
+    }, 1000);
+    return true;
+  }
+
+  async handleMagicPointerEnd(event) {
+    if (this.magicPointerId === null || event.pointerId !== this.magicPointerId) return false;
+    event.preventDefault?.();
+    clearTimeout(this.magicHoldTimer);
+    this.magicHoldTimer = null;
+    const wasLongPress = this.magicLongPress;
+    const startPromise = this.magicStartPromise;
+    this.magicPointerId = null;
+    this.magicLongPress = false;
+
+    try {
+      if (!wasLongPress) return false;
+      this.magicSuppressClick = event.type !== "pointercancel";
+      const started = await startPromise;
+      if (started !== false) await this.runInternal("live record stop");
+      return true;
+    } catch (error) {
+      this.view.showToast(error?.message || String(error), "error");
+      return false;
+    } finally {
+      this.magicStartPromise = null;
     }
   }
 
@@ -814,6 +953,13 @@ export class AppController {
       return true;
     }
 
+    // Cloudflare quick tunnels are built for HTTP(S). Warn (but still try) when
+    // the port doesn't look like HTTP, so the person knows why it may not work.
+    const protocol = protocolForPort(number);
+    if (protocol !== "http" && protocol !== "https") {
+      this.view.showToast?.("This port doesn't look like HTTP — Cloudflare tunnels only support HTTP(S). Trying anyway…", "info");
+    }
+
     let installFlag = "";
     if (this.backend.cloudflaredStatus) {
       const status = await this.backend.cloudflaredStatus();
@@ -843,6 +989,7 @@ export class AppController {
     const insideAssistantPopup = event.target?.closest?.(".assistant-action-popup");
     const insideProcessDetail = event.target?.closest?.(".system-process-detail");
     const insideSystemTunnelPrompt = event.target?.closest?.(".system-tunnel-prompt");
+    const insideSystemKillPrompt = event.target?.closest?.(".system-kill-prompt");
     const insideTunnelUrlMenu = event.target?.closest?.(".process-detail-port-url-menu, .process-detail-port-url");
     const insideCommandMenu = event.target?.closest?.(".command-menu-wrap");
     const target = event.target?.closest?.("[data-action]");
@@ -855,8 +1002,13 @@ export class AppController {
     if (this.state.ui.commandMenuOpen && !insideCommandMenu) {
       this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
     }
+    const insideClipboardInfo = event.target?.closest?.(".clipboard-info-popup");
+    const clipboardInfoTrigger = event.target?.closest?.('[data-action="clipboard-info"], [data-action="clipboard-menu"]');
+    if (this.state.ui.clipboardInfoId && !insideClipboardInfo && !clipboardInfoTrigger) {
+      this.dispatch({ type: "UI_SET", payload: { clipboardInfoId: null } }, { preserveInput: true });
+    }
     const action = target?.dataset?.action || "";
-    if (this.state.system.selectedProcessPid && !insideProcessDetail && !insideSystemTunnelPrompt && !action.startsWith("system-tunnel-prompt-") && action !== "system-process-select") {
+    if (this.state.system.selectedProcessPid && !insideProcessDetail && !insideSystemTunnelPrompt && !insideSystemKillPrompt && !action.startsWith("system-tunnel-prompt-") && !action.startsWith("system-kill-prompt-") && action !== "system-process-select") {
       await this.runInternal("system deselect");
     }
     if (!target) return;
@@ -889,6 +1041,7 @@ export class AppController {
           break;
         case "subtab-select":
           await this.runInternal(`subtab select ${target.dataset.id}`);
+          if (activeSubtab(this.state).type === "terminal") await this.synchronizeActiveTerminalToFolder();
           if (activeSubtab(this.state).type === "info") this.dispatch({ type: "INFO_READ", payload: {} });
           if (activeSubtab(this.state).type === "settings") await this.runInternal("permission status");
           if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
@@ -911,6 +1064,7 @@ export class AppController {
         case "command-menu-tab":
           this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
           await this.runInternal(`subtab select ${target.dataset.id}`);
+          if (activeSubtab(this.state).type === "terminal") await this.synchronizeActiveTerminalToFolder();
           break;
         case "app-exit":
           this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
@@ -931,11 +1085,41 @@ export class AppController {
         case "system-sort":
           await this.runInternal(`system sort ${target.dataset.sort || "cpu"}`);
           break;
+        case "system-search-toggle": {
+          const open = !this.state.ui.systemSearchOpen;
+          this.dispatch({ type: "UI_SET", payload: { systemSearchOpen: open } }, { preserveInput: true });
+          if (open) {
+            this.view.root.querySelector?.("#system-search-input")?.focus?.();
+          } else if (this.state.system.filter) {
+            await this.runInternal("system search");
+          }
+          break;
+        }
+        case "system-search-clear":
+          await this.runInternal("system search");
+          this.view.root.querySelector?.("#system-search-input")?.focus?.();
+          break;
         case "system-process-select":
           await this.runInternal(`system select ${target.dataset.pid || ""}`);
           break;
-        case "system-process-kill":
-          await this.runInternal(`system kill ${this.state.system.selectedProcessPid || ""}`);
+        case "system-process-kill": {
+          const pid = this.state.system.selectedProcessPid;
+          if (!pid) break;
+          const process = this.state.system.snapshot?.processes?.find((item) => Number(item.pid) === Number(pid));
+          this.dispatch({ type: "UI_SET", payload: { systemKillPrompt: { pid, name: process?.name || "" } } }, { preserveInput: true });
+          break;
+        }
+        case "system-kill-prompt-confirm": {
+          const pid = this.state.ui.systemKillPrompt?.pid || this.state.system.selectedProcessPid || "";
+          this.dispatch({ type: "UI_SET", payload: { systemKillPrompt: null } }, { preserveInput: true });
+          if (pid) await this.runInternal(`system kill ${pid}`);
+          break;
+        }
+        case "system-kill-prompt-cancel":
+          if (event.target.closest(".system-kill-prompt") && !event.target.closest("button")) {
+            break;
+          }
+          this.dispatch({ type: "UI_SET", payload: { systemKillPrompt: null } }, { preserveInput: true });
           break;
         case "system-process-open-path":
           await this.runInternal(`system open-path ${this.state.system.selectedProcessPid || ""}`);
@@ -1030,12 +1214,19 @@ export class AppController {
           await this.openFolderEntry(target.dataset.path, target.dataset.kind);
           break;
         case "terminal-completion-select":
+          this.flushTerminalCompletions();
           this.acceptTerminalCompletion(Number(target.dataset.index));
           break;
         case "custom-completions-save": {
           const value = this.view.getCustomCompletions?.() || "";
           await this.runInternal(`settings set customCompletions ${quoteArg(value)}`);
           this.view.showToast("Custom completions saved", "success");
+          break;
+        }
+        case "web-ai-prompts-save": {
+          const value = this.view.root.querySelector("#web-ai-prompts")?.value || "";
+          await this.runInternal(`settings set webAiPrompts ${quoteArg(value)}`);
+          this.view.showToast("Browser AI prompts saved", "success");
           break;
         }
         case "terminal-run":
@@ -1130,6 +1321,31 @@ export class AppController {
         case "clipboard-insert":
           await this.insertClipboard(target.dataset.id);
           break;
+        case "clipboard-copy-item":
+          this.dispatch({ type: "UI_SET", payload: { clipboardMenuId: null } }, { preserveInput: true });
+          await this.runInternal(`clipboard copy-item ${target.dataset.id}`);
+          this.view.showToast("Copied to clipboard", "success");
+          break;
+        case "clipboard-info":
+          await this.runInternal(`clipboard info ${target.dataset.id}`);
+          break;
+        case "clipboard-info-close":
+          this.dispatch({ type: "UI_SET", payload: { clipboardInfoId: null } }, { preserveInput: true });
+          break;
+        case "clipboard-edit":
+          this.dispatch({ type: "UI_SET", payload: { clipboardMenuId: null, clipboardInfoId: null, clipboardEditId: target.dataset.id } }, { preserveInput: true });
+          break;
+        case "clipboard-edit-cancel":
+          this.dispatch({ type: "UI_SET", payload: { clipboardEditId: null } }, { preserveInput: true });
+          break;
+        case "clipboard-edit-save": {
+          const input = this.view.root.querySelector(`.clipboard-edit-input[data-id="${target.dataset.id}"]`);
+          const text = input ? input.value : "";
+          await this.runInternal(`clipboard edit ${target.dataset.id} ${quoteArg(text)}`);
+          this.dispatch({ type: "UI_SET", payload: { clipboardEditId: null } }, { preserveInput: true });
+          this.view.showToast("Clipboard item updated", "success");
+          break;
+        }
         case "copy-text":
           await this.runInternal(`clipboard copy ${quoteArg(target.dataset.value || "")}`);
           this.view.showToast("Copied", "success");
@@ -1152,6 +1368,40 @@ export class AppController {
         case "web-go":
           await this.runInternal(`web open ${quoteArg(this.view.getWebUrl())}`);
           break;
+        case "web-magic":
+          if (this.magicSuppressClick) {
+            this.magicSuppressClick = false;
+            break;
+          }
+          this.dispatch({
+            type: "UI_SET",
+            payload: { webMagicMenuOpen: !this.state.ui.webMagicMenuOpen, webMenuOpen: false, webDialog: null, addSubtabMenuOpen: false }
+          }, { preserveInput: true });
+          break;
+        case "web-magic-close":
+          this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+          break;
+        case "web-magic-go":
+          this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+          await this.runInternal(`web open ${quoteArg(this.view.getWebUrl())}`);
+          break;
+        case "web-magic-ask": {
+          const question = String(this.view.getWebUrl?.() || "").trim();
+          this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+          if (!question) throw new Error("Type a question in the URL bar first.");
+          await this.runInternal(`web ask ${question}`);
+          break;
+        }
+        case "web-ai-close":
+          await this.runInternal("web ask-close");
+          break;
+        case "web-ai-copy": {
+          const text = assistantPlainText(this.state.ui.webAiReply?.text || "").trim();
+          if (!text) break;
+          await this.runInternal(`clipboard copy ${quoteArg(text)}`);
+          this.view.showToast("Copied", "success");
+          break;
+        }
         case "web-menu":
           this.dispatch({ type: "UI_SET", payload: { webMenuOpen: !this.state.ui.webMenuOpen, webDialog: null, addSubtabMenuOpen: false } }, { preserveInput: true });
           break;
@@ -1222,6 +1472,29 @@ export class AppController {
           break;
         case "record-stop":
           await this.runInternal("record stop");
+          break;
+        case "file-attach-ai": {
+          const path = target.dataset.path || activeWorkspace(this.state).viewer.path;
+          if (!path) break;
+          await this.runInternal(`attachment add ${quoteArg(path)}`);
+          this.openSingletonSubtab("terminal");
+          this.view.showToast("Added to prompt", "success");
+          break;
+        }
+        case "file-serve":
+          await this.runInternal(`file serve ${quoteArg(activeWorkspace(this.state).viewer.path || "")}`);
+          break;
+        case "record-pause":
+          await this.runInternal("record pause");
+          break;
+        case "record-resume":
+          await this.runInternal("record resume");
+          break;
+        case "record-photo":
+          await this.runInternal("record photo");
+          break;
+        case "record-mode":
+          await this.runInternal(`record mode ${target.dataset.mode}`);
           break;
         case "media-attach":
           await this.runInternal(`media attach ${target.dataset.kind}`);
@@ -1320,6 +1593,9 @@ export class AppController {
     }
     if (event.target.id === "terminal-input") {
       const noModifier = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+      if (noModifier && !event.isComposing && ["ArrowDown", "ArrowUp", "Tab", "Escape"].includes(event.key)) {
+        this.flushTerminalCompletions();
+      }
       if (this.terminalCompletions.length && noModifier && !event.isComposing) {
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
@@ -1378,6 +1654,10 @@ export class AppController {
       this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
       return;
     }
+    if (event.key === "Escape" && this.state.ui.webMagicMenuOpen) {
+      this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+      return;
+    }
     if (event.key === "Escape" && this.state.ui.commandPaletteOpen) {
       this.dispatch({ type: "UI_SET", payload: { commandPaletteOpen: false } });
     }
@@ -1408,7 +1688,14 @@ export class AppController {
   handleInput(event) {
     const input = event.target;
     if (input.id === "terminal-input") {
-      this.refreshTerminalCompletions(input.value, input.selectionStart);
+      this.scheduleTerminalCompletions(input.value, input.selectionStart);
+      return;
+    }
+    if (input.id === "system-search-input") {
+      // Filter live without a full re-render so the field keeps focus/caret as
+      // the person types multi-keyword queries; the list updates in place.
+      this.dispatch({ type: "SYSTEM_FILTER_SET", payload: { filter: input.value } }, { render: false });
+      this.view.patchSystemMonitor?.(this.state);
       return;
     }
     if (input.id === "custom-completions") {
@@ -1493,6 +1780,23 @@ export class AppController {
       }
       return;
     }
+    if (input.id === "record-audio-device") {
+      await this.runInternal(`record mic ${quoteArg(input.value || "default")}`).catch((error) => this.reportError("Microphone", error));
+      return;
+    }
+    if (input.id === "record-video-device") {
+      this.dispatch({ type: "MEDIA_SET", payload: { videoDeviceId: input.value === "default" ? null : input.value } }, { preserveInput: true });
+      this.syncCameraPreview({ restart: true });
+      return;
+    }
+    if (input.id === "record-source") {
+      this.dispatch({ type: "MEDIA_SET", payload: { audioSource: input.value } }, { preserveInput: true });
+      return;
+    }
+    if (input.dataset.key && input.type === "checkbox" && input.closest(".record-panel")) {
+      this.dispatch({ type: "MEDIA_SET", payload: { [input.dataset.key]: input.checked } }, { preserveInput: true });
+      return;
+    }
     if (input.dataset.setting) {
       const key = input.dataset.setting;
       if (key === "wakeShortcut") return;
@@ -1541,6 +1845,29 @@ export class AppController {
       await this.runInternal("transcript dismiss");
       return;
     }
+    // Holding Ctrl for two seconds while the screen compositor is running
+    // flips auto zoom without interrupting the recording.
+    if (event.key === "Control" && this.capture?.compositor && !this.zoomHoldTimer) {
+      this.zoomHoldTimer = setTimeout(() => {
+        this.zoomHoldTimer = null;
+        if (!this.capture?.compositor) return;
+        const autoZoom = !this.state.media.autoZoom;
+        this.dispatch({ type: "MEDIA_SET", payload: { autoZoom } }, { preserveInput: true });
+        this.view.showToast(autoZoom ? "Auto zoom to cursor on" : "Auto zoom to cursor off", "success");
+      }, 2000);
+    }
+    const tabSwitch = tabSwitchFromKeyboardEvent(event);
+    if (tabSwitch) {
+      const target = tabSwitch.kind === "workspace"
+        ? this.state.tabs[tabSwitch.index]
+        : activeWorkspace(this.state).subtabs[tabSwitch.index];
+      if (target) {
+        event.preventDefault();
+        await this.runInternal(`${tabSwitch.kind === "workspace" ? "tab" : "subtab"} select ${target.id}`);
+        if (tabSwitch.kind === "workspace") await this.refreshFolder({ focusTerminal: true });
+      }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (!this.state.ui.commandPaletteOpen) {
@@ -1559,6 +1886,10 @@ export class AppController {
   }
 
   handleGlobalKeyup(event) {
+    if (event.key === "Control" && this.zoomHoldTimer) {
+      clearTimeout(this.zoomHoldTimer);
+      this.zoomHoldTimer = null;
+    }
     if (this.wakeTimer && shortcutKeyMatchesKeyboardEvent(event, this.state.settings.wakeShortcut)) {
       clearTimeout(this.wakeTimer);
       this.wakeTimer = null;
@@ -1596,10 +1927,25 @@ export class AppController {
         throw new Error("Select a Gemini Live model in Settings before using voice input.");
       }
 
-      this.openSingletonSubtab("terminal");
-      this.dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } }, { preserveInput: true });
+      // Sessions started from a web tab keep the person on that tab and show
+      // the reply in the floating panel; everything else uses the terminal.
+      this.wakePresentation = activeSubtab(this.state)?.type === "webview" ? "web" : "terminal";
       this.finalizeWakeStream();
-      this.activeTerminalSession().printMessage("Voice", "Listening…", "33");
+      if (this.wakePresentation === "web") {
+        this.dispatch({
+          type: "UI_SET",
+          payload: {
+            webAiReply: { status: "listening", prompt: "Voice input", modelName: model.name, text: "" },
+            webMagicMenuOpen: false,
+            assistantActions: [],
+            assistantTranscripts: []
+          }
+        }, { preserveInput: true });
+      } else {
+        this.openSingletonSubtab("terminal");
+        this.dispatch({ type: "UI_SET", payload: { assistantActions: [], assistantTranscripts: [] } }, { preserveInput: true });
+        this.activeTerminalSession().printMessage("Voice", "Listening…", "33");
+      }
 
       if (this.wakeLiveSession && !this.wakeLiveSession.completed && this.wakeLiveSession.restart) {
         await this.wakeLiveSession.restart({
@@ -1657,6 +2003,22 @@ export class AppController {
     const delta = next.startsWith(previous) ? next.slice(previous.length) : next;
     this.wakeStreamText = next;
 
+    if (this.wakePresentation === "web") {
+      const reply = this.state.ui.webAiReply || {};
+      this.dispatch({
+        type: "UI_SET",
+        payload: {
+          webAiReply: {
+            status: "streaming",
+            prompt: reply.prompt || "Voice input",
+            modelName: model?.name || reply.modelName || "Gemini Live",
+            text: next
+          }
+        }
+      }, { preserveInput: true });
+      return;
+    }
+
     if (!this.wakeStreamStarted) {
       this.wakeStreamStarted = true;
       this.wakeStreamParser = new AssistantStreamParser();
@@ -1712,6 +2074,26 @@ export class AppController {
       }
     }
 
+    if (this.wakePresentation === "web") {
+      const reply = this.state.ui.webAiReply || {};
+      this.dispatch({
+        type: "UI_SET",
+        payload: {
+          webAiReply: {
+            status: "ready",
+            prompt: reply.prompt || "Voice input",
+            modelName: model?.name || reply.modelName || "Gemini Live",
+            text,
+            audioUrl
+          }
+        }
+      }, { preserveInput: true });
+      this.wakeStreamText = "";
+      this.wakeStreamStarted = false;
+      this.wakeStreamParser = null;
+      return;
+    }
+
     const assistantAudio = audioUrl ? {
       name: `${model?.name || "Gemini Live"} response`,
       url: audioUrl,
@@ -1751,7 +2133,17 @@ export class AppController {
   failWakeLiveSession(error) {
     this.wakeLiveSession = null;
     this.finalizeWakeStream();
-    this.dispatch({ type: "UI_SET", payload: { liveConnected: false, liveRecording: false, liveStatus: "error" } }, { preserveInput: true });
+    const payload = { liveConnected: false, liveRecording: false, liveStatus: "error" };
+    if (this.wakePresentation === "web") {
+      const reply = this.state.ui.webAiReply || {};
+      payload.webAiReply = {
+        status: "error",
+        prompt: reply.prompt || "Voice input",
+        modelName: reply.modelName || "Gemini Live",
+        text: error?.message || String(error)
+      };
+    }
+    this.dispatch({ type: "UI_SET", payload }, { preserveInput: true });
     this.reportError("Gemini Live", error);
   }
 
@@ -1802,26 +2194,67 @@ export class AppController {
     }
   }
 
-  async handleTerminalCwdChange(workspaceId, path) {
+  async handleTerminalCwdChange(workspaceId, terminalId, path) {
     const workspace = this.state.tabs.find((tab) => tab.id === workspaceId);
-    if (!workspace || !path || path === workspace.terminal.cwd) return;
-    await this.syncDirectory(path, workspaceId);
+    const terminal = workspace?.subtabs.find((item) => item.id === terminalId);
+    if (!workspace || !terminal || !path || path === terminal.cwd) return;
+    await this.syncDirectory(path, workspaceId, terminalId);
   }
 
-  async syncDirectory(path, workspaceId = this.state.activeTabId) {
+  async syncDirectory(path, workspaceId = this.state.activeTabId, terminalId = undefined) {
+    const workspace = this.state.tabs.find((tab) => tab.id === workspaceId);
+    const resolvedTerminalId = terminalId === undefined
+      ? workspace?.subtabs.find((item) => item.type === "terminal")?.id || null
+      : terminalId;
     const entries = await this.backend.listDirectory(path);
     const focusTerminal = workspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal";
-    this.dispatch({ type: "WORKDIR_SET", payload: { workspaceId, path } }, { preserveInput: true, focusTerminal });
+    // Apply both events in one pass so a directory change costs one render
+    // (and one workspace persist) instead of two full DOM rebuilds.
+    this.dispatch({ type: "FOLDER_PATH_SET", payload: { workspaceId, path } }, { preserveInput: true, focusTerminal, render: false });
+    if (resolvedTerminalId) {
+      this.dispatch({ type: "TERMINAL_CWD_SET", payload: { workspaceId, terminalId: resolvedTerminalId, path } }, { preserveInput: true, focusTerminal, render: false });
+    }
     this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } }, { preserveInput: true, focusTerminal });
+  }
+
+  async synchronizeActiveTerminalToFolder() {
+    const workspace = activeWorkspace(this.state);
+    const terminal = activeSubtab(this.state);
+    if (terminal?.type !== "terminal") return false;
+    const path = workspace.folder.path;
+    const session = this.terminalSessionFor(terminal.id);
+    const currentPath = terminal.cwd || session.cwd || workspace.terminal.cwd;
+    if (!path || currentPath === path) return false;
+    if (await session.isBusy?.()) return false;
+    const command = path === "~" ? "cd ~" : `cd ${shellQuote(path)}`;
+    if (this.native) await session.run(command);
+    session.cwd = path;
+    this.dispatch({ type: "TERMINAL_CWD_SET", payload: { terminalId: terminal.id, path } }, { preserveInput: true, focusTerminal: true });
+    return true;
   }
 
   async changeDirectory(path, { echoInTerminal = false } = {}) {
     const workspace = activeWorkspace(this.state);
     const command = path === "~" ? "cd ~" : `cd ${shellQuote(path)}`;
-    const result = await this.backend.runCommand(command, workspace.terminal.cwd);
+    const result = await this.backend.runCommand(command, workspace.folder.path);
     if (result.code !== 0 || !result.cwd) throw new Error(result.stderr || `Could not open folder: ${path}`);
-    if (echoInTerminal && this.native) await this.activeTerminalSession().run(command);
-    await this.syncDirectory(result.cwd);
+    const terminal = activeSubtab(this.state);
+    if (terminal?.type !== "terminal") {
+      await this.syncDirectory(result.cwd, workspace.id, null);
+      return;
+    }
+    const session = this.terminalSessionFor(terminal.id);
+    if (echoInTerminal && await session.isBusy?.()) {
+      await this.runInternal("subtab new terminal");
+      const newTerminal = activeSubtab(this.state);
+      const newSession = this.terminalSessionFor(newTerminal.id);
+      newSession.cwd = result.cwd;
+      await this.syncDirectory(result.cwd, workspace.id, newTerminal.id);
+      return;
+    }
+    if (echoInTerminal && this.native) await session.run(command);
+    session.cwd = result.cwd;
+    await this.syncDirectory(result.cwd, workspace.id, terminal.id);
   }
 
   async refreshFolder({ focusTerminal = false } = {}) {
@@ -1842,7 +2275,11 @@ export class AppController {
     }
     const workspace = activeWorkspace(this.state);
     const repeat = workspace.folder.selectedPath === path;
-    const action = forceOpen || repeat ? "open" : "inspect";
+    // Double-click (forceOpen) prefers the local HTTP web viewer in the
+    // native build; repeated single clicks keep the lightweight inline view.
+    const action = forceOpen && this.native && this.backend.startFileServer
+      ? "serve"
+      : forceOpen || repeat ? "open" : "inspect";
     await this.runInternal(`file ${action} ${quoteArg(path)}`);
   }
 
@@ -1878,7 +2315,15 @@ export class AppController {
       const items = await this.backend.readClipboardHistory();
       const current = this.state.clipboard.items;
       const changed = items.length !== current.length || items.some((item, index) => item.id !== current[index]?.id);
-      if (changed) this.dispatch({ type: "CLIPBOARD_SET", payload: { items } });
+      if (changed) {
+        // Only the clipboard panel shows this data, so background polls keep
+        // state current without rebuilding the DOM under other subtabs.
+        if (activeSubtab(this.state)?.type === "clipboard") {
+          this.dispatch({ type: "CLIPBOARD_SET", payload: { items } });
+        } else {
+          this.state = reduceState(this.state, { type: "CLIPBOARD_SET", payload: { items } });
+        }
+      }
     } finally {
       this.clipboardPolling = false;
     }
@@ -1920,6 +2365,47 @@ export class AppController {
       if (!type) return;
       this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } }, { preserveInput: true });
       await this.runInternal(`subtab new ${type}`);
+      return;
+    }
+    if (action === "web-magic-close") {
+      this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+      return;
+    }
+    if (action === "web-magic-go") {
+      this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+      await this.runInternal(`web open ${quoteArg(this.view.getWebUrl())}`);
+      return;
+    }
+    if (action === "web-magic-ask") {
+      const question = String(this.view.getWebUrl?.() || "").trim();
+      this.dispatch({ type: "UI_SET", payload: { webMagicMenuOpen: false } }, { preserveInput: true });
+      if (!question) {
+        this.view.showToast("Type a question in the URL bar first.", "info");
+        return;
+      }
+      await this.runInternal(`web ask ${question}`);
+      return;
+    }
+    if (action === "web-ai-close") {
+      await this.runInternal("web ask-close");
+      return;
+    }
+    if (action === "web-ai-copy" || action === "copy-text") {
+      const text = action === "copy-text"
+        ? String(payload?.value || "")
+        : assistantPlainText(this.state.ui.webAiReply?.text || "").trim();
+      if (!text) return;
+      await this.runInternal(`clipboard copy ${quoteArg(text)}`);
+      this.view.showToast("Copied", "success");
+      return;
+    }
+    if (action === "assistant-insert") {
+      await this.runInternal(`input insert ${quoteArg(payload?.value || "")}`);
+      return;
+    }
+    if (action === "assistant-run") {
+      const command = String(payload?.value || "");
+      if (command) await this.runInternal(`terminal run ${command}`);
       return;
     }
     if (action === "web-bookmark-save") {
@@ -1974,6 +2460,45 @@ export class AppController {
     }
     this.dispatch({ type: "BROWSER_HISTORY_ADD", payload: { url, title, at: new Date().toISOString() } }, { preserveInput: true });
     await this.persistConfiguration();
+  }
+
+  async handleWebAiAction(payload) {
+    const action = String(payload?.action || "");
+    const item = webAiMenuItems(this.state.settings.webAiPrompts).find((entry) => entry.id === action);
+    if (!item) return;
+    if (item.speak) {
+      const model = this.state.models.find((entry) => entry.id === this.state.selectedModelId);
+      if (!model || !String(model.type || "").includes("live")) {
+        this.view.showToast("Speech uses a Gemini Live model — select one in Settings.", "info");
+        return;
+      }
+    }
+    if (payload?.kind === "image" && payload.image && typeof atob === "function") {
+      try {
+        const binary = atob(String(payload.image));
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        const blob = new Blob([bytes], { type: "image/png" });
+        this.dispatch({
+          type: "ATTACHMENT_ADD",
+          payload: {
+            id: `attachment-${Date.now()}`,
+            name: "web-image.png",
+            kind: "image",
+            mime: "image/png",
+            blob,
+            url: typeof URL !== "undefined" && URL.createObjectURL ? URL.createObjectURL(blob) : null
+          }
+        }, { preserveInput: true });
+      } catch {
+        // A malformed image payload falls back to the text-only prompt.
+      }
+    }
+    const prompt = webAiPrompt(item, payload || {});
+    if (!prompt) return;
+    // The reply appears in a floating panel over the current web tab; the
+    // user explicitly stays where they are instead of jumping to the terminal.
+    await this.runInternal(`web ask ${prompt}`);
   }
 
   async handleFileViewerMessage(event) {
@@ -2070,17 +2595,36 @@ export class AppController {
     if (this.state.ui.addSubtabMenuOpen) {
       return { mode: "new-tab" };
     }
+    if (this.state.ui.webMagicMenuOpen) {
+      return { mode: "magic" };
+    }
     if (this.state.ui.webMenuOpen) {
       return { mode: "menu", zoom: `${Math.round((Number(subtab.zoom) || 1) * 100)}%` };
     }
     const mode = this.state.ui.webDialog;
-    if (!mode) return null;
-    return {
-      mode,
-      bookmarkDraft: this.state.ui.bookmarkDraft,
-      bookmarks: this.state.browser.bookmarks,
-      history: this.state.browser.history
-    };
+    if (mode) {
+      return {
+        mode,
+        bookmarkDraft: this.state.ui.bookmarkDraft,
+        bookmarks: this.state.browser.bookmarks,
+        history: this.state.browser.history
+      };
+    }
+    const reply = this.state.ui.webAiReply;
+    if (reply) {
+      return {
+        mode: "ai-reply",
+        reply: {
+          status: reply.status,
+          prompt: reply.prompt || "",
+          modelName: reply.modelName || "AI",
+          hasAudio: Boolean(reply.audioUrl),
+          plainText: assistantPlainText(reply.text || ""),
+          segments: parseAssistantReply(reply.text || "").segments
+        }
+      };
+    }
+    return null;
   }
 
   browserOverlayBounds(hostRect) {
@@ -2102,6 +2646,18 @@ export class AppController {
         height
       };
     }
+    if (this.state.ui.webMagicMenuOpen) {
+      const button = this.view.root.querySelector?.('[data-action="web-magic"]');
+      const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 48, bottom: hostRect.top };
+      const width = 240;
+      const height = 170;
+      return {
+        x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
+        y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || hostRect.top) + 6)),
+        width,
+        height
+      };
+    }
     if (this.state.ui.webMenuOpen) {
       const button = this.view.root.querySelector?.('[data-action="web-menu"]');
       const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 8, bottom: hostRect.top };
@@ -2110,6 +2666,16 @@ export class AppController {
       return {
         x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
         y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || hostRect.top) + 6)),
+        width,
+        height
+      };
+    }
+    if (!this.state.ui.webDialog && this.state.ui.webAiReply) {
+      const width = Math.min(460, Math.max(280, hostRect.width - 24));
+      const height = Math.min(430, Math.max(220, hostRect.height - 24));
+      return {
+        x: Math.max(8, hostRect.left + hostRect.width - width - 12),
+        y: Math.max(8, hostRect.top + 12),
         width,
         height
       };
@@ -2154,7 +2720,7 @@ export class AppController {
         y: rect.top,
         width: rect.width,
         height: rect.height
-      }, navigate);
+      }, navigate, webAiMenuPayload(this.state.settings.webAiPrompts));
       this.nativeWebviewUrls.set(subtab.id, url);
     }
     await this.syncBrowserOverlay(subtab, rect);
@@ -2226,25 +2792,193 @@ export class AppController {
   }
 
   async startRecording(kind) {
-    const source = this.view.root.querySelector("#record-source")?.value;
-    const includeMicrophone = Boolean(this.view.root.querySelector("#record-mic")?.checked);
-    const needsMicrophone = source === "microphone" || source === "camera" || includeMicrophone;
+    const media = this.state.media;
+    const source = kind === "audio"
+      ? (media.audioSource === "screen-audio" ? "screen-audio" : "microphone")
+      : media.mode === "screen" ? "screen" : "camera";
+    const includeMicrophone = Boolean(media.includeMicrophone);
+    const needsMicrophone = source === "microphone" || source === "camera" || (source === "screen" && includeMicrophone);
     const needsScreenRecording = source === "screen" || source === "screen-audio";
     if (needsMicrophone) await this.ensureMediaPermission("microphone");
     if (needsScreenRecording) await this.ensureMediaPermission("screenRecording");
+    this.stopCameraPreview();
     await this.capture.start({
       kind,
       source,
       includeMicrophone,
+      audioDeviceId: media.audioDeviceId,
+      videoDeviceId: media.videoDeviceId,
+      effects: source === "screen"
+        ? {
+            autoZoom: Boolean(media.autoZoom),
+            cameraBubble: Boolean(media.cameraBubble),
+            zoomLevel: 1.9,
+            getCursor: this.screenCursorProvider(),
+            // Read live so holding Ctrl (auto zoom) or flipping the setting
+            // (cursor circle) takes effect mid-recording.
+            getAutoZoom: () => Boolean(this.state.media.autoZoom),
+            getCursorHighlight: () => Boolean(this.state.settings.cursorHighlight)
+          }
+        : null,
       onReady: (result) => this.finishRecording(result)
     });
-    this.dispatch({ type: "MEDIA_SET", payload: { status: "recording", kind, previewUrl: null, fileName: null } });
+    this.dispatch({ type: "MEDIA_SET", payload: { status: "recording", kind, paused: false, previewUrl: null, fileName: null } });
+  }
+
+  /// Global cursor position mapped into captured-screen pixels, used by the
+  /// screen recorder's Screen-Studio style auto zoom.
+  screenCursorProvider() {
+    const tauriWindow = typeof window !== "undefined" ? window.__TAURI__?.window : null;
+    if (!tauriWindow?.cursorPosition) return () => null;
+    let latest = null;
+    let pending = false;
+    return () => {
+      if (!pending) {
+        pending = true;
+        Promise.resolve(tauriWindow.cursorPosition())
+          .then((position) => { latest = { x: position.x, y: position.y }; })
+          .catch(() => {})
+          .finally(() => { pending = false; });
+      }
+      return latest;
+    };
+  }
+
+  async capturePhoto() {
+    const preview = this.view.root.querySelector?.("#camera-preview");
+    const result = await this.capture.capturePhoto({
+      videoDeviceId: this.state.media.videoDeviceId,
+      previewElement: preview,
+      mirror: Boolean(this.state.media.mirror)
+    });
+    try {
+      const saved = await this.backend.saveMedia({ name: result.fileName, kind: "image", blob: result.blob });
+      this.dispatch({ type: "MEDIA_SET", payload: { status: "ready", ...result, path: saved.path } });
+      this.dispatch({
+        type: "INFO_ADD",
+        payload: { level: "success", title: "Photo", message: saved.path ? `Saved to ${saved.path}.` : `${result.fileName} is ready.` }
+      });
+    } catch (error) {
+      this.dispatch({ type: "MEDIA_SET", payload: { status: "ready", ...result } });
+      this.reportError("Save photo", error);
+    }
+  }
+
+  /// Keeps the recorder panel alive: refreshes device lists once, attaches
+  /// the live camera preview, and runs the waveform/timer loops.
+  syncRecorderUi() {
+    const subtab = activeSubtab(this.state);
+    const type = subtab?.type;
+    if (type !== "audio" && type !== "video") {
+      this.stopCameraPreview();
+      this.stopRecorderLoops();
+      return;
+    }
+    this.refreshRecordingDevices().catch(() => {});
+    if (type === "video" && this.state.media.mode !== "screen" && this.state.media.status !== "recording") {
+      this.startCameraPreview().catch((error) => this.reportError("Camera preview", error));
+    } else if (type === "video" && this.state.media.mode === "screen") {
+      this.stopCameraPreview();
+    }
+    this.syncRecorderLoops();
+  }
+
+  async refreshRecordingDevices() {
+    if (this.recordingDevicesLoaded || !navigator.mediaDevices?.enumerateDevices) return;
+    this.recordingDevicesLoaded = true;
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const { audioInputs, videoInputs } = pickRecordingDevices(devices);
+    this.dispatch({ type: "MEDIA_SET", payload: { audioInputs, videoInputs } }, { preserveInput: true, render: false });
+    navigator.mediaDevices.addEventListener?.("devicechange", async () => {
+      const updated = pickRecordingDevices(await navigator.mediaDevices.enumerateDevices());
+      this.dispatch({ type: "MEDIA_SET", payload: updated }, { preserveInput: true });
+    });
+  }
+
+  async startCameraPreview() {
+    const host = this.view.root.querySelector?.("#camera-preview");
+    if (!host || !navigator.mediaDevices?.getUserMedia) return;
+    const deviceId = this.state.media.videoDeviceId;
+    if (this.cameraPreviewStream && this.cameraPreviewDeviceId === (deviceId || null) && host.srcObject) return;
+    this.stopCameraPreview();
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: deviceId ? { deviceId: { exact: deviceId } } : true
+    });
+    this.cameraPreviewStream = stream;
+    this.cameraPreviewDeviceId = deviceId || null;
+    host.srcObject = stream;
+  }
+
+  stopCameraPreview() {
+    if (this.cameraPreviewStream) {
+      this.cameraPreviewStream.getTracks().forEach((track) => track.stop());
+      this.cameraPreviewStream = null;
+      this.cameraPreviewDeviceId = null;
+    }
+    const host = this.view.root.querySelector?.("#camera-preview");
+    if (host?.srcObject && !this.cameraPreviewStream) host.srcObject = null;
+  }
+
+  syncCameraPreview({ restart = false } = {}) {
+    if (restart) this.stopCameraPreview();
+    scheduleFrame(() => this.syncRecorderUi());
+  }
+
+  syncRecorderLoops() {
+    const recording = this.state.media.status === "recording";
+    if (!recording) {
+      this.stopRecorderLoops();
+      return;
+    }
+    if (!this.recorderTimerInterval) {
+      this.recorderTimerInterval = setInterval(() => {
+        const timer = this.view.root.querySelector?.("#record-timer");
+        if (!timer) return;
+        const total = Math.floor(this.capture.elapsedMs() / 1000);
+        timer.textContent = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+      }, 250);
+    }
+    if (!this.waveformFrame && this.capture.analyser) {
+      const draw = () => {
+        this.waveformFrame = null;
+        const canvas = this.view.root.querySelector?.("#audio-waveform");
+        const analyser = this.capture.analyser;
+        if (!canvas || !analyser || this.state.media.status !== "recording") return;
+        const context = canvas.getContext("2d");
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteTimeDomainData(data);
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.lineWidth = 3;
+        context.strokeStyle = this.state.media.paused ? "rgba(154,166,186,.6)" : "#7089f8";
+        context.beginPath();
+        const step = canvas.width / data.length;
+        for (let index = 0; index < data.length; index += 1) {
+          const y = (data[index] / 255) * canvas.height;
+          if (index === 0) context.moveTo(0, y);
+          else context.lineTo(index * step, y);
+        }
+        context.stroke();
+        this.waveformFrame = requestAnimationFrame(draw);
+      };
+      this.waveformFrame = requestAnimationFrame(draw);
+    }
+  }
+
+  stopRecorderLoops() {
+    if (this.recorderTimerInterval) {
+      clearInterval(this.recorderTimerInterval);
+      this.recorderTimerInterval = null;
+    }
+    if (this.waveformFrame) {
+      cancelAnimationFrame(this.waveformFrame);
+      this.waveformFrame = null;
+    }
   }
 
   async finishRecording(result) {
     try {
       const saved = await this.backend.saveMedia({ name: result.fileName, kind: result.kind, blob: result.blob });
-      this.dispatch({ type: "MEDIA_SET", payload: { status: "ready", ...result, path: saved.path } });
+      this.dispatch({ type: "MEDIA_SET", payload: { status: "ready", paused: false, ...result, path: saved.path } });
       this.dispatch({
         type: "INFO_ADD",
         payload: {

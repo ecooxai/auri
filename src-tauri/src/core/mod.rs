@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod clipboard;
 pub mod files;
+pub mod fileserver;
 pub mod ipc;
 pub mod lifecycle;
 pub mod permissions;

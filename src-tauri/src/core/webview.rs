@@ -1,10 +1,189 @@
+use super::util;
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewBuilder, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect,
+    WebviewBuilder, WebviewUrl,
 };
 
 const PREFIX: &str = "auri-web-";
+const POPUP_PREFIX: &str = "auri-popup-";
 const OVERLAY_LABEL: &str = "auri-browser-overlay";
+/// Internal host intercepted by `on_navigation`; the injected page script
+/// navigates here to hand selections, images, and popup requests to Auri.
+const INTERNAL_HOST: &str = "auri.internal";
+/// Label shared by the main window and the child webview that hosts the UI.
+pub const MAIN_LABEL: &str = "main";
+
+/// Page script injected into every browser webview. It renders the AI context
+/// menu near the pointer for text selections and image clicks, and routes
+/// `window.open` / `target="_blank"` to real popup windows so OAuth-style
+/// logins work. `__PROMPTS__` is replaced with a JSON array of menu items.
+const PAGE_SCRIPT_TEMPLATE: &str = r#"(() => {
+  if (window.__AURI_AI__) return; window.__AURI_AI__ = 1;
+  const PROMPTS = __PROMPTS__;
+  const INTERNAL = "https://auri.internal/";
+  const go = (path, params) => {
+    const query = Object.entries(params)
+      .map(([key, value]) => key + "=" + encodeURIComponent(value == null ? "" : String(value)))
+      .join("&");
+    try { window.location.assign(INTERNAL + path + "?" + query); } catch (error) {}
+  };
+  const nativeOpen = window.open;
+  window.open = function (url) {
+    if (url) {
+      try { go("popup", { url: new URL(url, window.location.href).href }); } catch (error) {}
+      return null;
+    }
+    return nativeOpen ? nativeOpen.apply(window, arguments) : null;
+  };
+  document.addEventListener("click", (event) => {
+    const anchor = event.target && event.target.closest ? event.target.closest('a[target="_blank"]') : null;
+    if (anchor && anchor.href && /^https?:/.test(anchor.href)) {
+      event.preventDefault();
+      event.stopPropagation();
+      go("popup", { url: anchor.href });
+    }
+  }, true);
+  let menu = null;
+  const hideMenu = () => { if (menu) { menu.remove(); menu = null; } };
+  const showMenu = (x, y, buildPayload) => {
+    hideMenu();
+    menu = document.createElement("div");
+    menu.setAttribute("style", "position:fixed;z-index:2147483647;display:flex;gap:2px;padding:4px;border-radius:10px;background:rgba(22,24,32,.94);box-shadow:0 10px 30px rgba(0,0,0,.35);font:12px -apple-system,system-ui,sans-serif;");
+    for (const item of PROMPTS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = item.label;
+      button.setAttribute("style", "all:unset;cursor:pointer;padding:6px 11px;border-radius:7px;color:#fff;white-space:nowrap;");
+      button.addEventListener("mouseenter", () => { button.style.background = "rgba(255,255,255,.16)"; });
+      button.addEventListener("mouseleave", () => { button.style.background = "transparent"; });
+      button.addEventListener("mousedown", (event) => { event.preventDefault(); event.stopPropagation(); });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const payload = buildPayload();
+        hideMenu();
+        if (payload) go("ai", Object.assign({ action: item.id }, payload));
+      });
+      menu.appendChild(button);
+    }
+    document.documentElement.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    const left = Math.min(Math.max(4, x - rect.width / 2), window.innerWidth - rect.width - 4);
+    // Sit about 50px below the pointer; flip above when the selection is
+    // near the bottom of the viewport.
+    const OFFSET = 50;
+    const below = y + OFFSET;
+    const top = below + rect.height > window.innerHeight - 8 ? Math.max(8, y - rect.height - OFFSET) : below;
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+  };
+  const imagePayload = (image) => {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth || image.width;
+      canvas.height = image.naturalHeight || image.height;
+      if (!canvas.width || !canvas.height) throw new Error("empty");
+      canvas.getContext("2d").drawImage(image, 0, 0);
+      const data = canvas.toDataURL("image/png").split(",")[1] || "";
+      if (data && data.length < 1500000) return { kind: "image", image: data };
+      throw new Error("large");
+    } catch (error) {
+      return { kind: "image", imageUrl: image.currentSrc || image.src || "" };
+    }
+  };
+  // Text selected inside <input> and <textarea> tags is invisible to
+  // window.getSelection() in WebKit, so read the field's own selection range.
+  const fieldSelection = () => {
+    const element = document.activeElement;
+    if (!element) return "";
+    const tag = element.tagName;
+    const editableInput = tag === "TEXTAREA"
+      || (tag === "INPUT" && /^(text|search|url|email|tel|)$/i.test(element.type || "text"));
+    if (!editableInput) return "";
+    const { selectionStart, selectionEnd, value } = element;
+    if (selectionStart == null || selectionEnd == null || selectionEnd <= selectionStart) return "";
+    return String(value || "").slice(selectionStart, selectionEnd);
+  };
+  document.addEventListener("mouseup", (event) => {
+    if (menu && menu.contains(event.target)) return;
+    window.setTimeout(() => {
+      const selection = String(window.getSelection ? window.getSelection() : "").trim() || fieldSelection().trim();
+      if (selection) {
+        showMenu(event.clientX, event.clientY, () => ({ kind: "text", text: selection.slice(0, 8000) }));
+        return;
+      }
+      const image = event.target && event.target.closest ? event.target.closest("img") : null;
+      if (image && event.button === 0) {
+        showMenu(event.clientX, event.clientY, () => imagePayload(image));
+        return;
+      }
+      hideMenu();
+    }, 0);
+  }, true);
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideMenu(); }, true);
+  window.addEventListener("scroll", hideMenu, true);
+})();"#;
+
+fn page_script(ai_prompts: Option<&str>) -> String {
+    let fallback = r#"[{"id":"ask","label":"Ask"},{"id":"translate","label":"Translate"},{"id":"tts","label":"Speak"}]"#;
+    let prompts = ai_prompts
+        .filter(|value| serde_json::from_str::<serde_json::Value>(value).is_ok())
+        .unwrap_or(fallback);
+    PAGE_SCRIPT_TEMPLATE.replace("__PROMPTS__", prompts)
+}
+
+fn open_popup(app: &AppHandle, url: &str) {
+    let Ok(parsed) = url.parse::<tauri::Url>() else {
+        return;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return;
+    }
+    let handle = app.clone();
+    let label = format!(
+        "{POPUP_PREFIX}{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or_default()
+    );
+    let _ = app.run_on_main_thread(move || {
+        let _ = tauri::WebviewWindowBuilder::new(
+            &handle,
+            &label,
+            tauri::WebviewUrl::External(parsed),
+        )
+        .title("Auri")
+        .inner_size(520.0, 680.0)
+        .focused(true)
+        .build();
+    });
+}
+
+/// Intercept navigations to the internal host. Returns `true` when the
+/// navigation was consumed (AI menu action or popup request).
+fn handle_internal_navigation(app: &AppHandle, id: &str, url: &tauri::Url) -> bool {
+    if url.host_str() != Some(INTERNAL_HOST) {
+        return false;
+    }
+    if url.path() == "/popup" {
+        if let Some((_, target)) = url.query_pairs().find(|(key, _)| key == "url") {
+            open_popup(app, &target);
+        }
+        return true;
+    }
+    let mut payload = serde_json::Map::new();
+    payload.insert("id".to_string(), serde_json::Value::String(id.to_string()));
+    for (key, value) in url.query_pairs() {
+        payload.insert(
+            key.into_owned(),
+            serde_json::Value::String(value.into_owned()),
+        );
+    }
+    let _ = app.emit("auri-web-ai", serde_json::Value::Object(payload));
+    true
+}
 
 #[cfg(target_os = "linux")]
 static X11_WEBVIEW_WINDOWS: std::sync::OnceLock<
@@ -29,6 +208,27 @@ fn parse_url(url: &str) -> Result<tauri::Url, String> {
 
 fn label_for(id: &str) -> String {
     format!("{PREFIX}{id}")
+}
+
+/// Resize the main webview so it matches the window's inner size.
+///
+/// The main webview is attached with `add_child`, which keeps whatever size it
+/// was given at creation time. Without re-fitting it on every window resize the
+/// UI stops matching the window — for example it stays small after the window
+/// is enlarged. This runs for both the macOS (WKWebView) and Linux (WebKitGTK)
+/// child webviews.
+pub fn fit_main_webview(window: &tauri::Window) -> Result<(), String> {
+    let size = window.inner_size().map_err(|error| error.to_string())?;
+    let (x, y, width, height) = util::main_fill_bounds(size.width, size.height);
+    if let Some(webview) = window.app_handle().get_webview(MAIN_LABEL) {
+        webview
+            .set_bounds(Rect {
+                position: PhysicalPosition::new(x, y).into(),
+                size: PhysicalSize::new(width, height).into(),
+            })
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -191,6 +391,69 @@ fn raise_x11_child_window(
     Ok(())
 }
 
+/// Embedded child webviews are unreliable on Linux (WebKitGTK renders in a
+/// separate X11 child window and Wayland offers no way to reposition it), so
+/// Linux defaults to a dedicated browser window. Set `AURI_EMBEDDED_WEBVIEW=1`
+/// to force the embedded child webview instead.
+#[cfg(target_os = "linux")]
+fn use_window_webview() -> bool {
+    std::env::var("AURI_EMBEDDED_WEBVIEW").ok().as_deref() != Some("1")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn use_window_webview() -> bool {
+    false
+}
+
+fn show_window_webview(
+    app: &AppHandle,
+    id: &str,
+    label: &str,
+    parsed: tauri::Url,
+    navigate: bool,
+    width: f64,
+    height: f64,
+    ai_prompts: Option<&str>,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(label) {
+        if navigate {
+            if let Some(webview) = app.get_webview(label) {
+                webview
+                    .navigate(parsed)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let event_app = app.clone();
+    let event_id = id.to_string();
+    let nav_app = app.clone();
+    tauri::WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
+        .title("Auri Browser")
+        .inner_size(width.max(760.0), height.max(560.0))
+        .initialization_script(page_script(ai_prompts))
+        .on_navigation(move |target| {
+            if handle_internal_navigation(&nav_app, &event_id, target) {
+                return false;
+            }
+            let _ = event_app.emit(
+                "auri-web-navigation",
+                WebNavigation {
+                    id: event_id.clone(),
+                    url: target.to_string(),
+                },
+            );
+            true
+        })
+        .focused(true)
+        .build()
+        .map_err(|error| format!("Could not create the browser window: {error}"))?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     app: &AppHandle,
     id: &str,
@@ -200,13 +463,23 @@ pub fn show(
     y: f64,
     width: f64,
     height: f64,
+    ai_prompts: Option<&str>,
 ) -> Result<(), String> {
     let label = label_for(id);
     let parsed = parse_url(url)?;
     for (existing_label, webview) in app.webviews() {
         if existing_label.starts_with(PREFIX) && existing_label != label {
-            webview.hide().map_err(|error| error.to_string())?;
+            // Window-hosted webviews (Linux fallback) must be hidden through
+            // their window; Webview::hide only supports embedded children.
+            if let Some(window) = app.get_webview_window(&existing_label) {
+                window.hide().map_err(|error| error.to_string())?;
+            } else {
+                webview.hide().map_err(|error| error.to_string())?;
+            }
         }
+    }
+    if use_window_webview() {
+        return show_window_webview(app, id, &label, parsed, navigate, width, height, ai_prompts);
     }
     let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
     let size = LogicalSize::new(width.max(1.0), height.max(1.0));
@@ -232,8 +505,14 @@ pub fn show(
     let previous_root_children = capture_x11_root_children();
     let event_app = app.clone();
     let event_id = id.to_string();
-    let builder =
-        WebviewBuilder::new(&label, WebviewUrl::External(parsed)).on_navigation(move |target| {
+    let nav_app = app.clone();
+    let nav_id = id.to_string();
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
+        .initialization_script(page_script(ai_prompts))
+        .on_navigation(move |target| {
+            if handle_internal_navigation(&nav_app, &nav_id, target) {
+                return false;
+            }
             let _ = event_app.emit(
                 "auri-web-navigation",
                 WebNavigation {
@@ -318,13 +597,15 @@ pub fn update_overlay_zoom(app: &AppHandle, value: &str) -> Result<(), String> {
 }
 
 pub fn hide_all(app: &AppHandle) -> Result<(), String> {
+    let mut hidden = std::collections::HashSet::new();
     for (label, window) in app.webview_windows() {
         if label.starts_with(PREFIX) {
             window.hide().map_err(|error| error.to_string())?;
+            hidden.insert(label);
         }
     }
     for (label, webview) in app.webviews() {
-        if label.starts_with(PREFIX) {
+        if label.starts_with(PREFIX) && !hidden.contains(&label) {
             webview.hide().map_err(|error| error.to_string())?;
         }
     }

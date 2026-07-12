@@ -140,3 +140,20 @@ npm test"
         ]
     );
 }
+
+#[test]
+fn main_webview_fills_the_window_from_the_origin() {
+    assert_eq!(util::main_fill_bounds(800, 760), (0, 0, 800, 760));
+    assert_eq!(util::main_fill_bounds(1920, 1080), (0, 0, 1920, 1080));
+}
+
+#[test]
+fn main_webview_bounds_grow_when_the_window_is_enlarged() {
+    // Reproduces the reported bug: enlarging the window must enlarge the main
+    // webview to match, instead of leaving it at its original startup size.
+    let small = util::main_fill_bounds(800, 760);
+    let large = util::main_fill_bounds(2560, 1440);
+    assert_eq!(small, (0, 0, 800, 760));
+    assert_eq!(large, (0, 0, 2560, 1440));
+    assert!(large.2 > small.2 && large.3 > small.3);
+}

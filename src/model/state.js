@@ -1,5 +1,12 @@
+import { attachProcessNetworkRates } from "./system.js";
+
 let idSequence = 0;
 const id = (prefix) => `${prefix}-${++idSequence}`;
+
+// Terminal output lives in the PTY emulator; this state copy only feeds
+// command results, so keep it small instead of growing for the whole session.
+const MAX_TERMINAL_HISTORY_ITEMS = 200;
+const MAX_INFO_ITEMS = 200;
 
 const labels = {
   terminal: "Terminal",
@@ -27,7 +34,7 @@ export function createSubtab(type = "terminal", extra = {}) {
 }
 
 export function createWorkspace(title = "Home", options = {}) {
-  const terminal = createSubtab("terminal");
+  const terminal = createSubtab("terminal", { cwd: "~" });
   const system = createSubtab("system");
   const subtabs = options.includeSystem
     ? [terminal, system, createSubtab("clipboard"), createSubtab("info")]
@@ -50,7 +57,7 @@ export function createInitialState() {
     tabs: [workspace],
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
-    system: { status: "idle", error: null, sortBy: "cpu", selectedProcessPid: null, snapshot: null, tunnels: {}, tunnelStatus: {} },
+    system: { status: "idle", error: null, sortBy: "cpu", filter: "", selectedProcessPid: null, snapshot: null, tunnels: {}, tunnelStatus: {} },
     browser: { bookmarks: [], history: [] },
     completion: { shellHistory: [] },
     permissions: { microphone: "unknown", screenRecording: "unknown" },
@@ -68,14 +75,21 @@ export function createInitialState() {
       liveDisconnectSeconds: 60,
       visibleOnAllWorkspaces: true,
       alwaysAttachScreenshot: true,
+      cursorHighlight: false,
       screenshotFormat: "jpg",
       audioFormat: "m4a",
       audioBitrateKbps: 64,
       customCompletions: "",
+      webAiPrompts: "",
       commandUsage: []
     },
-    media: { status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [] },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, tunnelUrlMenuPort: null }
+    media: {
+      status: "idle", kind: null, previewUrl: null, fileName: null, attachments: [],
+      mode: "video", paused: false, audioInputs: [], videoInputs: [],
+      audioDeviceId: null, videoDeviceId: null, grid: false, mirror: true,
+      autoZoom: true, cameraBubble: true, includeMicrophone: true, audioSource: "microphone"
+    },
+    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardInfoId: null, clipboardEditId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, webAiReply: null, webMagicMenuOpen: false, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, systemKillPrompt: null, tunnelUrlMenuPort: null, systemSearchOpen: false }
   };
 }
 
@@ -155,8 +169,17 @@ export function reduceState(state, event) {
     }
     case "SUBTAB_NEW":
       return updateActiveTab(state, (tab) => {
-        const subtab = createSubtab(event.payload.type);
-        return { ...tab, subtabs: [...tab.subtabs, subtab], activeSubtabId: subtab.id };
+        const type = event.payload.type;
+        const terminalCount = tab.subtabs.filter((item) => item.type === "terminal").length;
+        const subtab = createSubtab(type, type === "terminal" ? {
+          cwd: event.payload.cwd || tab.folder.path || tab.terminal.cwd,
+          title: `Terminal ${terminalCount + 1}`
+        } : {});
+        if (type !== "terminal") return { ...tab, subtabs: [...tab.subtabs, subtab], activeSubtabId: subtab.id };
+        const insertAt = tab.subtabs.reduce((last, item, index) => item.type === "terminal" ? index + 1 : last, 0);
+        const subtabs = [...tab.subtabs];
+        subtabs.splice(insertAt, 0, subtab);
+        return { ...tab, subtabs, activeSubtabId: subtab.id, terminal: { ...tab.terminal, cwd: subtab.cwd } };
       });
     case "SUBTAB_SELECT":
       return updateActiveTab(state, (tab) => tab.subtabs.some((item) => item.id === event.payload.id)
@@ -180,8 +203,27 @@ export function reduceState(state, event) {
       return updateTab(state, event.payload.workspaceId, (tab) => ({
         ...tab,
         folder: { ...tab.folder, path: event.payload.path, expanded: {}, selectedPath: null, selectedCount: 0 },
-        terminal: { ...tab.terminal, cwd: event.payload.path }
+        terminal: { ...tab.terminal, cwd: event.payload.path },
+        subtabs: tab.subtabs.map((item) => item.id === tab.activeSubtabId && item.type === "terminal"
+          ? { ...item, cwd: event.payload.path }
+          : item)
       }));
+    case "FOLDER_PATH_SET":
+      return updateTab(state, event.payload.workspaceId, (tab) => ({
+        ...tab,
+        folder: { ...tab.folder, path: event.payload.path, expanded: {}, selectedPath: null, selectedCount: 0 }
+      }));
+    case "TERMINAL_CWD_SET":
+      return updateTab(state, event.payload.workspaceId, (tab) => {
+        const terminalId = event.payload.terminalId || tab.activeSubtabId;
+        return {
+          ...tab,
+          terminal: { ...tab.terminal, cwd: event.payload.path },
+          subtabs: tab.subtabs.map((item) => item.id === terminalId && item.type === "terminal"
+            ? { ...item, cwd: event.payload.path }
+            : item)
+        };
+      });
     case "FOLDER_ENTRIES_SET":
       return updateTab(state, event.payload.workspaceId, (tab) => ({ ...tab, folder: { ...tab.folder, entries: event.payload.entries } }));
     case "FOLDER_SORT_SET":
@@ -261,7 +303,7 @@ export function reduceState(state, event) {
     case "TERMINAL_OUTPUT_ADD":
       return updateActiveTab(state, (tab) => ({
         ...tab,
-        terminal: { ...tab.terminal, history: [...tab.terminal.history, event.payload], running: false }
+        terminal: { ...tab.terminal, history: [...tab.terminal.history, event.payload].slice(-MAX_TERMINAL_HISTORY_ITEMS), running: false }
       }));
     case "TERMINAL_RUNNING_SET":
       return updateActiveTab(state, (tab) => ({ ...tab, terminal: { ...tab.terminal, running: event.payload.value } }));
@@ -270,7 +312,10 @@ export function reduceState(state, event) {
     case "INFO_ADD":
       return {
         ...state,
-        info: { unread: state.info.unread + 1, items: [{ id: id("info"), at: new Date().toISOString(), ...event.payload }, ...state.info.items] }
+        info: {
+          unread: state.info.unread + 1,
+          items: [{ id: id("info"), at: new Date().toISOString(), ...event.payload }, ...state.info.items].slice(0, MAX_INFO_ITEMS)
+        }
       };
     case "INFO_CLEAR":
       return { ...state, info: { unread: 0, items: [] } };
@@ -329,11 +374,17 @@ export function reduceState(state, event) {
     case "SYSTEM_STATUS_SET":
       return { ...state, system: { ...state.system, status: event.payload.status, error: event.payload.error || null } };
     case "SYSTEM_SNAPSHOT_SET":
-      return { ...state, system: { ...state.system, status: "ready", error: null, snapshot: event.payload.snapshot } };
+      return { ...state, system: { ...state.system, status: "ready", error: null, snapshot: attachProcessNetworkRates(event.payload.snapshot, state.system.snapshot) } };
     case "SYSTEM_SORT_SET":
       return { ...state, system: { ...state.system, sortBy: event.payload.sortBy || "cpu" } };
-    case "SYSTEM_PROCESS_SELECT":
-      return { ...state, system: { ...state.system, selectedProcessPid: Number(event.payload.pid) || null } };
+    case "SYSTEM_FILTER_SET":
+      return { ...state, system: { ...state.system, filter: String(event.payload?.filter ?? "").trim() } };
+    case "SYSTEM_PROCESS_SELECT": {
+      const selectedProcessPid = Number(event.payload.pid) || null;
+      // Closing or switching the detail card must not leave a kill prompt for the old process.
+      const systemKillPrompt = selectedProcessPid === state.system.selectedProcessPid ? state.ui.systemKillPrompt : null;
+      return { ...state, system: { ...state.system, selectedProcessPid }, ui: { ...state.ui, systemKillPrompt } };
+    }
     case "SYSTEM_TUNNEL_PENDING_SET": {
       const port = Number(event.payload?.port);
       if (!Number.isInteger(port) || port <= 0) return state;

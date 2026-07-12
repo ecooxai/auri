@@ -116,6 +116,17 @@ pub struct ProcessInfo {
     pub disk_read_bytes: u64,
     pub disk_write_bytes: u64,
     pub ports: Vec<u16>,
+    pub port_details: Vec<PortInfo>,
+}
+
+// A listening port plus its transport (tcp/udp). The application protocol
+// (http/https/ssh/…) is derived on the JS side from the port number so there is
+// a single source of truth for it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortInfo {
+    pub port: u16,
+    pub transport: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1095,6 +1106,7 @@ fn parse_process_line(line: &str) -> Option<ProcessInfo> {
         disk_read_bytes: 0,
         disk_write_bytes: 0,
         ports: Vec::new(),
+        port_details: Vec::new(),
     })
 }
 
@@ -1342,6 +1354,71 @@ fn listening_ports_by_pid() -> HashMap<u32, Vec<u16>> {
     map
 }
 
+fn insert_port_detail(map: &mut HashMap<u32, Vec<PortInfo>>, pid: u32, port: u16, transport: &str) {
+    let details = map.entry(pid).or_default();
+    if !details
+        .iter()
+        .any(|detail| detail.port == port && detail.transport == transport)
+    {
+        details.push(PortInfo {
+            port,
+            transport: transport.to_string(),
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_ss_udp_port(line: &str) -> Option<(u32, u16)> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.first().copied() != Some("UNCONN") || parts.len() < 4 {
+        return None;
+    }
+    let port = parse_port_from_local_address(parts.get(3)?)?;
+    let pid_index = line.find("pid=")? + 4;
+    let pid_text: String = line[pid_index..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    let pid = pid_text.parse::<u32>().ok()?;
+    Some((pid, port))
+}
+
+// Builds structured per-process ports carrying transport. TCP listeners are
+// reused from `listening_ports_by_pid`; UDP is gathered from lsof (both
+// platforms) and `ss -lunp` on Linux. Deduplicated by (port, transport).
+fn build_port_details(tcp_ports: &HashMap<u32, Vec<u16>>) -> HashMap<u32, Vec<PortInfo>> {
+    let mut map: HashMap<u32, Vec<PortInfo>> = HashMap::new();
+    for (pid, ports) in tcp_ports {
+        for &port in ports {
+            insert_port_detail(&mut map, *pid, port, "tcp");
+        }
+    }
+    for line in command_output("lsof", &["-nP", "-iUDP"])
+        .unwrap_or_default()
+        .lines()
+    {
+        if let Some((pid, port)) = parse_lsof_port(line) {
+            insert_port_detail(&mut map, pid, port, "udp");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for line in command_output("ss", &["-lunp"]).unwrap_or_default().lines() {
+            if let Some((pid, port)) = parse_ss_udp_port(line) {
+                insert_port_detail(&mut map, pid, port, "udp");
+            }
+        }
+    }
+    for details in map.values_mut() {
+        details.sort_by(|left, right| {
+            left.port
+                .cmp(&right.port)
+                .then_with(|| left.transport.cmp(&right.transport))
+        });
+    }
+    map
+}
+
 #[cfg(target_os = "macos")]
 fn parse_nettop_process_line(line: &str) -> Option<(u32, u64, u64)> {
     let parts: Vec<&str> = line.split_whitespace().collect();
@@ -1488,6 +1565,7 @@ fn disk_info() -> DiskInfo {
 fn process_info() -> Vec<ProcessInfo> {
     let text = command_output("ps", &["-axo", "pid=,comm=,state=,%cpu=,rss="]).unwrap_or_default();
     let ports_by_pid = listening_ports_by_pid();
+    let port_details_by_pid = build_port_details(&ports_by_pid);
     let command_lines_by_pid = process_command_lines_by_pid();
     let working_directories_by_pid = working_directories_by_pid();
     let network_by_pid = process_network_totals_by_pid();
@@ -1497,6 +1575,10 @@ fn process_info() -> Vec<ProcessInfo> {
         .filter_map(parse_process_line)
         .map(|mut process| {
             process.ports = ports_by_pid.get(&process.pid).cloned().unwrap_or_default();
+            process.port_details = port_details_by_pid
+                .get(&process.pid)
+                .cloned()
+                .unwrap_or_default();
             if let Some(command_line) = command_lines_by_pid.get(&process.pid) {
                 process.command_line = command_line.clone();
             }
@@ -1527,7 +1609,10 @@ fn process_info() -> Vec<ProcessInfo> {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| right.memory_bytes.cmp(&left.memory_bytes))
     });
-    processes.truncate(500);
+    // Keep effectively all processes (a busy Mac running VMs can exceed 500) so
+    // idle background/VM processes are not silently dropped before they reach the
+    // UI, where search can then surface them.
+    processes.truncate(2000);
     processes
 }
 
@@ -1783,6 +1868,38 @@ mod tests {
     use super::parse_nettop_process_line;
     #[cfg(target_os = "linux")]
     use super::{parse_proc_net_tcp_listener, parse_socket_inode_link, parse_ss_listening_port};
+
+    #[test]
+    fn port_details_dedupe_by_port_and_transport() {
+        use super::{insert_port_detail, PortInfo};
+        let mut map = std::collections::HashMap::new();
+        insert_port_detail(&mut map, 42, 8080, "tcp");
+        insert_port_detail(&mut map, 42, 8080, "tcp");
+        insert_port_detail(&mut map, 42, 8080, "udp");
+        insert_port_detail(&mut map, 42, 53, "udp");
+        let details = map.get(&42).unwrap();
+        assert_eq!(details.len(), 3);
+        assert!(details
+            .iter()
+            .any(|detail: &PortInfo| detail.port == 8080 && detail.transport == "tcp"));
+        assert!(details
+            .iter()
+            .any(|detail: &PortInfo| detail.port == 8080 && detail.transport == "udp"));
+        assert!(details
+            .iter()
+            .any(|detail: &PortInfo| detail.port == 53 && detail.transport == "udp"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_ss_udp_listening_ports() {
+        use super::parse_ss_udp_port;
+        assert_eq!(
+            parse_ss_udp_port("UNCONN 0 0 0.0.0.0:68 0.0.0.0:* users:((\"dhclient\",pid=987,fd=6))"),
+            Some((987, 68))
+        );
+        assert_eq!(parse_ss_udp_port("LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"), None);
+    }
 
     #[test]
     fn derives_readable_app_names_from_bundle_paths() {

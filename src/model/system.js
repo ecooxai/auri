@@ -30,7 +30,116 @@ export function normalizeSystemSort(sortBy) {
   return VALID_SORTS.has(sortBy) ? sortBy : "cpu";
 }
 
+// Well-known port → application protocol. Kept deliberately small and readable:
+// it only names protocols people recognise (http/https/ssh/ftp/db/…) and returns
+// "" for anything unknown so the UI can fall back to the bare transport.
+const WELL_KNOWN_PROTOCOLS = new Map([
+  [20, "ftp"], [21, "ftp"], [22, "ssh"], [23, "telnet"], [25, "smtp"],
+  [53, "dns"], [67, "dhcp"], [68, "dhcp"], [69, "tftp"], [110, "pop3"],
+  [123, "ntp"], [143, "imap"], [161, "snmp"], [389, "ldap"], [443, "https"],
+  [445, "smb"], [465, "smtps"], [514, "syslog"], [587, "smtp"], [631, "ipp"],
+  [636, "ldaps"], [873, "rsync"], [993, "imaps"], [995, "pop3s"], [1433, "mssql"],
+  [1521, "oracle"], [2049, "nfs"], [3306, "mysql"], [3389, "rdp"], [5060, "sip"],
+  [5432, "postgres"], [5900, "vnc"], [6379, "redis"], [8443, "https"],
+  [9092, "kafka"], [11211, "memcached"], [27017, "mongodb"]
+]);
+
+// Ports that are conventionally plain HTTP (dev servers and proxies).
+const HTTP_PORTS = new Set([80, 3000, 4173, 5173, 8000, 8080, 8081, 8888]);
+
+export function protocolForPort(port, transport = "tcp") {
+  const number = Number(port);
+  if (!Number.isInteger(number) || number <= 0) return "";
+  if (WELL_KNOWN_PROTOCOLS.has(number)) return WELL_KNOWN_PROTOCOLS.get(number);
+  if (HTTP_PORTS.has(number)) return "http";
+  return "";
+}
+
+function normalizeTransport(transport) {
+  return String(transport || "tcp").toLowerCase() === "udp" ? "udp" : "tcp";
+}
+
+// Structured port list [{ port, transport, protocol }], merged from the native
+// `portDetails` (which carries the real tcp/udp transport) and the plain numeric
+// `ports` (assumed tcp). Protocol is always derived here so there is a single
+// source of truth for it. Deduplicated by transport+port and sorted by port.
+export function normalizePortDetails(process) {
+  const details = new Map();
+  const add = (port, transport) => {
+    const number = Number(port);
+    if (!Number.isInteger(number) || number <= 0) return;
+    const normalizedTransport = normalizeTransport(transport);
+    const key = `${normalizedTransport}:${number}`;
+    if (!details.has(key)) {
+      details.set(key, { port: number, transport: normalizedTransport, protocol: protocolForPort(number, normalizedTransport) });
+    }
+  };
+  if (Array.isArray(process?.portDetails)) {
+    for (const detail of process.portDetails) add(detail?.port, detail?.transport);
+  }
+  for (const port of normalizePortList(process?.ports)) add(port, "tcp");
+  return [...details.values()].sort((left, right) => left.port - right.port || left.transport.localeCompare(right.transport));
+}
+
+// Vague, case-insensitive search: whitespace splits the query into keywords and
+// a process matches when ANY keyword is a substring of its searchable text, so
+// "chrome claude" shows every Chrome and every Claude process.
+function processSearchHaystack(process) {
+  return [process?.name, process?.commandLine, process?.path, process?.pid, ...normalizePortList(process?.ports)]
+    .map((value) => String(value ?? ""))
+    .join(" ")
+    .toLowerCase();
+}
+
+export function searchKeywords(query) {
+  return String(query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+export function matchesProcessSearch(process, query) {
+  const keywords = searchKeywords(query);
+  if (!keywords.length) return true;
+  const haystack = processSearchHaystack(process);
+  return keywords.some((keyword) => haystack.includes(keyword));
+}
+
+export function filterSystemProcesses(processes = [], query = "") {
+  const list = Array.isArray(processes) ? processes : [];
+  if (!searchKeywords(query).length) return list;
+  return list.filter((process) => matchesProcessSearch(process, query));
+}
+
+// Derives per-process network throughput (bytes/second) by diffing the
+// cumulative download/upload counters against the previous snapshot. Pure and
+// deterministic; the first snapshot (no previous) yields zero rates.
+export function attachProcessNetworkRates(snapshot, previous) {
+  const processes = Array.isArray(snapshot?.processes) ? snapshot.processes : [];
+  const previousByPid = new Map();
+  for (const process of previous?.processes || []) previousByPid.set(finiteNumber(process?.pid), process);
+  const previousTime = Date.parse(previous?.capturedAt);
+  const currentTime = Date.parse(snapshot?.capturedAt);
+  const elapsedSeconds = Number.isFinite(previousTime) && Number.isFinite(currentTime) && currentTime > previousTime
+    ? (currentTime - previousTime) / 1000
+    : 0;
+  return {
+    ...snapshot,
+    processes: processes.map((process) => {
+      const prior = previousByPid.get(finiteNumber(process?.pid));
+      let downloadBytesPerSecond = 0;
+      let uploadBytesPerSecond = 0;
+      if (elapsedSeconds > 0 && prior) {
+        const downloadDelta = finiteNumber(process?.downloadBytes) - finiteNumber(prior?.downloadBytes);
+        const uploadDelta = finiteNumber(process?.uploadBytes) - finiteNumber(prior?.uploadBytes);
+        downloadBytesPerSecond = downloadDelta > 0 ? downloadDelta / elapsedSeconds : 0;
+        uploadBytesPerSecond = uploadDelta > 0 ? uploadDelta / elapsedSeconds : 0;
+      }
+      return { ...process, downloadBytesPerSecond, uploadBytesPerSecond };
+    })
+  };
+}
+
 function combinedNetworkBytes(process) {
+  const rate = finiteNumber(process?.downloadBytesPerSecond) + finiteNumber(process?.uploadBytesPerSecond);
+  if (rate > 0) return rate;
   return finiteNumber(process?.downloadBytes) + finiteNumber(process?.uploadBytes);
 }
 
@@ -160,21 +269,25 @@ export function normalizeSystemSnapshot(snapshot = emptySystemSnapshot) {
       };
     })(),
     processes: Array.isArray(snapshot?.processes)
-      ? snapshot.processes.map((process) => ({
-          pid: finiteNumber(process?.pid),
-          name: displayProcessName(process),
-          path: String(process?.path || ""),
-          workingDirectory: String(process?.workingDirectory || ""),
-          commandLine: String(process?.commandLine || process?.path || process?.name || ""),
-          status: String(process?.status || ""),
-          cpuPercent: finiteNumber(process?.cpuPercent),
-          memoryBytes: finiteNumber(process?.memoryBytes),
-          downloadBytes: finiteNumber(process?.downloadBytes),
-          uploadBytes: finiteNumber(process?.uploadBytes),
-          diskReadBytes: finiteNumber(process?.diskReadBytes),
-          diskWriteBytes: finiteNumber(process?.diskWriteBytes),
-          ports: normalizePortList(process?.ports)
-        }))
+      ? snapshot.processes.map((process) => {
+          const portDetails = normalizePortDetails(process);
+          return {
+            pid: finiteNumber(process?.pid),
+            name: displayProcessName(process),
+            path: String(process?.path || ""),
+            workingDirectory: String(process?.workingDirectory || ""),
+            commandLine: String(process?.commandLine || process?.path || process?.name || ""),
+            status: String(process?.status || ""),
+            cpuPercent: finiteNumber(process?.cpuPercent),
+            memoryBytes: finiteNumber(process?.memoryBytes),
+            downloadBytes: finiteNumber(process?.downloadBytes),
+            uploadBytes: finiteNumber(process?.uploadBytes),
+            diskReadBytes: finiteNumber(process?.diskReadBytes),
+            diskWriteBytes: finiteNumber(process?.diskWriteBytes),
+            ports: [...new Set(portDetails.map((detail) => detail.port))].sort((left, right) => left - right),
+            portDetails
+          };
+        })
       : []
   };
 }

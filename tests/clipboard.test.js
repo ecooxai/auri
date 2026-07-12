@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { previewClipboardText, serializeClipboardEntry } from "../src/model/clipboard.js";
+import { previewClipboardText, serializeClipboardEntry, formatByteSize, formatImageMeta, describeClipboardText } from "../src/model/clipboard.js";
 
 test("short clipboard text stays intact", () => {
   assert.equal(previewClipboardText("hello"), "hello");
@@ -12,6 +12,32 @@ test("long clipboard text renders the first 100 and last 50 characters", () => {
   const preview = previewClipboardText(value);
   assert.equal(preview.length, 153);
   assert.equal(preview, "a".repeat(100) + "…\n…" + "b".repeat(50));
+});
+
+test("byte sizes render with human-friendly units", () => {
+  assert.equal(formatByteSize(512), "512 B");
+  assert.equal(formatByteSize(102400), "100 KB");
+  assert.equal(formatByteSize(1843200), "1.8 MB");
+  assert.equal(formatByteSize(0), "0 B");
+  assert.equal(formatByteSize(null), "");
+  assert.equal(formatByteSize(-1), "");
+});
+
+test("image metadata badge shows type, resolution, and size and drops unknown parts", () => {
+  assert.equal(
+    formatImageMeta({ format: "png", width: 1280, height: 720, byteSize: 102400 }),
+    "PNG · 1280×720 · 100 KB"
+  );
+  assert.equal(formatImageMeta({ path: "/tmp/shot.JPG", width: 640, height: 480 }), "JPG · 640×480");
+  assert.equal(formatImageMeta({ width: 0, height: 0 }), "");
+});
+
+test("text description counts bytes, characters, words, and lines", () => {
+  assert.deepEqual(describeClipboardText("hello world"), { bytes: 11, chars: 11, words: 2, lines: 1 });
+  assert.deepEqual(describeClipboardText("a\nb\nc"), { bytes: 5, chars: 5, words: 3, lines: 3 });
+  assert.deepEqual(describeClipboardText(""), { bytes: 0, chars: 0, words: 0, lines: 0 });
+  // Multi-byte characters count as one character but their real UTF-8 byte length.
+  assert.deepEqual(describeClipboardText("café ☕"), { bytes: 9, chars: 6, words: 2, lines: 1 });
 });
 
 test("clipboard entries use the requested text/image JSON representation", () => {
@@ -79,6 +105,142 @@ test("clipboard cards expose paste only on their content and use a separate acti
   assert.ok(html.indexOf('data-action="clipboard-filter-pinned"') < html.indexOf('data-action="clipboard-refresh"'));
 });
 
+test("clipboard item menu offers copy for all items and edit for text items", async () => {
+  const { renderClipboard } = await import("../src/views/panels.js");
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: { items: [
+      { id: "clip-text", kind: "text", text: "hello", createdAt: 2, pinned: false },
+      { id: "clip-image", kind: "image", path: "/tmp/a.png", assetUrl: "asset://a.png", createdAt: 1, pinned: false }
+    ] }
+  });
+
+  let html = renderClipboard(reduceState(state, { type: "UI_SET", payload: { clipboardMenuId: "clip-text" } }));
+  assert.match(html, /data-action="clipboard-copy-item" data-id="clip-text"/);
+  assert.match(html, /data-action="clipboard-edit" data-id="clip-text"/);
+
+  html = renderClipboard(reduceState(state, { type: "UI_SET", payload: { clipboardMenuId: "clip-image" } }));
+  assert.match(html, /data-action="clipboard-copy-item" data-id="clip-image"/);
+  assert.doesNotMatch(html, /data-action="clipboard-edit" data-id="clip-image"/);
+});
+
+test("image cards show a type/resolution/size badge and the menu offers Info", async () => {
+  const { renderClipboard } = await import("../src/views/panels.js");
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: { items: [{ id: "img-1", kind: "image", path: "/tmp/a.png", assetUrl: "asset://a.png", createdAt: 1, format: "png", width: 1280, height: 720, byteSize: 102400 }] }
+  });
+
+  let html = renderClipboard(state);
+  assert.match(html, /class="clipboard-image-badge"[^>]*>PNG · 1280×720 · 100 KB</);
+
+  html = renderClipboard(reduceState(state, { type: "UI_SET", payload: { clipboardMenuId: "img-1" } }));
+  assert.match(html, /data-action="clipboard-info" data-id="img-1"/);
+});
+
+test("clipboard info popup shows text stats and image details", async () => {
+  const { renderClipboard } = await import("../src/views/panels.js");
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: { items: [
+      { id: "clip-text", kind: "text", text: "one two\nthree", createdAt: 2, pinned: false },
+      { id: "clip-image", kind: "image", path: "/tmp/a.png", assetUrl: "asset://a.png", createdAt: 1, format: "png", width: 640, height: 480, byteSize: 2048 }
+    ] }
+  });
+
+  let html = renderClipboard(reduceState(state, { type: "UI_SET", payload: { clipboardInfoId: "clip-text" } }));
+  assert.match(html, /class="clipboard-info-popup"/);
+  assert.match(html, /Characters<\/span><strong>13/);
+  assert.match(html, /Words<\/span><strong>3/);
+  assert.match(html, /Lines<\/span><strong>2/);
+  assert.match(html, /data-action="clipboard-info-close"/);
+
+  html = renderClipboard(reduceState(state, { type: "UI_SET", payload: { clipboardInfoId: "clip-image" } }));
+  assert.match(html, /Resolution<\/span><strong>640 × 480/);
+  assert.match(html, /Type<\/span><strong>PNG/);
+});
+
+test("clipboard info command opens the panel and marks the item for its info popup", async () => {
+  const { executeCommand } = await import("../src/controllers/command-controller.js");
+  const { createInitialState, reduceState, activeSubtab } = await import("../src/model/state.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: { items: [{ id: "clip-1", kind: "text", text: "hi", createdAt: 1, pinned: false }] }
+  });
+  const context = {
+    getState: () => state,
+    dispatch: (action) => { state = reduceState(state, action); },
+    backend: {},
+    actions: {}
+  };
+
+  const result = await executeCommand("clipboard info clip-1", context);
+  assert.deepEqual(result, { info: "clip-1" });
+  assert.equal(state.ui.clipboardInfoId, "clip-1");
+  assert.equal(activeSubtab(state).type, "clipboard");
+
+  await assert.rejects(executeCommand("clipboard info missing", context), /Clipboard item was not found/);
+});
+
+test("clipboard edit mode renders a textarea with save and cancel controls", async () => {
+  const { renderClipboard } = await import("../src/views/panels.js");
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: { items: [{ id: "clip-1", kind: "text", text: "editable text", createdAt: 1, pinned: false }] }
+  });
+  state = reduceState(state, { type: "UI_SET", payload: { clipboardEditId: "clip-1" } });
+
+  const html = renderClipboard(state);
+  assert.match(html, /<textarea class="clipboard-edit-input" data-id="clip-1"[^>]*>editable text<\/textarea>/);
+  assert.match(html, /data-action="clipboard-edit-save" data-id="clip-1"/);
+  assert.match(html, /data-action="clipboard-edit-cancel" data-id="clip-1"/);
+});
+
+test("clipboard edit and copy-item commands route through the backend", async () => {
+  const { executeCommand } = await import("../src/controllers/command-controller.js");
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: { items: [{ id: "clip-1", kind: "text", text: "before", createdAt: 1, pinned: false }] }
+  });
+  const calls = [];
+  const context = {
+    getState: () => state,
+    dispatch: (action) => { state = reduceState(state, action); },
+    backend: {
+      updateClipboardItem: async (id, text) => { calls.push(["update", id, text]); return [{ id, kind: "text", text, createdAt: 1, pinned: false }]; },
+      copyClipboardItem: async (id) => { calls.push(["copy", id]); }
+    },
+    actions: {}
+  };
+
+  await executeCommand('clipboard edit clip-1 "line one\nline two"', context);
+  assert.deepEqual(calls[0], ["update", "clip-1", "line one\nline two"]);
+  assert.equal(state.clipboard.items[0].text, "line one\nline two");
+
+  await executeCommand("clipboard copy-item clip-1", context);
+  assert.deepEqual(calls[1], ["copy", "clip-1"]);
+});
+
+test("linux paste-back supports wayland (wtype), x11 (xdotool), and ydotool fallbacks", () => {
+  const clipboard = readFileSync(new URL("../src-tauri/src/core/clipboard.rs", import.meta.url), "utf8");
+  assert.match(clipboard, /WAYLAND_DISPLAY/);
+  assert.match(clipboard, /wtype/);
+  assert.match(clipboard, /xdotool/);
+  assert.match(clipboard, /ydotool/);
+  assert.match(clipboard, /update_entry_text/);
+});
+
 test("clipboard pinned filter renders only pinned entries", async () => {
   const { renderClipboard } = await import("../src/views/panels.js");
   const { createInitialState, reduceState } = await import("../src/model/state.js");
@@ -121,6 +283,26 @@ test("clipboard panel renders 50 items per page with previous and next controls"
   assert.match(html, /data-id="clip-51"/);
   assert.match(html, /data-id="clip-100"/);
   assert.doesNotMatch(html, /data-id="clip-101"/);
+});
+
+test("native clipboard entries carry image type, resolution, and size metadata", () => {
+  const clipboard = readFileSync(new URL("../src-tauri/src/core/clipboard.rs", import.meta.url), "utf8");
+  // Persisted entry keeps optional image metadata that serializes as camelCase JSON.
+  assert.match(clipboard, /pub width: Option<u32>/);
+  assert.match(clipboard, /pub height: Option<u32>/);
+  assert.match(clipboard, /pub byte_size: Option<u64>/);
+  assert.match(clipboard, /pub format: Option<String>/);
+  // Copied image files preserve their original encoded bytes and extension;
+  // decoded pixel-only clipboard images use PNG as the lossless fallback.
+  assert.match(clipboard, /width: Some\(width as u32\)/);
+  assert.match(clipboard, /byte_size = fs::metadata\(&image_path\)/);
+  assert.match(clipboard, /clipboard\.get\(\)\.file_list\(\)/);
+  assert.match(clipboard, /fs::write\(&image_path, bytes\)/);
+  assert.match(clipboard, /format: Some\(extension\)/);
+  assert.match(clipboard, /extension: "png"\.to_string\(\)/);
+  // Older entries are backfilled from the saved file on read.
+  assert.match(clipboard, /fn backfill_image_metadata/);
+  assert.match(clipboard, /image::image_dimensions\(&path\)/);
 });
 
 test("native clipboard history uses sha256 fingerprints and moves duplicate entries to the top", () => {

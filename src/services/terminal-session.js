@@ -318,6 +318,12 @@ export class TerminalSession {
     await this.onCwdChange?.(cwd);
   }
 
+  async isBusy() {
+    if (!this.backend.isNative || !this.started) return false;
+    if (!this.backend.isTerminalBusy) return false;
+    return Boolean(await this.backend.isTerminalBusy(this.sessionId));
+  }
+
   selectedText() {
     return this.term?.getSelection?.() || "";
   }

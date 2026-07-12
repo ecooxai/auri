@@ -173,6 +173,33 @@ pub fn cwd(session_id: &str) -> Result<String, String> {
     Err("Terminal directory lookup is unsupported on this platform.".to_string())
 }
 
+pub fn busy(session_id: &str) -> Result<bool, String> {
+    let session = SESSIONS
+        .lock()
+        .map_err(|_| "Terminal session store is unavailable.".to_string())?
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "Terminal session is not running.".to_string())?;
+    let pid = session
+        .lock()
+        .map_err(|_| "Terminal session is unavailable.".to_string())?
+        .child
+        .process_id()
+        .ok_or_else(|| "Terminal process id is unavailable.".to_string())?;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let output = Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output()
+            .map_err(|error| format!("Could not inspect terminal activity: {error}"))?;
+        return Ok(output.status.success() && !output.stdout.is_empty());
+    }
+
+    #[allow(unreachable_code)]
+    Ok(false)
+}
+
 pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
     let session = SESSIONS
         .lock()

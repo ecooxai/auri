@@ -140,6 +140,19 @@ test("pdf and docx viewers use mature browser rendering libraries", () => {
   assert.equal(viewerKindForFile("/tmp/brief.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "document");
 });
 
+test("3D model files use a Three.js viewer with honest Blender and CAD fallbacks", () => {
+  assert.equal(viewerKindForFile("/tmp/model.glb", "model/gltf-binary"), "model3d");
+  assert.equal(viewerKindForFile("/tmp/part.stl", "application/octet-stream"), "model3d");
+  assert.equal(viewerKindForFile("/tmp/scene.blend", "application/octet-stream"), "model3d");
+  const html = fileViewerPageHtml({ resourceUrl: "asset://model.glb", title: "model.glb", path: "/tmp/model.glb", threeModuleUrl: "app://local/three-viewer.js" });
+  assert.match(html, /app:\/\/local\/three-viewer\.js/);
+  assert.doesNotMatch(html, /cdn\.jsdelivr\.net\/npm\/three|unpkg\.com\/three/);
+  assert.match(html, /GLTFLoader/);
+  assert.match(html, /OrbitControls/);
+  const blend = fileViewerPageHtml({ resourceUrl: "asset://scene.blend", title: "scene.blend", path: "/tmp/scene.blend" });
+  assert.match(blend, /Blender files need to be exported/i);
+});
+
 test("unsupported files offer an open-as-text fallback", () => {
   const html = fileViewerPageHtml({
     resourceUrl: "blob:unknown",

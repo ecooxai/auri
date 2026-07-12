@@ -35,6 +35,7 @@ export function viewerKindForFile(path, mime = "") {
   const ext = extension(path);
   const type = String(mime || "").toLowerCase();
   if (isEditableTextFile(path, type)) return "text";
+  if (type.startsWith("model/") || ["glb", "gltf", "stl", "obj", "ply", "3mf", "blend", "step", "stp", "iges", "igs"].includes(ext)) return "model3d";
   if (type === "application/pdf" || ext === "pdf") return "pdf";
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("audio/")) return "audio";
@@ -43,10 +44,10 @@ export function viewerKindForFile(path, mime = "") {
   return "file";
 }
 
-export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false, codemirrorModuleUrl = "" }) {
+export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false, codemirrorModuleUrl = "", threeModuleUrl = "" }) {
   const kind = viewerKindForFile(path || title, mime);
   const safeTitle = escapeHtml(title);
-  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title), autoplay, codemirrorModuleUrl });
+  const data = safeJson({ resourceUrl, mime, title, path, text, kind, extension: extension(path || title), autoplay, codemirrorModuleUrl, threeModuleUrl });
   const mediaMenu = kind === "audio" || kind === "video"
     ? `<button id="more-button" class="icon-button" type="button" aria-haspopup="menu" aria-expanded="false" title="More">⋮</button>
        <div id="convert-menu" class="convert-menu" hidden>
@@ -67,6 +68,7 @@ export function fileViewerPageHtml({ resourceUrl = "", mime = "application/octet
 <style>
 :root{color-scheme:light;--bg:#f6f8fb;--panel:rgba(255,255,255,.88);--panel-strong:#fff;--line:rgba(25,34,51,.1);--text:#182033;--muted:#687284;--soft:#eef2f7;--accent:#2f6fed;--shadow:0 18px 60px rgba(24,32,51,.12)}
 *{box-sizing:border-box}html,body{height:100%;margin:0}body{background:radial-gradient(circle at top left,#fff 0,#f6f8fb 46%,#eef3f8 100%);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;overflow:hidden}.app{height:100%;display:grid;grid-template-rows:auto 1fr}.topbar{height:52px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.75);backdrop-filter:blur(18px);position:relative;z-index:5}.file-dot{width:10px;height:10px;border-radius:50%;background:linear-gradient(135deg,#95b8ff,#dfe8ff);box-shadow:0 0 0 4px #eef4ff}.title{min-width:0;flex:1}.title strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.title small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}.pill{font-size:11px;color:#41516c;background:var(--soft);border:1px solid var(--line);padding:5px 8px;border-radius:999px}.icon-button,.clean-button{border:1px solid var(--line);background:var(--panel-strong);color:var(--text);border-radius:10px;min-height:32px;padding:0 11px;font:inherit;box-shadow:0 1px 0 rgba(255,255,255,.9);cursor:pointer}.icon-button{width:32px;padding:0;font-size:18px;line-height:1}.icon-button:hover,.clean-button:hover,.convert-menu button:hover{background:#f9fbff}.stage{min-height:0;overflow:auto;display:grid;place-items:center;padding:24px}.card{width:min(980px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow);overflow:hidden}.message-card{padding:34px;text-align:center;display:grid;gap:12px}.message-card span{font-size:38px}.message-card p{margin:0;color:var(--muted)}.message-card .clean-button{justify-self:center}.image-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 92px);object-fit:contain;border-radius:16px;box-shadow:var(--shadow)}.video-viewer{display:block;width:auto;height:auto;max-width:100vw;max-height:calc(100vh - 132px);background:#0f172a;border-radius:16px;box-shadow:var(--shadow)}.pdf-shell,.doc-shell{width:min(1100px,calc(100vw - 48px));height:calc(100vh - 100px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.viewer-toolbar{display:flex;align-items:center;gap:8px;min-height:46px;padding:8px 10px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.7)}.viewer-toolbar small{color:var(--muted);margin-left:auto}.pdf-pages,.doc-content{overflow:auto;padding:18px}.pdf-pages canvas{display:block;max-width:100%;height:auto;margin:0 auto 18px;background:white;border-radius:12px;box-shadow:0 10px 28px rgba(24,32,51,.1)}.doc-content{background:white}.doc-content article{max-width:760px;margin:0 auto;color:#172033}.editor-shell{width:min(1200px,calc(100vw - 36px));height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.editor-status{margin-left:auto;color:var(--muted);font-size:12px}.editor-host,.cm-editor,.cm-scroller{min-height:0;height:100%}.cm-editor{font-size:13px;background:#fbfcff}.fallback-editor{width:100%;height:100%;border:0;resize:none;padding:18px;background:#fbfcff;color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;outline:none}.audio-card{width:min(860px,calc(100vw - 48px));display:grid;gap:18px;padding:24px;background:var(--panel);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow)}.audio-hero{display:flex;align-items:center;gap:14px}.audio-badge{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;background:#edf3ff;color:var(--accent);font-size:24px}.muted{color:var(--muted);margin:.1rem 0 0}.wave-wrap{position:relative;padding:10px;border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#fbfdff,#f1f5fb)}#waveform{display:block;width:100%;height:148px;touch-action:none;cursor:crosshair}.loop-pill{position:absolute;right:18px;bottom:16px;padding:5px 9px;border-radius:999px;background:rgba(47,111,237,.1);color:#2457bc;font-size:12px}.media-controls{display:grid;grid-template-columns:auto auto auto 1fr auto auto;gap:10px;align-items:center}.media-controls input[type=range]{width:100%}.time-readout{color:var(--muted);font-variant-numeric:tabular-nums;min-width:112px;text-align:right}.speed-select{border:1px solid var(--line);background:white;border-radius:10px;height:32px;padding:0 8px}.convert-menu{position:absolute;right:12px;top:46px;display:grid;gap:4px;width:210px;padding:8px;background:white;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.convert-menu[hidden],.convert-panel[hidden]{display:none!important}.convert-menu button{border:0;background:white;text-align:left;padding:9px 10px;border-radius:10px;color:var(--text);font:inherit;cursor:pointer}.convert-panel{position:fixed;right:18px;top:66px;width:min(360px,calc(100vw - 36px));display:grid;gap:12px;padding:14px;background:white;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);z-index:10}.convert-panel h2{font-size:14px;margin:0}.convert-status{display:grid;gap:8px;color:var(--muted);font-size:12px}.convert-panel label{display:grid;gap:5px;color:var(--muted);font-size:12px}.convert-panel input,.convert-panel select{height:34px;border:1px solid var(--line);border-radius:10px;padding:0 10px;background:#fbfcff;color:var(--text)}.convert-actions{display:flex;gap:8px;justify-content:flex-end}.progress{height:8px;border-radius:999px;background:#edf1f6;overflow:hidden}.progress i{display:block;height:100%;width:0;background:var(--accent)}.result-link{color:var(--accent);text-decoration:none;font-weight:600}.result-path{display:block;color:var(--text);overflow-wrap:anywhere;margin-top:4px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:760px){.stage{padding:12px}.media-controls{grid-template-columns:1fr 1fr 1fr}.time-readout{text-align:left}.pill{display:none}}
+.model-shell{width:calc(100vw - 36px);height:calc(100vh - 88px);display:grid;grid-template-rows:auto 1fr;background:linear-gradient(160deg,#fafdff,#e9eef8);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);overflow:hidden}.model-stage{position:relative;min-height:0}.model-stage canvas{display:block;width:100%;height:100%}.model-help{position:absolute;left:14px;bottom:12px;padding:6px 9px;border-radius:999px;background:rgba(255,255,255,.78);color:var(--muted);font-size:11px;backdrop-filter:blur(10px)}
 </style>
 </head>
 <body>
@@ -284,6 +286,68 @@ function renderVideo(){
   attachMediaMenu(video);
 }
 function renderImage(){ setStage('<img class="image-viewer" src="' + file.resourceUrl + '" alt="' + escapeText(file.title) + '">'); }
+async function renderModel3d(){
+  if (file.extension === 'blend') {
+    showUnsupported('Blender files need to be exported as GLB or glTF before a browser can render them. Auri can preview the exported model here.');
+    return;
+  }
+  if (['step','stp','iges','igs'].includes(file.extension)) {
+    showUnsupported('This CAD exchange format needs native geometry conversion. Export it as GLB, STL, OBJ, PLY, or 3MF for an interactive preview.');
+    return;
+  }
+  setStage('<section class="model-shell"><div class="viewer-toolbar"><strong>3D preview</strong><button id="model-reset" class="clean-button" type="button">Frame model</button><button id="model-wireframe" class="clean-button" type="button" aria-pressed="false">Wireframe</button><small id="model-status">Loading Three.js…</small></div><div id="model-stage" class="model-stage"><span class="model-help">Drag to orbit · scroll to zoom · right-drag to pan</span></div></section>');
+  const host = document.getElementById('model-stage');
+  const status = document.getElementById('model-status');
+  try {
+    if (!file.threeModuleUrl) throw new Error('The bundled 3D renderer is unavailable.');
+    const { THREE, OrbitControls, GLTFLoader, STLLoader, OBJLoader, PLYLoader, ThreeMFLoader } = await import(file.threeModuleUrl);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf1f5fb);
+    const camera = new THREE.PerspectiveCamera(45, 1, .01, 100000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    host.prepend(renderer.domElement);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x71809c, 2.2));
+    const key = new THREE.DirectionalLight(0xffffff, 3); key.position.set(4, 7, 5); scene.add(key);
+    const fill = new THREE.DirectionalLight(0x9bb7ff, 1.5); fill.position.set(-5, 2, -3); scene.add(fill);
+    const Loader = file.extension === 'glb' || file.extension === 'gltf' ? GLTFLoader
+      : file.extension === 'stl' ? STLLoader
+        : file.extension === 'obj' ? OBJLoader
+          : file.extension === 'ply' ? PLYLoader
+            : ThreeMFLoader;
+    const loaded = await new Loader().loadAsync(file.resourceUrl);
+    let model = loaded.scene || loaded;
+    if (loaded.isBufferGeometry) {
+      loaded.computeVertexNormals?.();
+      model = new THREE.Mesh(loaded, new THREE.MeshStandardMaterial({ color: 0x91aef4, roughness: .55, metalness: .12 }));
+    }
+    scene.add(model);
+    const frameModel = () => {
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = Math.max(.01, box.getSize(new THREE.Vector3()).length());
+      controls.target.copy(center);
+      camera.near = Math.max(.001, size / 1000); camera.far = Math.max(1000, size * 100); camera.updateProjectionMatrix();
+      camera.position.copy(center).add(new THREE.Vector3(size * .7, size * .45, size * .7)); controls.update();
+    };
+    const resize = () => { const width = host.clientWidth || 800; const height = host.clientHeight || 600; renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix(); };
+    frameModel(); resize(); status.textContent = file.extension.toUpperCase() + ' · interactive';
+    new ResizeObserver(resize).observe(host);
+    document.getElementById('model-reset').addEventListener('click', frameModel);
+    document.getElementById('model-wireframe').addEventListener('click', (event) => {
+      const enabled = event.currentTarget.getAttribute('aria-pressed') !== 'true';
+      event.currentTarget.setAttribute('aria-pressed', String(enabled));
+      model.traverse((child) => { if (child.material) (Array.isArray(child.material) ? child.material : [child.material]).forEach((material) => { material.wireframe = enabled; material.needsUpdate = true; }); });
+    });
+    const animate = () => { controls.update(); renderer.render(scene, camera); requestAnimationFrame(animate); }; animate();
+  } catch (error) {
+    status.textContent = 'Preview failed';
+    host.innerHTML = '<section class="card message-card"><span>◇</span><strong>Could not render this 3D model</strong><p>' + escapeText(error?.message || error) + '</p></section>';
+  }
+}
 function outputExtension(format){ return format === 'mp4_h264' || format === 'mp4_h265' ? 'mp4' : format; }
 function originalBaseName(){ return (file.title || 'media').replace(/\.[^.]+$/, '') || 'media'; }
 function defaultConvertedName(format){ const base = originalBaseName(); return 'converted_' + base + '.' + outputExtension(format); }
@@ -385,6 +449,7 @@ else if (file.kind === 'document') renderDocument();
 else if (file.kind === 'image') renderImage();
 else if (file.kind === 'audio') renderAudio();
 else if (file.kind === 'video') renderVideo();
+else if (file.kind === 'model3d') renderModel3d();
 else showUnsupported('Preview is not available for this file type yet. You can try opening it as UTF-8 text.');
 </script>
 </body>

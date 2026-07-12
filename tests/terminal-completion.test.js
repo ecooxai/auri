@@ -146,6 +146,7 @@ test("controller opens, navigates, accepts with Tab, and dismisses on Enter", as
   }
 
   controller.handleInput({ target: input });
+  controller.flushTerminalCompletions();
   assert.deepEqual(updates.at(-1).items, ["git status --branch", "git status --short", "git stash list"]);
   assert.equal(updates.at(-1).selectedIndex, 0);
 
@@ -177,6 +178,7 @@ test("controller opens, navigates, accepts with Tab, and dismisses on Enter", as
   input.value = "git sta";
   input.setSelectionRange(input.value.length, input.value.length);
   controller.handleInput({ target: input });
+  controller.flushTerminalCompletions();
   const enterEvent = {
     target: input,
     key: "Enter",
@@ -197,6 +199,7 @@ test("controller opens, navigates, accepts with Tab, and dismisses on Enter", as
   input.value = "git sta";
   input.setSelectionRange(input.value.length, input.value.length);
   controller.handleInput({ target: input });
+  controller.flushTerminalCompletions();
   await controller.handleKeydown({
     target: input,
     key: "Escape",
@@ -273,6 +276,7 @@ test("controller uses active folder entries when command history is empty", asyn
   });
 
   controller.handleInput({ target: input });
+  controller.flushTerminalCompletions();
 
   assert.equal(updates.at(-1).items[0].value, "README.md");
   assert.equal(updates.at(-1).items[0].kind, "file");
@@ -379,6 +383,7 @@ test("controller completion uses loaded shell history and custom settings", asyn
   });
 
   controller.handleInput({ target: input });
+  controller.flushTerminalCompletions();
 
   assert.deepEqual(updates.at(-1).items.slice(0, 2).map((item) => item.detail), ["Custom", "Shell history"]);
   assert.deepEqual(updates.at(-1).items.slice(0, 2).map((item) => item.value), [

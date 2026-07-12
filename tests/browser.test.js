@@ -409,3 +409,44 @@ test("native child webviews bridge navigation, zoom, downloads, and devtools", (
   assert.match(source, /open_devtools/);
   assert.match(source, /download/);
 });
+
+test("web AI menu items combine built-ins with custom label|prompt lines", async () => {
+  const { webAiMenuItems, webAiMenuPayload, webAiPrompt } = await import("../src/model/browser.js");
+  const items = webAiMenuItems("Summarize | Summarize this: {text}\nbroken line\n | missing label");
+  assert.deepEqual(items.map((item) => item.id), ["ask", "translate", "tts", "custom-0"]);
+  assert.equal(items[3].label, "Summarize");
+  assert.equal(webAiPrompt(items[3], { kind: "text", text: "hello" }), "Summarize this: hello");
+  assert.equal(webAiPrompt(items[0], { kind: "text", text: "plain" }), "plain");
+  const payload = JSON.parse(webAiMenuPayload(""));
+  assert.deepEqual(payload, [
+    { id: "ask", label: "Ask" },
+    { id: "translate", label: "Translate" },
+    { id: "tts", label: "Speak" }
+  ]);
+});
+
+test("web AI image prompts fall back to the image URL when no pixels were captured", async () => {
+  const { webAiMenuItems, webAiPrompt } = await import("../src/model/browser.js");
+  const ask = webAiMenuItems("").find((item) => item.id === "ask");
+  const prompt = webAiPrompt(ask, { kind: "image", imageUrl: "https://example.com/cat.png" });
+  assert.match(prompt, /Describe this image\./);
+  assert.match(prompt, /https:\/\/example\.com\/cat\.png/);
+});
+
+test("native webviews inject the AI context menu and intercept internal navigations", () => {
+  const source = readFileSync(new URL("../src-tauri/src/core/webview.rs", import.meta.url), "utf8");
+  assert.match(source, /auri\.internal/);
+  assert.match(source, /handle_internal_navigation/);
+  assert.match(source, /auri-web-ai/);
+  assert.match(source, /window\.open/);
+  assert.match(source, /open_popup/);
+  assert.match(source, /PAGE_SCRIPT_TEMPLATE/);
+});
+
+test("linux web tabs default to a dedicated browser window fallback", () => {
+  const source = readFileSync(new URL("../src-tauri/src/core/webview.rs", import.meta.url), "utf8");
+  assert.match(source, /use_window_webview/);
+  assert.match(source, /AURI_EMBEDDED_WEBVIEW/);
+  assert.match(source, /show_window_webview/);
+  assert.match(source, /WebviewWindowBuilder/);
+});

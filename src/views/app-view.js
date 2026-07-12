@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { buildDiskMountRows, buildNetInterfaceRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderSubtabs, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
+import { buildDiskMountRows, buildNetInterfaceRows, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -142,6 +142,7 @@ export class AppView {
       </div>
       ${renderWebOverlay(state, { native: nativeWebview })}
       ${renderSystemTunnelPrompt(state)}
+      ${renderSystemKillPrompt(state)}
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
     const active = activeSubtab(state);
     this.restoreTerminalHost(active?.type === "terminal" ? active.id : null);
@@ -156,6 +157,7 @@ export class AppView {
         nextTerminalInput.setSelectionRange?.(safeStart, safeEnd);
       }
     }
+    if (focusSnapshot && !terminalWasFocused) this.restoreFocus(focusSnapshot);
     if (folderCreateValue && this.root.querySelector("#folder-create-input")) {
       this.root.querySelector("#folder-create-input").value = folderCreateValue;
     }
@@ -182,6 +184,109 @@ export class AppView {
         input?.select();
       }
     });
+  }
+
+  // In-place refresh for the quiet 5s system-monitor poll. Updates the
+  // status line, metric tiles, disk/net rows, process table, and the
+  // selected-process detail inside the open System/Disk/Net panel without
+  // rebuilding the whole shell (which would drop focus, hover, and scroll
+  // everywhere else). Returns false when the expected structure is missing
+  // so the caller can fall back to a full render.
+  patchSystemMonitor(state) {
+    const panel = this.root?.querySelector?.(".system-panel");
+    if (!panel) return false;
+    const kind = activeSubtab(state)?.type;
+    if (!["system", "disk", "net"].includes(kind)) return false;
+
+    const status = panel.querySelector("[data-system-status]");
+    if (status && kind === "system") {
+      status.textContent = buildSystemStatusText(state);
+      status.classList?.toggle?.("is-error", state.system.status === "error");
+    }
+    const host = panel.querySelector("[data-system-host]");
+    if (host) host.textContent = state.system.snapshot?.host?.hostname || "—";
+
+    for (const metric of buildSystemMetrics(state, kind)) {
+      const tile = panel.querySelector(`[data-metric="${metric.key}"]`);
+      if (!tile) return false;
+      const value = tile.querySelector("[data-metric-value]");
+      if (value) value.textContent = metric.value;
+      const unit = tile.querySelector("[data-metric-unit]");
+      if (unit) {
+        unit.textContent = metric.unit || "";
+        unit.hidden = !metric.unit;
+      }
+      const detail = tile.querySelector("[data-metric-detail]");
+      if (detail) {
+        detail.textContent = metric.detail || "";
+        detail.hidden = !metric.detail;
+      }
+    }
+
+    if (kind === "disk" && !this.patchKeyedRows(panel, buildDiskMountRows(state), "mount", ["title", "percent", "usage", "free"])) return false;
+    if (kind === "net" && !this.patchKeyedRows(panel, buildNetInterfaceRows(state), "interface", ["title", "status", "ip", "traffic"])) return false;
+
+    const monitor = panel.querySelector(".process-monitor");
+    if (monitor) {
+      const rows = buildProcessMonitorRows(state, kind);
+      if (!this.patchProcessRows(monitor, rows)) {
+        const scrollTop = monitor.querySelector(".process-table")?.scrollTop || 0;
+        monitor.innerHTML = renderProcessMonitorContent(state, kind);
+        const table = monitor.querySelector(".process-table");
+        if (table) table.scrollTop = scrollTop;
+      }
+    }
+
+    const detailHtml = renderSystemProcessDetail(state, kind);
+    const backdrop = panel.querySelector(".system-process-detail-backdrop");
+    if (backdrop && detailHtml) backdrop.outerHTML = detailHtml;
+    else if (backdrop) backdrop.remove();
+    else if (detailHtml) panel.insertAdjacentHTML?.("beforeend", detailHtml);
+    return true;
+  }
+
+  patchKeyedRows(panel, rows, prefix, fields) {
+    const existing = panel.querySelectorAll?.(`[data-${prefix}-row]`);
+    if (existing && existing.length !== rows.length) return false;
+    for (const row of rows) {
+      const element = panel.querySelector(`[data-${prefix}-row="${row.key}"]`);
+      if (!element) return false;
+      for (const field of fields) {
+        const target = element.querySelector(`[data-${prefix}-${field}]`);
+        if (target) target.textContent = row[field];
+      }
+    }
+    return true;
+  }
+
+  patchProcessRows(monitor, rows) {
+    const table = monitor?.querySelector?.(".process-table");
+    if (!table || !rows.length) return false;
+    const existing = table.querySelectorAll?.("[data-process-row]");
+    if (!existing || existing.length !== rows.length) return false;
+    for (const row of rows) {
+      const element = table.querySelector(`[data-process-row="${row.key}"]`);
+      if (!element) return false;
+      const nameCell = element.querySelector("[data-process-name]");
+      if (nameCell) {
+        nameCell.textContent = row.name;
+        nameCell.title = row.nameTitle;
+      }
+      const portCell = element.querySelector("[data-process-port]");
+      if (portCell) portCell.innerHTML = formatProcessPortCell(row.ports);
+      const ramCell = element.querySelector("[data-process-ram]");
+      if (ramCell) ramCell.textContent = row.ram;
+      const cpuCell = element.querySelector("[data-process-cpu]");
+      if (cpuCell) cpuCell.textContent = row.cpu;
+      const diskCell = element.querySelector("[data-process-disk]");
+      if (diskCell) diskCell.textContent = row.disk;
+      const netCell = element.querySelector("[data-process-net]");
+      if (netCell) netCell.textContent = row.net;
+      element.classList?.toggle?.("is-selected", row.selected);
+    }
+    const countLabel = monitor.querySelector(".process-monitor-head span:last-child");
+    if (countLabel) countLabel.textContent = `${rows.length} shown`;
+    return true;
   }
 
   renderCommandPalette() {

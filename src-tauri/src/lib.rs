@@ -1,8 +1,8 @@
 pub mod core;
 
 use core::{
-    capture, clipboard, files, ipc, lifecycle, permissions, shell, system, terminal, webview,
-    workspace,
+    capture, clipboard, files, fileserver, ipc, lifecycle, permissions, shell, system, terminal,
+    webview, workspace,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -139,6 +139,11 @@ fn terminal_cwd(session_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn terminal_busy(session_id: String) -> Result<bool, String> {
+    terminal::busy(&session_id)
+}
+
+#[tauri::command]
 fn terminal_resize(session_id: String, cols: u16, rows: u16) -> Result<(), String> {
     terminal::resize(&session_id, cols, rows)
 }
@@ -201,6 +206,21 @@ fn set_clipboard_pinned(
 #[tauri::command]
 fn remove_clipboard_entry(id: String) -> Result<Vec<clipboard::ClipboardEntry>, String> {
     clipboard::remove_entry(&id)
+}
+
+#[tauri::command]
+fn update_clipboard_entry(id: String, text: String) -> Result<Vec<clipboard::ClipboardEntry>, String> {
+    clipboard::update_entry_text(&id, &text)
+}
+
+#[tauri::command]
+fn copy_clipboard_entry(id: String) -> Result<(), String> {
+    clipboard::prepare_paste(&id)
+}
+
+#[tauri::command]
+fn fileserver_start() -> Result<fileserver::ServerInfo, String> {
+    fileserver::start()
 }
 
 #[tauri::command]
@@ -455,8 +475,19 @@ fn webview_show(
     y: f64,
     width: f64,
     height: f64,
+    ai_prompts: Option<String>,
 ) -> Result<(), String> {
-    webview::show(&app, &id, &url, navigate, x, y, width, height)
+    webview::show(
+        &app,
+        &id,
+        &url,
+        navigate,
+        x,
+        y,
+        width,
+        height,
+        ai_prompts.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -505,6 +536,7 @@ fn webview_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            fileserver::start().map_err(std::io::Error::other)?;
             let command_server =
                 ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
             app.manage(command_server);
@@ -565,12 +597,23 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. })
-                && lifecycle::should_exit_on_close(window.label())
-            {
-                window.app_handle().exit(0);
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { .. } => {
+                if lifecycle::should_exit_on_close(window.label()) {
+                    window.app_handle().exit(0);
+                }
             }
+            // The main webview is added as a child sized once at startup, so it
+            // must be re-fitted whenever the window resizes or changes DPI;
+            // otherwise the UI stops matching the window (e.g. after enlarging).
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                if window.label() == webview::MAIN_LABEL {
+                    if let Err(error) = webview::fit_main_webview(window) {
+                        eprintln!("Could not resize the main webview: {error}");
+                    }
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             initialize_workspace,
@@ -588,6 +631,7 @@ pub fn run() {
             terminal_start,
             terminal_write,
             terminal_cwd,
+            terminal_busy,
             terminal_resize,
             terminal_stop,
             window_start_dragging,
@@ -600,6 +644,9 @@ pub fn run() {
                 paste_clipboard_entry,
             set_clipboard_pinned,
             remove_clipboard_entry,
+            update_clipboard_entry,
+            copy_clipboard_entry,
+            fileserver_start,
             read_shell_history,
             system_snapshot,
             kill_process,
