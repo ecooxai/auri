@@ -36,6 +36,67 @@ test("terminal preview parser resolves relative paths against the terminal cwd",
   );
 });
 
+
+test("terminal preview parser resolves bare filenames and nested relative file paths against cwd", () => {
+  const cwd = "/Users/me/project";
+  const cases = [
+    ["test.png", "/Users/me/project/test.png"],
+    ["notes.md", "/Users/me/project/notes.md"],
+    ["index.html", "/Users/me/project/index.html"],
+    ["src/app.js", "/Users/me/project/src/app.js"],
+    ["dir1/dir2/main.rs", "/Users/me/project/dir1/dir2/main.rs"],
+    ["docs/report.pdf", "/Users/me/project/docs/report.pdf"],
+    ["models/scene.glb", "/Users/me/project/models/scene.glb"],
+    ["models/scene.blend", "/Users/me/project/models/scene.blend"],
+    ["audio/theme.m4a", "/Users/me/project/audio/theme.m4a"],
+    ["video/demo.mp4", "/Users/me/project/video/demo.mp4"],
+    ["archive/source.tar.gz", "/Users/me/project/archive/source.tar.gz"],
+    ["CMakeLists.txt", "/Users/me/project/CMakeLists.txt"]
+  ];
+  for (const [input, value] of cases) {
+    assert.deepEqual(extractTerminalPreviewTarget(`open ${input}`, cwd), { kind: "file", value, text: input });
+  }
+  assert.deepEqual(
+    extractTerminalPreviewTarget('open "My Screenshot.webp"', cwd),
+    { kind: "file", value: "/Users/me/project/My Screenshot.webp", text: "My Screenshot.webp" }
+  );
+  assert.deepEqual(
+    extractTerminalPreviewTarget("open My\\ Screenshot.webp", cwd),
+    { kind: "file", value: "/Users/me/project/My Screenshot.webp", text: "My Screenshot.webp" }
+  );
+});
+
+test("terminal bare-file parsing covers common file families", () => {
+  const cwd = "/work";
+  const names = [
+    "photo.jpg", "graphic.svg", "sound.wav", "song.mp3", "movie.mov", "clip.webm",
+    "readme.txt", "guide.markdown", "data.json", "config.yaml", "table.csv", "site.css",
+    "main.py", "main.rs", "main.go", "main.java", "main.cpp", "main.h", "main.swift",
+    "main.kt", "main.cs", "main.php", "main.rb", "main.sh", "query.sql", "component.tsx",
+    "document.docx", "sheet.xlsx", "slides.pptx", "book.epub", "manual.pdf",
+    "mesh.obj", "mesh.stl", "scene.gltf", "scene.blend", "bundle.zip"
+  ];
+  for (const name of names) {
+    assert.equal(extractTerminalPreviewTarget(name, cwd)?.value, `/work/${name}`);
+  }
+});
+
+test("terminal bare-file parsing rejects dotted prose, versions, domains, and option assignments", () => {
+  const cwd = "/work";
+  for (const input of [
+    "version 1.2.3", "release v2.10.4", "visit example.com", "package foo.dev",
+    "use --config=app.js", "set OUTPUT=result.pdf", "flag --notes.md", "word e.g.",
+    "https://example.com/app.js"
+  ]) {
+    const result = extractTerminalPreviewTarget(input, cwd);
+    if (input.startsWith("https://")) {
+      assert.deepEqual(result, { kind: "url", value: "https://example.com/app.js", text: "https://example.com/app.js" });
+    } else {
+      assert.equal(result, null, input);
+    }
+  }
+});
+
 test("terminal click parsing chooses the candidate under the clicked cell", () => {
   const line = "first /tmp/one.png then https://example.com/two";
   assert.deepEqual(
@@ -43,6 +104,17 @@ test("terminal click parsing chooses the candidate under the clicked cell", () =
     { kind: "url", value: "https://example.com/two", text: "https://example.com/two" }
   );
   assert.equal(extractTerminalPreviewTarget(line, "/tmp", line.indexOf("then") + 1), null);
+
+  const relativeLine = "built dist/assets/demo.glb and src/main.rs:42:7";
+  assert.deepEqual(
+    extractTerminalPreviewTarget(relativeLine, "/Users/me/project", relativeLine.indexOf("demo.glb") + 3),
+    { kind: "file", value: "/Users/me/project/dist/assets/demo.glb", text: "dist/assets/demo.glb" }
+  );
+  assert.deepEqual(
+    extractTerminalPreviewTarget(relativeLine, "/Users/me/project", relativeLine.indexOf("main.rs") + 2),
+    { kind: "file", value: "/Users/me/project/src/main.rs", text: "src/main.rs" }
+  );
+  assert.equal(extractTerminalPreviewTarget(relativeLine, "/Users/me/project", relativeLine.indexOf("and") + 1), null);
 });
 
 

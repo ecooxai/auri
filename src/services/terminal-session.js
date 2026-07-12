@@ -4,7 +4,23 @@ const encoder = new TextEncoder();
 let terminalModulesPromise = null;
 
 const TERMINAL_TARGET_PATTERN = /(?:https?:\/\/|file:\/\/\/)[^\s<>"'`]+|(?:[A-Za-z]:[\\/]|~\/|\.{1,2}\/|\/)(?:\\[ \t]|[^\s<>"'`])+/gi;
+const TERMINAL_FILE_TOKEN_PATTERN = /(?:\\[ \t]|[^\s<>"'`()\[\]{},;])+/g;
 const TERMINAL_TRAILING_PUNCTUATION = /[),.;:!?\]}]+$/;
+const TERMINAL_FILE_EXTENSIONS = new Set([
+  "aac", "aiff", "alac", "ape", "flac", "m4a", "mid", "midi", "mp3", "oga", "ogg", "opus", "wav", "wave", "wma",
+  "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ogv", "webm", "wmv",
+  "avif", "bmp", "gif", "heic", "heif", "ico", "jpeg", "jpg", "png", "psd", "svg", "tif", "tiff", "webp",
+  "txt", "text", "md", "markdown", "log", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml", "toml", "ini", "cfg", "conf",
+  "html", "htm", "css", "scss", "sass", "less", "vue", "svelte",
+  "c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx", "m", "mm", "cs", "java", "kt", "kts", "swift", "go", "rs",
+  "py", "pyw", "rb", "php", "pl", "pm", "lua", "r", "dart", "scala", "sc", "groovy", "gradle", "clj", "cljs", "cljc",
+  "ex", "exs", "erl", "hrl", "fs", "fsx", "fsi", "vb", "vbs", "sql", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+  "js", "jsx", "mjs", "cjs", "ts", "tsx", "wasm", "wat",
+  "pdf", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods", "ppt", "pptx", "odp", "epub",
+  "blend", "dae", "fbx", "glb", "gltf", "obj", "ply", "stl", "3ds", "usd", "usda", "usdc", "usdz",
+  "7z", "bz2", "gz", "rar", "tar", "tgz", "xz", "zip", "zst",
+  "apk", "dmg", "exe", "img", "iso", "jar", "deb", "rpm"
+]);
 
 function trimTerminalCandidate(value) {
   return String(value || "")
@@ -36,6 +52,17 @@ function inferredHome(cwd) {
   return match?.[0] || null;
 }
 
+function hasRecognizedFileExtension(value) {
+  const path = String(value || "");
+  if (!path || /[?#]/.test(path) || path.startsWith("-") || path.includes("=") || path.includes("@")) return false;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(path) && !/^[A-Za-z]:[\\/]/.test(path)) return false;
+  if (/[|&*$<>]/.test(path)) return false;
+  const name = path.replaceAll("\\", "/").split("/").pop() || "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return false;
+  return TERMINAL_FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
 function resolveTerminalPath(value, cwd) {
   let path = trimTerminalCandidate(value);
   if (/^file:\/\/\//i.test(path)) {
@@ -46,7 +73,8 @@ function resolveTerminalPath(value, cwd) {
     const home = inferredHome(cwd);
     return home ? normalizeAbsolutePath(`${home}/${path.slice(2)}`) : path;
   }
-  if (!/^\.{1,2}\//.test(path)) return null;
+  const explicitRelative = /^\.{1,2}\//.test(path);
+  if (!explicitRelative && !hasRecognizedFileExtension(path)) return null;
   const base = String(cwd || "").replaceAll("\\", "/");
   return base.startsWith("/") || /^[A-Za-z]:\//.test(base)
     ? normalizeAbsolutePath(`${base}/${path}`)
@@ -65,8 +93,9 @@ function parsedTerminalCandidate(raw, cwd) {
       return null;
     }
   }
-  const value = resolveTerminalPath(text, cwd);
-  return value ? { kind: "file", value, text } : null;
+  const fileText = text.replace(/:(?:\d+)(?::\d+)?$/, "");
+  const value = resolveTerminalPath(fileText, cwd);
+  return value ? { kind: "file", value, text: fileText } : null;
 }
 
 function terminalCandidateSpans(input, cwd) {
@@ -78,14 +107,16 @@ function terminalCandidateSpans(input, cwd) {
     if (!parsed) continue;
     spans.push({ ...parsed, start: match.index + 1, end: match.index + 1 + match[2].length });
   }
-  TERMINAL_TARGET_PATTERN.lastIndex = 0;
-  for (const match of text.matchAll(TERMINAL_TARGET_PATTERN)) {
-    const parsed = parsedTerminalCandidate(match[0], cwd);
-    if (!parsed) continue;
-    const start = match.index;
-    const end = start + match[0].length;
-    if (spans.some((item) => start >= item.start && end <= item.end)) continue;
-    spans.push({ ...parsed, start, end });
+  for (const pattern of [TERMINAL_TARGET_PATTERN, TERMINAL_FILE_TOKEN_PATTERN]) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+      const parsed = parsedTerminalCandidate(match[0], cwd);
+      if (!parsed) continue;
+      const start = match.index;
+      const end = start + match[0].length;
+      if (spans.some((item) => start >= item.start && end <= item.end)) continue;
+      spans.push({ ...parsed, start, end });
+    }
   }
   return spans.sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
 }
