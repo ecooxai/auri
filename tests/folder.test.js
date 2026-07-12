@@ -51,10 +51,14 @@ test("native folder bridge exposes creation, metadata, modification dates, and r
 });
 
 
-test("audio-to-video ffmpeg uses video bitrate and explicitly binds showwaves to the source audio", async () => {
-  const files = await readFile("src-tauri/src/core/files.rs", "utf8");
+test("audio-to-video ffmpeg uses the shared four-megabit default and explicitly binds showwaves to the source audio", async () => {
+  const [files, util] = await Promise.all([
+    readFile("src-tauri/src/core/files.rs", "utf8"),
+    readFile("src-tauri/src/core/util.rs", "utf8")
+  ]);
 
-  assert.match(files, /video_bitrate = bitrate_kbps\.unwrap_or\(1000\)\.clamp\(250, 20_000\)/);
+  assert.match(files, /video_bitrate = normalized_video_bitrate\(bitrate_kbps\)\.to_string\(\)/);
+  assert.match(util, /bitrate_kbps\.unwrap_or\(4_000\)\.clamp\(250, 20_000\)/);
   assert.match(files, /\[0:a\]showwaves=s=\{\}:mode=cline:colors=white,format=yuv420p\[v\]/);
   assert.match(files, /command\.args\(\["-map", "\[v\]", "-map", "0:a:0"\]\)/);
   assert.match(files, /command\.args\(\["-c:v", codec, "-b:v", &format!\("\{video_bitrate\}k"\)\]\)/);

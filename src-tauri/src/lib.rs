@@ -21,6 +21,31 @@ struct WakeShortcutState(Mutex<Option<String>>);
 #[derive(Default)]
 struct SystemMonitorState(Mutex<Option<system::NetworkSample>>);
 
+#[derive(Default)]
+struct PendingOpenFiles(Mutex<Vec<String>>);
+
+#[cfg(target_os = "macos")]
+fn queue_opened_files(app: &tauri::AppHandle, urls: Vec<url::Url>) {
+    let paths = urls
+        .into_iter()
+        .filter_map(|url| url.to_file_path().ok())
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return;
+    }
+
+    if let Some(state) = app.try_state::<PendingOpenFiles>() {
+        match state.0.lock() {
+            Ok(mut pending) => pending.extend(paths.iter().cloned()),
+            Err(_) => eprintln!("Could not queue files opened from Finder."),
+        }
+    }
+    let _ = app.emit("auri-open-files", &paths);
+    let _ = lifecycle::reveal_main_window(app);
+}
+
 struct ManagedCloudflaredTunnel {
     info: system::CloudflaredTunnel,
     child: std::process::Child,
@@ -221,6 +246,17 @@ fn copy_clipboard_entry(id: String) -> Result<(), String> {
 #[tauri::command]
 fn fileserver_start() -> Result<fileserver::ServerInfo, String> {
     fileserver::start()
+}
+
+#[tauri::command]
+fn take_pending_open_files(
+    state: tauri::State<'_, PendingOpenFiles>,
+) -> Result<Vec<String>, String> {
+    let mut pending = state
+        .0
+        .lock()
+        .map_err(|_| "Finder open-file queue is unavailable.".to_string())?;
+    Ok(std::mem::take(&mut *pending))
 }
 
 #[tauri::command]
@@ -534,13 +570,14 @@ fn webview_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             fileserver::start().map_err(std::io::Error::other)?;
             let command_server =
                 ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
             app.manage(command_server);
             app.manage(SystemMonitorState::default());
+            app.manage(PendingOpenFiles::default());
             app.manage(CloudflaredTunnelState::default());
             app.manage(lifecycle::DesktopVisibilityState::new(true));
             let main_config = app
@@ -647,6 +684,7 @@ pub fn run() {
             update_clipboard_entry,
             copy_clipboard_entry,
             fileserver_start,
+            take_pending_open_files,
             read_shell_history,
             system_snapshot,
             kill_process,
@@ -668,6 +706,15 @@ pub fn run() {
             webview_action,
             webview_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Auri");
+        .build(tauri::generate_context!())
+        .expect("error while building Auri");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = event {
+            queue_opened_files(app_handle, urls);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 }

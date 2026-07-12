@@ -1,4 +1,6 @@
-use super::util::{encode_base64, file_kind, mime_type};
+use super::util::{
+    encode_base64, file_kind, mime_type, normalized_audio_bitrate, normalized_video_bitrate,
+};
 use super::workspace::{display_path, expand_path};
 use serde::Serialize;
 use serde_json::Value;
@@ -670,8 +672,8 @@ pub fn convert_media_file(
     }
     let destination = temporary_converted_path(&source, format)?;
     let default_name = default_converted_name(&source, format)?;
-    let audio_bitrate = bitrate_kbps.unwrap_or(128).clamp(32, 512).to_string();
-    let video_bitrate = bitrate_kbps.unwrap_or(1000).clamp(250, 20_000).to_string();
+    let audio_bitrate = normalized_audio_bitrate(format, bitrate_kbps).to_string();
+    let video_bitrate = normalized_video_bitrate(bitrate_kbps).to_string();
     let sample_rate_value = normalized_sample_rate(sample_rate);
     let video_codec = match format {
         "mp4_h264" => Some("libx264"),

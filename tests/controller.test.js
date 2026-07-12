@@ -405,6 +405,53 @@ test("file open routes the selected file into a webview subtab", async () => {
   assert.deepEqual(openOptions, { autoplay: true });
 });
 
+test("macOS Finder open requests create one current webview tab per file", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const controller = new AppController({
+    view: {
+      root: { querySelector: () => null },
+      render() {},
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
+    backend: {
+      isNative: true,
+      inspectFile: async (path) => ({ path, name: path.split("/").pop(), kind: path.endsWith(".mp4") ? "video" : "text" }),
+      createFileView: async (path, metadata) => ({
+        url: `http://localhost:8895${path}?view=1`,
+        title: metadata.name,
+        filePath: path,
+        mime: "text/html"
+      })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.configurationReady = true;
+
+  await controller.openPendingFiles(["/tmp/read me.txt", "/tmp/movie.mp4"]);
+
+  const fileTabs = controller.state.tabs[0].subtabs.filter((item) => item.type === "webview" && item.filePath);
+  assert.deepEqual(fileTabs.map((item) => item.filePath), ["/tmp/read me.txt", "/tmp/movie.mp4"]);
+  assert.equal(fileTabs[0].url, "http://localhost:8895/tmp/read me.txt?view=1");
+  assert.equal(fileTabs[1].url, "http://localhost:8895/tmp/movie.mp4?view=1");
+  assert.equal(controller.state.tabs[0].activeSubtabId, fileTabs[1].id);
+});
+
+test("native folder file clicks open the unified HTTP viewer immediately", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+
+  await controller.openFolderEntry("/tmp/notes.txt", "text");
+
+  assert.deepEqual(commands, ['file open "/tmp/notes.txt"']);
+});
+
 test("folder file double-click opens the file directly in the webview app", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const view = {

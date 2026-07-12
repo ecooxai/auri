@@ -29,15 +29,21 @@ function titleForPath(path, fallback = "File") {
 
 export const LOCAL_FILE_SERVER_ORIGIN = "http://localhost:8890";
 
-export function localFileUrl(path) {
-  const absolute = String(path || "").replaceAll("\\", "/");
-  const pathname = absolute.startsWith("/") ? absolute : `/${absolute}`;
-  return `${LOCAL_FILE_SERVER_ORIGIN}${pathname.split("/").map(encodeURIComponent).join("/")}`;
+export function localFileServerOrigin(port = 8890) {
+  const parsed = Number(port);
+  const safePort = Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : 8890;
+  return `http://localhost:${safePort}`;
 }
 
-export function localFileViewerUrl(path) {
-  const relative = String(path || "").replaceAll("\\", "/").replace(/^\/+/, "");
-  return `${LOCAL_FILE_SERVER_ORIGIN}/view?file=${encodeURIComponent(relative)}`;
+export function localFileUrl(path, port = 8890) {
+  const absolute = String(path || "").replaceAll("\\", "/");
+  const pathname = absolute.startsWith("/") ? absolute : `/${absolute}`;
+  return `${localFileServerOrigin(port)}${pathname.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function localFileViewerUrl(path, port = 8890, mode = "view") {
+  const queryMode = mode === "edit" ? "edit" : "view";
+  return `${localFileUrl(path, port)}?${queryMode}=1`;
 }
 
 
@@ -249,6 +255,8 @@ export class Backend {
   constructor() {
     this.invoke = tauriInvoke();
     this.fileViewResources = new Map();
+    this.fileServerInfo = null;
+    this.fileServerPromise = null;
     this.browserClipboardHistory = [
       { id: "clip-1", kind: "text", text: "auri tab new Research", createdAt: new Date().toISOString(), pinned: false },
       { id: "clip-2", kind: "text", text: "Auri keeps commands testable and automatable.", createdAt: new Date().toISOString(), pinned: false }
@@ -347,6 +355,11 @@ export class Backend {
     return this.call("initialize_workspace");
   }
 
+  async takePendingOpenFiles() {
+    if (!this.invoke) return [];
+    return this.call("take_pending_open_files");
+  }
+
   async readShellHistory() {
     if (!this.invoke) return [];
     return this.call("read_shell_history");
@@ -384,7 +397,16 @@ export class Backend {
 
   async startFileServer(root) {
     if (!this.invoke) throw new Error("The web file viewer needs the native Auri build.");
-    return this.call("fileserver_start");
+    if (this.fileServerInfo) return this.fileServerInfo;
+    if (!this.fileServerPromise) {
+      this.fileServerPromise = this.call("fileserver_start")
+        .then((info) => {
+          this.fileServerInfo = info;
+          return info;
+        })
+        .finally(() => { this.fileServerPromise = null; });
+    }
+    return this.fileServerPromise;
   }
 
   async listDirectory(path) {
@@ -440,28 +462,18 @@ export class Backend {
       return { url, title, filePath: path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
     }
 
-    const firstMime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime || "");
-    const isHtml = !options.asText && (firstMime === "text/html" || ["html", "htm"].includes(extension(path)));
-    if (isHtml) {
-      const title = metadata.name || titleForPath(path);
-      return { url: localFileUrl(path), title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "html" };
-    }
-    const streamedKind = viewerKindForFile(path, firstMime);
-    if (options.asText || isEditableTextFile(path, firstMime)) {
-      const text = await this.call("read_text_file", { path });
-      const title = metadata.name || titleForPath(path);
-      const url = this.createFileViewPage({ mime: firstMime, title, path, text, autoplay });
-      return { url, title, filePath: path, mime: "text/html", mediaMime: firstMime, viewerKind: "text" };
-    }
-
+    const mediaMime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime || "");
     const title = metadata.name || titleForPath(path);
+    const server = await this.startFileServer("/");
+    const mode = options.asText ? "edit" : "view";
+    const isHtml = mediaMime.toLowerCase() === "text/html" || /\.html?$/i.test(String(path || ""));
     return {
-      url: localFileViewerUrl(path),
+      url: localFileViewerUrl(path, server.port, mode),
       title,
       filePath: path,
       mime: "text/html",
-      mediaMime: firstMime,
-      viewerKind: streamedKind
+      mediaMime,
+      viewerKind: options.asText ? "text" : isHtml ? "html" : viewerKindForFile(path, mediaMime)
     };
   }
 
@@ -485,13 +497,13 @@ export class Backend {
     return this.call("write_text_file", { path, content });
   }
 
-  async convertMediaFile({ path, format, bitrateKbps = 128, sampleRate = null, resolution = "native" }) {
+  async convertMediaFile({ path, format, bitrateKbps = 4000, sampleRate = null, resolution = "native" }) {
     if (!this.invoke) throw new Error("Media conversion needs the native Tauri build with ffmpeg installed.");
     const normalizedSampleRate = sampleRate && sampleRate !== "original" ? Number(sampleRate) : null;
     return this.call("convert_media_file", {
       path,
       format,
-      bitrateKbps: Number(bitrateKbps) || 128,
+      bitrateKbps: Number(bitrateKbps) || 4000,
       sampleRate: normalizedSampleRate,
       resolution: resolution || "native"
     });

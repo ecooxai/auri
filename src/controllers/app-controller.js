@@ -161,6 +161,9 @@ export class AppController {
     this.zoomHoldTimer = null;
     this.folderResizeDrag = null;
     this.systemTunnelPromptResolver = null;
+    this.pendingOpenFiles = [];
+    this.pendingOpenFilesDrain = null;
+    this.pendingOpenFilesDrainRequested = false;
   }
 
   context() {
@@ -608,6 +611,9 @@ export class AppController {
     this.bindEvents();
     try {
       this.externalUnlisten = await this.backend.listenForCommands?.((command) => this.handleExternalCommand(command));
+      this.openFilesUnlisten = await this.backend.listen?.("auri-open-files", () => {
+        this.drainPendingOpenFiles().catch((error) => this.reportError("Open files", error));
+      });
       this.wakeUnlisten = await this.backend.listen?.("auri-wake", (payload) => this.activateWakeSession(payload));
       this.webNavigationUnlisten = await this.backend.listen?.("auri-web-navigation", (payload) => this.handleWebNavigation(payload));
       this.webAiUnlisten = await this.backend.listen?.("auri-web-ai", (payload) => {
@@ -694,6 +700,7 @@ export class AppController {
       await this.activeTerminalSession().initializePromise;
       this.render();
       this.startClipboardPolling();
+      await this.drainPendingOpenFiles();
     } catch (error) {
       this.reportError("Startup", error);
     }
@@ -2147,6 +2154,45 @@ export class AppController {
     this.reportError("Gemini Live", error);
   }
 
+  async openPendingFiles(paths = []) {
+    const incoming = Array.isArray(paths)
+      ? paths.map((path) => String(path || "")).filter(Boolean)
+      : [];
+    this.pendingOpenFiles.push(...incoming);
+    if (!this.configurationReady) return [];
+
+    const queued = this.pendingOpenFiles.splice(0);
+    const opened = [];
+    for (const path of queued) {
+      try {
+        await this.runInternal(`file open ${quoteArg(path)}`, { fileOpenMode: "new" });
+        opened.push(path);
+      } catch (error) {
+        this.reportError("Open file", error);
+      }
+    }
+    return opened;
+  }
+
+  async drainPendingOpenFiles() {
+    this.pendingOpenFilesDrainRequested = true;
+    if (this.pendingOpenFilesDrain) return this.pendingOpenFilesDrain;
+    this.pendingOpenFilesDrain = (async () => {
+      const opened = [];
+      do {
+        this.pendingOpenFilesDrainRequested = false;
+        const paths = await this.backend.takePendingOpenFiles?.() || [];
+        opened.push(...await this.openPendingFiles(paths));
+      } while (this.pendingOpenFilesDrainRequested);
+      return opened;
+    })();
+    try {
+      return await this.pendingOpenFilesDrain;
+    } finally {
+      this.pendingOpenFilesDrain = null;
+    }
+  }
+
   async handleExternalCommand(command) {
     try {
       const result = await this.runInternal(command);
@@ -2158,8 +2204,8 @@ export class AppController {
     }
   }
 
-  async runInternal(command) {
-    return executeCommand(command, this.context());
+  async runInternal(command, options = {}) {
+    return executeCommand(command, { ...this.context(), ...options });
   }
 
   async submitTerminal(mode) {
@@ -2275,11 +2321,9 @@ export class AppController {
     }
     const workspace = activeWorkspace(this.state);
     const repeat = workspace.folder.selectedPath === path;
-    // Double-click (forceOpen) prefers the local HTTP web viewer in the
-    // native build; repeated single clicks keep the lightweight inline view.
-    const action = forceOpen && this.native && this.backend.startFileServer
-      ? "serve"
-      : forceOpen || repeat ? "open" : "inspect";
+    // Native file clicks always open the unified loopback web app. Browser-only
+    // previews retain the lightweight first-click inspection behavior.
+    const action = this.native ? "open" : forceOpen || repeat ? "open" : "inspect";
     await this.runInternal(`file ${action} ${quoteArg(path)}`);
   }
 

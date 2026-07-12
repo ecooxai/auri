@@ -1,32 +1,35 @@
-//! Minimal local HTTP server that exposes a folder to the built-in web file
-//! viewer. One read-mostly server is started with Auri, bound only to the
-//! loopback interface on a fixed port. Its URL path maps from the filesystem
-//! root so HTML documents can resolve sibling assets naturally. `localhost`
-//! is a potentially trustworthy origin under the Secure Contexts standard.
-//! Routes:
+//! Loopback-only cloud-disk file server used by Auri's native file web app.
 //!
-//! - `GET /` or `GET /view?file=<rel>` — the embedded viewer web app
-//! - `GET /<absolute-path>`            — file bytes for direct HTML/resource navigation
-//! - `GET /raw/<rel>`                  — file bytes (single-range requests supported)
-//! - `GET /api/list?path=<rel>`        — JSON folder listing
-//! - `POST /api/save?file=<rel>`       — replace a text file with the request body
-//! - `POST /api/save-b64?file=<rel>`   — write binary content from a base64 body
+//! Routes:
+//! - `GET /path/to/file`             — raw file bytes (including range requests)
+//! - `GET /path/to/file?view=1`      — viewer app for a file
+//! - `GET /path/to/file?edit=1`      — editor app for a file
+//! - `GET /path/to/folder`           — folder browser app
+//! - `GET /api/meta?path=<path>`     — file or folder metadata
+//! - `GET /api/list?path=<path>`     — folder entries
+//! - `POST /api/save?file=<path>`    — save UTF-8 text
+//! - `POST /api/save-b64?file=<path>`— save base64 binary content
+//! - `POST /api/convert?...`         — native ffmpeg conversion and final save
 
-use super::util::{decode_base64, file_kind, mime_type};
+use super::files;
+use super::util::{decode_base64, default_file_server_port, file_kind, mime_type};
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Mutex;
+use std::time::Duration;
 
 static SERVER: Lazy<Mutex<Option<u16>>> = Lazy::new(Default::default);
 
 const VIEWER_HTML: &str = include_str!("viewer.html");
 const THREE_VIEWER_JS: &str = include_str!("three-viewer.js");
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
-pub const PORT: u16 = 8890;
+pub const PORT: u16 = default_file_server_port(cfg!(debug_assertions));
+const PORT_SEARCH_LIMIT: u16 = 100;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +46,92 @@ struct ListEntry {
     size: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PathMetadata {
+    name: String,
+    kind: String,
+    mime: String,
+    size: u64,
+    is_directory: bool,
+}
+
+fn listener_pids(port: u16) -> Vec<u32> {
+    let output = Command::new("lsof")
+        .args(["-nP", "-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect()
+}
+
+fn process_command(pid: u32) -> String {
+    Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn is_dev_listener_command(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    !normalized.contains("/applications/auri.app/")
+        && !normalized.contains("/usr/bin/auri")
+        && (normalized.contains("/target/debug/")
+            || normalized.contains("cargo tauri dev")
+            || normalized.contains("native-dev.mjs")
+            || normalized.contains("native-watch"))
+}
+
+/// Stop only an identifiable development listener. Packaged/release Auri
+/// processes and unrelated programs are deliberately left untouched.
+fn try_stop_conflicting_dev_listener(port: u16) -> bool {
+    let mut stopped = false;
+    for pid in listener_pids(port) {
+        let command = process_command(pid);
+        if !is_dev_listener_command(&command) {
+            continue;
+        }
+        let status = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+        stopped |= status.map(|value| value.success()).unwrap_or(false);
+    }
+    stopped
+}
+
+fn bind_listener() -> Result<(TcpListener, u16), String> {
+    let preferred = format!("127.0.0.1:{PORT}");
+    match TcpListener::bind(&preferred) {
+        Ok(listener) => return Ok((listener, PORT)),
+        Err(error) if error.kind() == ErrorKind::AddrInUse => {
+            if try_stop_conflicting_dev_listener(PORT) {
+                std::thread::sleep(Duration::from_millis(300));
+                if let Ok(listener) = TcpListener::bind(&preferred) {
+                    return Ok((listener, PORT));
+                }
+            }
+        }
+        Err(_) => {}
+    }
+
+    for offset in 1..=PORT_SEARCH_LIMIT {
+        let port = PORT + offset;
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            return Ok((listener, port));
+        }
+    }
+    Err(format!(
+        "Could not start Auri's file server on localhost ports {PORT}-{}.",
+        PORT + PORT_SEARCH_LIMIT
+    ))
+}
+
 pub fn start() -> Result<ServerInfo, String> {
     let root = Path::new("/")
         .canonicalize()
@@ -56,22 +145,21 @@ pub fn start() -> Result<ServerInfo, String> {
             port,
         });
     }
-    let listener = TcpListener::bind("127.0.0.1:8890").map_err(|error| {
-        format!("Could not start Auri's file server on localhost:{PORT}: {error}")
-    })?;
-    *server = Some(PORT);
+
+    let (listener, port) = bind_listener()?;
+    *server = Some(port);
     let thread_root = root.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let root = thread_root.clone();
             std::thread::spawn(move || {
-                let _ = handle_connection(stream, &root);
+                let _ = handle_connection(stream, &root, port);
             });
         }
     });
     Ok(ServerInfo {
         root: root.to_string_lossy().into_owned(),
-        port: PORT,
+        port,
     })
 }
 
@@ -106,13 +194,18 @@ fn percent_decode(value: &str) -> String {
 
 fn query_param(query: &str, name: &str) -> Option<String> {
     query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
         (key == name).then(|| percent_decode(value))
     })
 }
 
-/// Resolve a relative request path inside the served root, rejecting
-/// traversal outside it. `must_exist` controls canonicalization of the leaf.
+fn query_has(query: &str, name: &str) -> bool {
+    query
+        .split('&')
+        .any(|pair| pair.split_once('=').map(|(key, _)| key).unwrap_or(pair) == name)
+}
+
+/// Resolve a relative request path inside the served root, rejecting traversal.
 fn resolve(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, String> {
     let cleaned = relative.trim_start_matches('/');
     if cleaned.split('/').any(|part| part == "..") {
@@ -163,6 +256,17 @@ fn write_response(
     stream.write_all(head.as_bytes())?;
     stream.write_all(body)?;
     stream.flush()
+}
+
+fn write_json<T: Serialize>(stream: &mut TcpStream, value: &T) -> std::io::Result<()> {
+    match serde_json::to_vec(value) {
+        Ok(body) => write_response(stream, "200 OK", "application/json", &[], &body),
+        Err(_) => write_error(
+            stream,
+            "500 Internal Server Error",
+            "Could not encode the response.",
+        ),
+    }
 }
 
 fn write_error(stream: &mut TcpStream, status: &str, message: &str) -> std::io::Result<()> {
@@ -242,9 +346,6 @@ fn list_directory(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                return None;
-            }
             let metadata = entry.metadata().ok()?;
             Some(ListEntry {
                 kind: if metadata.is_dir() {
@@ -264,11 +365,83 @@ fn list_directory(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
             .cmp(&a_dir)
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    let body = serde_json::to_vec(&entries).unwrap_or_else(|_| b"[]".to_vec());
-    write_response(stream, "200 OK", "application/json", &[], &body)
+    write_json(stream, &entries)
 }
 
-fn handle_connection(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
+fn path_metadata(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return write_error(stream, "404 Not Found", "Path was not found.");
+    };
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Files")
+        .to_string();
+    let is_directory = metadata.is_dir();
+    let display = path.to_string_lossy();
+    write_json(
+        stream,
+        &PathMetadata {
+            name,
+            kind: if is_directory {
+                "directory".to_string()
+            } else {
+                file_kind(&display).to_string()
+            },
+            mime: if is_directory {
+                "inode/directory".to_string()
+            } else {
+                mime_type(&display).to_string()
+            },
+            size: metadata.len(),
+            is_directory,
+        },
+    )
+}
+
+fn valid_origin(origin: Option<&str>, port: u16) -> bool {
+    matches!(
+        origin,
+        Some(value)
+            if value == format!("http://localhost:{port}")
+                || value == format!("http://127.0.0.1:{port}")
+    )
+}
+
+fn handle_conversion(stream: &mut TcpStream, root: &Path, query: &str) -> std::io::Result<()> {
+    let Some(relative) = query_param(query, "file") else {
+        return write_error(stream, "400 Bad Request", "Choose a media file.");
+    };
+    let Some(format) = query_param(query, "format") else {
+        return write_error(stream, "400 Bad Request", "Choose a conversion format.");
+    };
+    let source = match resolve(root, &relative, true) {
+        Ok(path) if path.is_file() => path,
+        Ok(_) => return write_error(stream, "400 Bad Request", "Not a file."),
+        Err(message) => return write_error(stream, "404 Not Found", &message),
+    };
+    let bitrate = query_param(query, "bitrateKbps").and_then(|value| value.parse::<u32>().ok());
+    let sample_rate = query_param(query, "sampleRate").and_then(|value| value.parse::<u32>().ok());
+    let resolution = query_param(query, "resolution");
+    let source_text = source.to_string_lossy().into_owned();
+    let converted = match files::convert_media_file(
+        &source_text,
+        &format,
+        bitrate,
+        sample_rate,
+        resolution.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(message) => return write_error(stream, "400 Bad Request", &message),
+    };
+    let requested_name = query_param(query, "name").unwrap_or_else(|| converted.name.clone());
+    match files::save_converted_media_file(&source_text, &converted.path, &requested_name) {
+        Ok(value) => write_json(stream, &value),
+        Err(message) => write_error(stream, "400 Bad Request", &message),
+    }
+}
+
+fn handle_connection(mut stream: TcpStream, root: &Path, port: u16) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -311,14 +484,16 @@ fn handle_connection(mut stream: TcpStream, root: &Path) -> std::io::Result<()> 
                 THREE_VIEWER_JS.as_bytes(),
             );
         }
-        if decoded_path == "/" || decoded_path == "/view" {
-            return write_response(
-                &mut stream,
-                "200 OK",
-                "text/html; charset=utf-8",
-                &[],
-                VIEWER_HTML.as_bytes(),
-            );
+        if decoded_path == "/api/list" || decoded_path == "/api/meta" {
+            let relative = query_param(query, "path").unwrap_or_default();
+            return match resolve(root, &relative, true) {
+                Ok(path) if decoded_path == "/api/list" && path.is_dir() => {
+                    list_directory(&mut stream, &path)
+                }
+                Ok(path) if decoded_path == "/api/meta" => path_metadata(&mut stream, &path),
+                Ok(_) => write_error(&mut stream, "400 Bad Request", "Not a folder."),
+                Err(message) => write_error(&mut stream, "404 Not Found", &message),
+            };
         }
         if let Some(relative) = decoded_path.strip_prefix("/raw/") {
             return match resolve(root, relative, true) {
@@ -329,38 +504,49 @@ fn handle_connection(mut stream: TcpStream, root: &Path) -> std::io::Result<()> 
                 Err(message) => write_error(&mut stream, "404 Not Found", &message),
             };
         }
-        if decoded_path == "/api/list" {
-            let relative = query_param(query, "path").unwrap_or_default();
-            return match resolve(root, &relative, true) {
-                Ok(path) if path.is_dir() => list_directory(&mut stream, &path),
-                Ok(_) => write_error(&mut stream, "400 Bad Request", "Not a folder."),
-                Err(message) => write_error(&mut stream, "404 Not Found", &message),
-            };
-        }
-        if decoded_path != "/view" {
-            return match resolve(root, &decoded_path, true) {
-                Ok(path) if path.is_file() => {
-                    serve_file(&mut stream, &path, range_header.as_deref())
-                }
-                Ok(path) if path.is_dir() && path.join("index.html").is_file() => serve_file(
+
+        // Legacy links remain valid while all newly generated links use pathname
+        // routing (`/file?view=1`).
+        let legacy_file = (decoded_path == "/view")
+            .then(|| query_param(query, "file"))
+            .flatten()
+            .unwrap_or_default();
+        let requested = if decoded_path == "/view" {
+            legacy_file.as_str()
+        } else {
+            decoded_path.as_str()
+        };
+        return match resolve(root, requested, true) {
+            Ok(path)
+                if path.is_dir()
+                    || decoded_path == "/view"
+                    || query_has(query, "view")
+                    || query_has(query, "edit") =>
+            {
+                write_response(
                     &mut stream,
-                    &path.join("index.html"),
-                    range_header.as_deref(),
-                ),
-                Ok(_) => write_error(&mut stream, "400 Bad Request", "Not a file."),
-                Err(message) => write_error(&mut stream, "404 Not Found", &message),
-            };
-        }
-        return write_error(&mut stream, "404 Not Found", "Unknown route.");
+                    "200 OK",
+                    "text/html; charset=utf-8",
+                    &[],
+                    VIEWER_HTML.as_bytes(),
+                )
+            }
+            Ok(path) if path.is_file() => serve_file(&mut stream, &path, range_header.as_deref()),
+            Ok(_) => write_error(&mut stream, "400 Bad Request", "Unsupported path."),
+            Err(message) => write_error(&mut stream, "404 Not Found", &message),
+        };
     }
 
     if method == "POST" {
-        if origin_header.as_deref() != Some("http://localhost:8890") {
+        if !valid_origin(origin_header.as_deref(), port) {
             return write_error(
                 &mut stream,
                 "403 Forbidden",
                 "File changes require Auri's local viewer origin.",
             );
+        }
+        if decoded_path == "/api/convert" {
+            return handle_conversion(&mut stream, root, query);
         }
         if content_length > MAX_BODY_BYTES {
             return write_error(
@@ -426,5 +612,30 @@ mod tests {
     fn percent_decoding_handles_utf8_and_plus() {
         assert_eq!(percent_decode("a%20b+c"), "a b c");
         assert_eq!(percent_decode("%E4%BD%A0%E5%A5%BD"), "你好");
+    }
+
+    #[test]
+    fn query_flags_support_bare_and_assigned_forms() {
+        assert!(query_has("view", "view"));
+        assert!(query_has("view=1&x=y", "view"));
+        assert!(query_has("edit=1", "edit"));
+        assert!(!query_has("preview=1", "view"));
+    }
+
+    #[test]
+    fn release_commands_are_never_classified_as_dev_listeners() {
+        assert!(!is_dev_listener_command(
+            "/Applications/Auri.app/Contents/MacOS/auri-desktop"
+        ));
+        assert!(is_dev_listener_command(
+            "/workspace/src-tauri/target/debug/auri-desktop"
+        ));
+    }
+
+    #[test]
+    fn listener_binding_uses_the_preferred_or_a_bounded_fallback_port() {
+        let (listener, port) = bind_listener().expect("bind loopback file server");
+        assert!((PORT..=PORT + PORT_SEARCH_LIMIT).contains(&port));
+        drop(listener);
     }
 }

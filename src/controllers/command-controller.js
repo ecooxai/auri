@@ -111,10 +111,10 @@ async function persistConfiguration(backend, state) {
   });
 }
 
-function openSubtab(type, context) {
+function openSubtab(type, context, { forceNew = false } = {}) {
   const normalized = SUBTAB_ALIASES[type] ?? type;
   const tab = activeWorkspace(context.getState());
-  const existing = tab.subtabs.find((item) => item.type === normalized);
+  const existing = forceNew ? null : tab.subtabs.find((item) => item.type === normalized);
   context.dispatch(existing
     ? { type: "SUBTAB_SELECT", payload: { id: existing.id } }
     : { type: "SUBTAB_NEW", payload: { type: normalized } });
@@ -231,18 +231,12 @@ export async function executeCommand(input, context) {
         if (!backend.startFileServer) throw new Error("The web file viewer needs the native Auri build.");
         const metadata = await backend.inspectFile(path);
         const served = await backend.startFileServer("/");
-        const relative = metadata.kind === "directory"
-          ? ""
-          : path.replaceAll("\\", "/").replace(/^\/+/, "");
-        const directory = metadata.kind === "directory"
-          ? path.replaceAll("\\", "/").replace(/^\/+/, "")
-          : "";
-        const query = relative
-          ? `view?file=${encodeURIComponent(relative)}`
-          : directory
-            ? `?dir=${encodeURIComponent(directory)}`
-            : "";
-        const url = `http://localhost:${served.port}/${query}`;
+        const normalized = path.replaceAll("\\", "/");
+        const pathname = (normalized.startsWith("/") ? normalized : `/${normalized}`)
+          .split("/")
+          .map(encodeURIComponent)
+          .join("/");
+        const url = `http://localhost:${served.port}${pathname}${metadata.kind === "directory" ? "" : "?view=1"}`;
         openSubtab("webview", context);
         const current = activeSubtab(getState());
         dispatch({
@@ -262,7 +256,7 @@ export async function executeCommand(input, context) {
       const fileView = await actions.openFileInWebview(path, metadata, {
         autoplay: metadata.kind === "audio" || metadata.kind === "video"
       });
-      openSubtab("webview", context);
+      openSubtab("webview", context, { forceNew: context.fileOpenMode === "new" });
       const current = activeSubtab(getState());
       dispatch({
         type: "SUBTAB_UPDATE",

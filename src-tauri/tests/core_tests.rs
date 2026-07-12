@@ -142,6 +142,22 @@ npm test"
 }
 
 #[test]
+fn file_server_ports_keep_release_on_8890_and_development_on_8895_or_later() {
+    assert_eq!(util::default_file_server_port(false), 8_890);
+    assert_eq!(util::default_file_server_port(true), 8_895);
+    assert!(util::default_file_server_port(true) >= 8_895);
+}
+
+#[test]
+fn media_bitrate_defaults_to_four_megabits_with_codec_safe_caps() {
+    assert_eq!(util::normalized_video_bitrate(None), 4_000);
+    assert_eq!(util::normalized_audio_bitrate("m4a", None), 4_000);
+    assert_eq!(util::normalized_audio_bitrate("mp3", None), 320);
+    assert_eq!(util::normalized_audio_bitrate("mp3", Some(192)), 192);
+    assert_eq!(util::normalized_video_bitrate(Some(50_000)), 20_000);
+}
+
+#[test]
 fn main_webview_fills_the_window_from_the_origin() {
     assert_eq!(util::main_fill_bounds(800, 760), (0, 0, 800, 760));
     assert_eq!(util::main_fill_bounds(1920, 1080), (0, 0, 1920, 1080));

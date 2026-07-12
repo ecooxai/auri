@@ -59,7 +59,7 @@ test("conversion options follow the target format instead of the source media ki
   assert.match(html, /Resolution/);
   assert.match(html, /Audio bitrate/);
   assert.match(html, /Video bitrate/);
-  assert.match(html, /value="1000" selected>1 Mbps/);
+  assert.match(html, /value="4000" selected>4 Mbps/);
   assert.match(html, /showwaves=s=' \+ waveformSizeForResolution\(resolution\) \+ '/);
   assert.match(html, /value="1080">1080p/);
   assert.match(html, /value="1440">2K/);

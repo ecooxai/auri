@@ -33,7 +33,7 @@ Implemented now:
 - Vertical main workspaces and horizontal subtabs.
 - Per-workspace folder pane synchronized with terminal `cwd`.
 - File inspection with size, type, image dimensions, and optional `ffprobe` codec/bitrate metadata.
-- Text, image, audio, and video viewer paths.
+- A loopback cloud-disk file web app with folder browsing, text/HTML editing, raw file serving, PDF/DOCX/3D/media viewers, and image/audio/video conversion.
 - Shell command execution and explicit `cd` synchronization.
 - Terminal composer where Enter inserts a newline and Command/Ctrl+Enter runs.
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
@@ -77,7 +77,9 @@ src/
 
 src-tauri/src/core/
   workspace.rs           ~/auri and ~/.config/auri initialization
-  files.rs               Directory, metadata, preview, attachment, media storage
+  files.rs               Directory, metadata, preview, attachment, media storage and ffmpeg conversion
+  fileserver.rs          Loopback cloud-disk HTTP server, safe port selection, routes, ranges, writes, conversion API
+  viewer.html            Embedded folder browser, viewers, editor, and conversion UI
   shell.rs               Shell process execution and cwd synchronization
   capture.rs             macOS/Linux screenshot capture
   clipboard.rs           Persistent clipboard text/image history, pinning, retention, and paste-back
@@ -89,6 +91,29 @@ src-tauri/src/bin/
 ```
 
 The model never imports DOM or Tauri APIs. Controllers dispatch model events. Views render state and emit intents. Native operations stay behind `Backend` and Tauri commands.
+
+## Local file web app
+
+Native file opening is unified through Auri's loopback-only cloud-disk web app. A click on a file in the folder pane opens the HTTP viewer immediately; browser-only preview mode keeps the blob-backed capability fallback.
+
+URL contract:
+
+```text
+http://localhost:<port>/<absolute-path>           Raw file bytes, with HTTP range support.
+http://localhost:<port>/<absolute-path>?view=1    File viewer.
+http://localhost:<port>/<absolute-path>?edit=1    File editor.
+http://localhost:<port>/<absolute-folder-path>    Folder browser.
+```
+
+Folders list `..` first, followed by directories and files. Directory links navigate inside the web app, file links use `?view=1`, and the viewer exposes an Edit action. HTML is previewed from its raw path inside the app so sibling references such as `./image.png` resolve naturally. Text/HTML, images, audio with waveform, video, PDF, DOCX, common Three.js model formats, and generic browser-supported files share the same minimal aurora-light shell.
+
+Packaged/release builds prefer port `8890`. Development/debug builds start at `8895` and search later ports, keeping them isolated from a running release app. Auri may stop only a listener that is positively identified as an Auri development/debug process; packaged release processes and unrelated listeners are never terminated. The frontend always uses the port returned by the native server rather than assuming a fixed address.
+
+Image conversion supports PNG, JPG, and WebP in the browser. Audio supports WAV, M4A, MP3, and MP4 waveform video; video supports MP4, MP3, WAV, and M4A through the existing native ffmpeg pipeline. The selected audio/video bitrate is persisted in local storage under `auri-convert-bitrate`; the default is `4000` kbps (4 Mbps), with codec-safe limits such as 320 kbps for MP3. Native audio/video conversion requires `ffmpeg` on `PATH`.
+
+The server binds only to `127.0.0.1`, canonicalizes filesystem paths, rejects traversal, bounds request bodies, and requires the active local viewer origin for write and conversion requests.
+
+On macOS, the app registers as an alternate viewer for `public.data`, so Finder’s **Open With → Auri** is available for images, audio, video, text, 3D models, and other files. Each opened file is queued safely during startup and creates its own existing Auri web-view tab through the same `file open` command used by the folder pane and CLI.
 
 ## Test-driven workflow
 
@@ -200,9 +225,9 @@ auri folder create-file <name>                                                Cr
 auri folder create-folder <name>                                              Create a folder in the active folder.
 auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
-auri file open <path>                                                          Open a file in the viewer.
+auri file open <path>                                                          Open a file in the unified local HTTP viewer.
 auri file external [path]                                                      Open a file with the operating system.
-auri file serve [path]                                                         Serve the current folder over local HTTP and open the file in the web viewer.
+auri file serve [path]                                                         Open a file or folder in the loopback cloud-disk web app.
 auri terminal run <command...>                                                 Run a shell command in the active workspace.
 auri ai ask <prompt...>                                                        Ask the selected AI with the current screenshot.
 auri ai model add <name> <type> <model> <url> <key>                            Add an AI provider configuration.
@@ -293,7 +318,7 @@ Expected failures are shown both near the current interaction and in the Info su
 
 - Keep state transformations pure and incremental.
 - Truncate clipboard text longer than 150 characters to the first 100 and last 50 characters before rendering.
-- Avoid reading text files larger than 2 MB into the viewer.
+- Avoid reading text files larger than 2 MB into inline/browser fallback viewers; native files should stream through the loopback web app.
 - Limit inline binary attachments to 32 MB and saved recordings to 256 MB.
 - Keep panel rendering modular; do not add unrelated behavior to `panels.js`.
 - Move long-running native operations off the UI thread when adding PTY, transcoding, or realtime streaming.

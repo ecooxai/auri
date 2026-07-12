@@ -1,5 +1,18 @@
 use std::path::Path;
 
+pub const RELEASE_FILE_SERVER_PORT: u16 = 8_890;
+pub const DEVELOPMENT_FILE_SERVER_PORT: u16 = 8_895;
+
+/// Keep packaged builds on the stable release port while isolating debug builds
+/// from a running release app and from older development listeners.
+pub const fn default_file_server_port(debug_build: bool) -> u16 {
+    if debug_build {
+        DEVELOPMENT_FILE_SERVER_PORT
+    } else {
+        RELEASE_FILE_SERVER_PORT
+    }
+}
+
 pub fn encode_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -227,6 +240,23 @@ pub fn recent_shell_history_commands(histories: &[String], limit: usize) -> Vec<
         }
     }
     commands
+}
+
+/// Normalize a requested audio bitrate in kilobits per second. Auri uses a
+/// shared 4 Mbps preference, while codecs with lower hard ceilings are capped
+/// safely before invoking ffmpeg.
+pub fn normalized_audio_bitrate(format: &str, bitrate_kbps: Option<u32>) -> u32 {
+    let requested = bitrate_kbps.unwrap_or(4_000);
+    match format {
+        "mp3" => requested.clamp(32, 320),
+        "m4a" => requested.clamp(32, 4_000),
+        _ => requested.clamp(32, 4_000),
+    }
+}
+
+/// Normalize a requested video bitrate in kilobits per second.
+pub fn normalized_video_bitrate(bitrate_kbps: Option<u32>) -> u32 {
+    bitrate_kbps.unwrap_or(4_000).clamp(250, 20_000)
 }
 
 /// Physical bounds `(x, y, width, height)` the main webview must occupy so it

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { Backend, localFileUrl, previewMimeForPath } from "../src/services/backend.js";
+import { Backend, localFileUrl, localFileViewerUrl, previewMimeForPath } from "../src/services/backend.js";
 import { captureFolderScroll } from "../src/views/app-view.js";
 
 test("m4a files use the WebKit-compatible audio/mp4 MIME type", () => {
@@ -14,6 +14,32 @@ test("local file URLs map absolute paths onto the fixed loopback server", () => 
   assert.equal(localFileUrl("/Users/me/My Site/index.html"), "http://localhost:8890/Users/me/My%20Site/index.html");
   assert.equal(localFileUrl("/tmp/a#b?.glb"), "http://localhost:8890/tmp/a%23b%3F.glb");
   assert.equal(localFileUrl("/tmp/你好.mp4"), "http://localhost:8890/tmp/%E4%BD%A0%E5%A5%BD.mp4");
+});
+
+test("native Finder integration registers all macOS files and drains opened paths", async () => {
+  const plist = readFileSync(new URL("../src-tauri/Info.plist", import.meta.url), "utf8");
+  const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+  const backend = new Backend();
+  const calls = [];
+  backend.invoke = async (command, payload) => {
+    calls.push({ command, payload });
+    return ["/tmp/model.glb", "/tmp/notes.txt"];
+  };
+
+  assert.match(plist, /CFBundleDocumentTypes/);
+  assert.match(plist, /public\.data/);
+  assert.match(plist, /CFBundleTypeRole[\s\S]*Viewer/);
+  assert.match(rust, /RunEvent::Opened/);
+  assert.match(rust, /auri-open-files/);
+  assert.match(rust, /take_pending_open_files/);
+  assert.deepEqual(await backend.takePendingOpenFiles(), ["/tmp/model.glb", "/tmp/notes.txt"]);
+  assert.deepEqual(calls, [{ command: "take_pending_open_files", payload: {} }]);
+});
+
+test("local file viewer URLs use the resolved server port and path query modes", () => {
+  assert.equal(localFileUrl("/tmp/demo.txt", 8893), "http://localhost:8893/tmp/demo.txt");
+  assert.equal(localFileViewerUrl("/tmp/My File.txt", 8893), "http://localhost:8893/tmp/My%20File.txt?view=1");
+  assert.equal(localFileViewerUrl("/tmp/My File.txt", 8893, "edit"), "http://localhost:8893/tmp/My%20File.txt?edit=1");
 });
 
 test("folder scroll is preserved only while rendering the same directory", () => {
@@ -97,7 +123,7 @@ test("opened files render through a blob-backed HTML viewer app document", () =>
 });
 
 
-test("native large video preview streams through the fixed local HTTP viewer", async () => {
+test("native large video preview streams through the active local HTTP viewer", async () => {
   const previousWindow = globalThis.window;
   const previousUrl = globalThis.URL;
   const objectUrls = [];
@@ -126,8 +152,8 @@ test("native large video preview streams through the fixed local HTTP viewer", a
     assert.equal(view.title, "huge.mp4");
     assert.equal(view.mediaMime, "video/mp4");
     assert.equal(view.viewerKind, "video");
-    assert.deepEqual(calls, []);
-    assert.equal(view.url, "http://localhost:8890/view?file=tmp%2Fhuge.mp4");
+    assert.deepEqual(calls, [{ command: "fileserver_start", payload: {} }]);
+    assert.equal(view.url, "http://localhost:8890/tmp/huge.mp4?view=1");
     assert.deepEqual(objectUrls, []);
   } finally {
     globalThis.window = previousWindow;
@@ -135,7 +161,7 @@ test("native large video preview streams through the fixed local HTTP viewer", a
   }
 });
 
-test("native HTML files open directly so relative file references use the local server", async () => {
+test("native HTML files open in the HTTP app and preview through the raw sibling-aware path", async () => {
   const backend = new Backend();
   const calls = [];
   backend.invoke = async (command, payload) => {
@@ -145,13 +171,13 @@ test("native HTML files open directly so relative file references use the local 
 
   const view = await backend.createFileView("/Users/me/My Site/index.html", { name: "index.html", mime: "text/html" });
 
-  assert.equal(view.url, "http://localhost:8890/Users/me/My%20Site/index.html");
+  assert.equal(view.url, "http://localhost:8890/Users/me/My%20Site/index.html?view=1");
   assert.equal(view.mime, "text/html");
   assert.equal(view.viewerKind, "html");
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [{ command: "fileserver_start", payload: {} }]);
 });
 
-test("native 3D previews stream from the fixed local HTTP server", async () => {
+test("native 3D previews stream from the active local HTTP server", async () => {
   const previousWindow = globalThis.window;
   const previousUrl = globalThis.URL;
   const objectUrls = [];
@@ -177,8 +203,8 @@ test("native 3D previews stream from the fixed local HTTP server", async () => {
     const view = await backend.createFileView("/Users/ecoo/project/game/assets/mario.glb", { name: "mario.glb", mime: "model/gltf-binary" });
 
     assert.equal(view.viewerKind, "model3d");
-    assert.deepEqual(calls, []);
-    assert.equal(view.url, "http://localhost:8890/view?file=Users%2Fecoo%2Fproject%2Fgame%2Fassets%2Fmario.glb");
+    assert.deepEqual(calls, [{ command: "fileserver_start", payload: {} }]);
+    assert.equal(view.url, "http://localhost:8890/Users/ecoo/project/game/assets/mario.glb?view=1");
     assert.deepEqual(objectUrls, []);
   } finally {
     globalThis.window = previousWindow;
@@ -186,7 +212,7 @@ test("native 3D previews stream from the fixed local HTTP server", async () => {
   }
 });
 
-test("linux media previews stream from the fixed local HTTP server", async () => {
+test("linux media previews stream from the active local HTTP server", async () => {
   const previousWindow = globalThis.window;
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   const previousUrl = globalThis.URL;
@@ -217,8 +243,8 @@ test("linux media previews stream from the fixed local HTTP server", async () =>
     const view = await backend.createFileView("/home/a/Desktop/test.m4a", { name: "test.m4a", mime: "audio/mp4" });
 
     assert.equal(view.viewerKind, "audio");
-    assert.deepEqual(calls, []);
-    assert.equal(view.url, "http://localhost:8890/view?file=home%2Fa%2FDesktop%2Ftest.m4a");
+    assert.deepEqual(calls, [{ command: "fileserver_start", payload: {} }]);
+    assert.equal(view.url, "http://localhost:8890/home/a/Desktop/test.m4a?view=1");
     assert.deepEqual(objectUrls, []);
   } finally {
     globalThis.window = previousWindow;
@@ -226,6 +252,23 @@ test("linux media previews stream from the fixed local HTTP server", async () =>
     else delete globalThis.navigator;
     globalThis.URL = previousUrl;
   }
+});
+
+test("native file views discover the active fallback port and use the HTTP app for text and HTML", async () => {
+  const backend = new Backend();
+  const calls = [];
+  backend.invoke = async (command) => {
+    calls.push(command);
+    if (command === "fileserver_start") return { root: "/", port: 8894 };
+    throw new Error(`unexpected native call: ${command}`);
+  };
+
+  const text = await backend.createFileView("/tmp/notes.txt", { name: "notes.txt", mime: "text/plain" });
+  const html = await backend.createFileView("/tmp/site/index.html", { name: "index.html", mime: "text/html" });
+
+  assert.equal(text.url, "http://localhost:8894/tmp/notes.txt?view=1");
+  assert.equal(html.url, "http://localhost:8894/tmp/site/index.html?view=1");
+  assert.deepEqual(calls, ["fileserver_start"]);
 });
 
 test("custom audio viewer controls catch unsupported play promises", () => {
@@ -277,7 +320,7 @@ test("file serve starts the folder HTTP server and opens the web viewer", async 
   };
   const result = await executeCommand("file serve /home/me/project/demo/clip.mp4", context);
   assert.deepEqual(calls, ["/"]);
-  assert.equal(result.url, "http://localhost:8890/view?file=home%2Fme%2Fproject%2Fdemo%2Fclip.mp4");
+  assert.equal(result.url, "http://localhost:8890/home/me/project/demo/clip.mp4?view=1");
   const subtab = state.tabs[0].subtabs.find((item) => item.type === "webview");
   assert.ok(subtab);
   assert.equal(subtab.url, result.url);
@@ -286,8 +329,10 @@ test("file serve starts the folder HTTP server and opens the web viewer", async 
 test("the embedded web viewer serves ranges, saves, and covers common file types", () => {
   const server = readFileSync(new URL("../src-tauri/src/core/fileserver.rs", import.meta.url), "utf8");
   const viewer = readFileSync(new URL("../src-tauri/src/core/viewer.html", import.meta.url), "utf8");
-  assert.match(server, /127\.0\.0\.1:8890/);
-  assert.match(server, /pub const PORT: u16 = 8890/);
+  assert.match(server, /TcpListener::bind/);
+  assert.match(server, /pub const PORT: u16 = default_file_server_port\(cfg!\(debug_assertions\)\)/);
+  assert.match(server, /PORT_SEARCH_LIMIT/);
+  assert.match(server, /try_stop_conflicting_dev_listener/);
   assert.match(server, /Content-Range/);
   assert.match(server, /\/api\/save/);
   assert.match(server, /canonicalize/);
@@ -300,5 +345,10 @@ test("the embedded web viewer serves ranges, saves, and covers common file types
   assert.doesNotMatch(viewer, /unpkg\.com\/three|cdn\.jsdelivr\.net\/npm\/three/);
   assert.match(server, /THREE_VIEWER_JS/);
   assert.match(server, /\/three-viewer\.js/);
-  assert.match(viewer, /Edit source/);
+  assert.match(viewer, /nextMode \+ '=1'|appUrl\(filePath,'edit'\)/);
+  assert.match(viewer, /data-parent/);
+  assert.match(viewer, /Convert to PNG/);
+  assert.match(viewer, /Convert to MP4/);
+  assert.match(viewer, /auri-convert-bitrate/);
+  assert.match(viewer, /4000/);
 });

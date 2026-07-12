@@ -49,6 +49,18 @@ This file is the implementation contract for contributors and coding agents work
 
 Before starting a new development app or watcher, check whether an Auri development instance is already running. Stop only the existing dev/watch process that would conflict with the new test run, and do not kill release-version Auri processes. A build plus a manually started dev app is preferred for verification when continuous watch mode is unnecessary.
 
+## Local file web app contract
+
+- Native folder-pane file clicks must execute `file open`, which resolves the active loopback server port and opens `/<absolute-path>?view=1`. Do not reintroduce separate native blob viewers for individual formats.
+- Keep direct `/<absolute-path>` requests as raw file responses with byte-range support. Use `?view=1` for viewing, `?edit=1` for editing, and a query-free directory path for folder browsing.
+- Folder pages put `..` first, navigate folders without leaving the web app, and open files in view mode. HTML preview must use the raw sibling-aware path so `./asset` references work.
+- The embedded `src-tauri/src/core/viewer.html` is the shared native shell for text/HTML, image, audio, video, PDF, DOCX, 3D, and generic file fallbacks. Extend this shell instead of adding another native viewer implementation. `src/services/file-viewer-page.js` remains only the browser-capability fallback.
+- Packaged/release builds prefer `8890`; debug/development builds start at `8895` and search later ports. A listener may be terminated only when it is positively identified as Auri debug/development. Never terminate packaged/release Auri or an unrelated process, and always return/use the selected port.
+- Keep the server on loopback, canonicalize paths, reject traversal, bound uploads, and require the active local origin for save/convert POST routes.
+- Reuse `files::convert_media_file` and `files::save_converted_media_file` for audio/video conversion. The persisted default bitrate is 4000 kbps under `auri-convert-bitrate`; apply codec-safe caps such as 320 kbps for MP3. Image PNG/JPG/WebP conversion stays in the viewer canvas path.
+- When changing this subsystem, test URL generation and folder-click command routing in JavaScript, run the dependency-light Rust tests, run `cargo check`, and smoke-test fallback-port binding while preserving any release process on 8890.
+- macOS Finder `Open With` uses the `public.data` document registration and `RunEvent::Opened`. Queue file URLs natively, drain them after frontend startup, and route every path through `file open` so each file creates a normal web-view subtab.
+
 ## Command-first rule
 
 `src/model/commands.js` is the source of truth. Add a registry entry and tests before implementing a new GUI action. GUI handlers call `executeCommand()` through `runInternal()` rather than changing state or invoking hardware directly. OS ingress that cannot originate as text—such as a file picker returning a browser `File` object—may create an attachment object, but an equivalent path-based command must exist for automation.
@@ -69,9 +81,9 @@ auri folder create-file <name>                                                Cr
 auri folder create-folder <name>                                              Create a folder in the active folder.
 auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
-auri file open <path>                                                          Open a file in the viewer.
+auri file open <path>                                                          Open a file in the unified local HTTP viewer.
 auri file external [path]                                                      Open a file with the operating system.
-auri file serve [path]                                                         Serve the current folder over local HTTP and open the file in the web viewer.
+auri file serve [path]                                                         Open a file or folder in the loopback cloud-disk web app.
 auri terminal run <command...>                                                 Run a shell command in the active workspace.
 auri ai ask <prompt...>                                                        Ask the selected AI with the current screenshot.
 auri ai model add <name> <type> <model> <url> <key>                            Add an AI provider configuration.

@@ -372,10 +372,10 @@ function resolutionField(){
   return '<label>Resolution<select id="convert-resolution"><option value="native" selected>Native</option><option value="480">480p</option><option value="720">720p</option><option value="1080">1080p</option><option value="1440">2K</option></select></label>';
 }
 function audioBitrateField(){
-  return '<label>Audio bitrate<select id="convert-bitrate"><option value="96">96 kbps</option><option value="128" selected>128 kbps</option><option value="192">192 kbps</option><option value="256">256 kbps</option><option value="320">320 kbps</option></select></label>';
+  return '<label>Audio bitrate<select id="convert-bitrate"><option value="128">128 kbps</option><option value="320">320 kbps</option><option value="1000">1 Mbps</option><option value="2500">2.5 Mbps</option><option value="4000" selected>4 Mbps</option><option value="8000">8 Mbps</option></select></label>';
 }
 function videoBitrateField(){
-  return '<label>Video bitrate<select id="convert-bitrate"><option value="500">500 kbps</option><option value="1000" selected>1 Mbps</option><option value="2500">2.5 Mbps</option><option value="5000">5 Mbps</option><option value="8000">8 Mbps</option></select></label>';
+  return '<label>Video bitrate<select id="convert-bitrate"><option value="500">500 kbps</option><option value="1000">1 Mbps</option><option value="2500">2.5 Mbps</option><option value="4000" selected>4 Mbps</option><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option></select></label>';
 }
 function showConvertedSaveUi(pending, result){
   const tempPath = result.path || result.tempPath || '';
