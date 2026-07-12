@@ -3,7 +3,11 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Auri uses the microphone for voice conversations and audio recording.</string>
+  <string>Auri uses the microphone for voice conversations, audio recording, and HTML previews that request microphone access.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Auri allows HTML previews and recording tools to request camera access.</string>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>Auri allows HTML previews to request your location while the app is in use.</string>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>

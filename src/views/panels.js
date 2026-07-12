@@ -6,6 +6,8 @@ import { sortFolderEntries } from "../model/folder.js";
 import { defaultBookmarkName, normalizeWebUrl, webZoomPercent, webAiMenuItems } from "../model/browser.js";
 import { emptySystemSnapshot, filterSystemProcesses, sortSystemProcesses } from "../model/system.js";
 
+const FILE_WEBVIEW_FEATURE_POLICY = "camera; microphone; geolocation; display-capture; clipboard-read; clipboard-write; fullscreen; autoplay; accelerometer; encrypted-media; gyroscope; hid; magnetometer; midi; payment; picture-in-picture; publickey-credentials-get; screen-wake-lock; serial; usb; web-share; xr-spatial-tracking";
+
 const subtabIcons = {
   terminal: "⌘",
   webview: "◎",
@@ -483,7 +485,7 @@ export function renderWebview(state, { native = false } = {}) {
   const url = subtab.url || "https://www.google.com/";
   const displayUrl = subtab.filePath || url;
   const content = subtab.filePath
-    ? `<object class="file-web-object" data="${escapeHtml(url)}" type="${escapeHtml(subtab.fileMime || "application/octet-stream")}"><p>This file cannot be previewed here.</p></object>`
+    ? `<iframe class="file-web-object" src="${escapeHtml(url)}" title="${escapeHtml(subtab.title || "File preview")}" allow="${FILE_WEBVIEW_FEATURE_POLICY}" allowfullscreen></iframe>`
     : `<div id="native-webview-host" class="native-webview-host" data-webview-id="${escapeHtml(subtab.id)}" data-url="${escapeHtml(url)}"><div class="native-webview-fallback"><span>◎</span><p>Website content opens in the native Auri webview.</p><small>Browser preview cannot bypass site embedding restrictions.</small></div></div>`;
   return `<section class="web-panel">
     <div class="url-bar">${button("←", "Back", "web-back")}${button("→", "Forward", "web-forward")}${button("↻", "Reload", "web-reload")}<input id="web-url" value="${escapeHtml(displayUrl)}" aria-label="URL or question"><div class="web-magic-wrap"><button type="button" class="go-button magic-button" data-action="web-magic" aria-label="Magic button. Click for actions, hold to talk with the live AI." aria-haspopup="menu" aria-expanded="${Boolean(state.ui.webMagicMenuOpen)}" title="Click: Go / Ask AI · Hold: talk">✦</button>${state.ui.webMagicMenuOpen && !native ? `<button class="web-menu-dismiss" type="button" data-action="web-magic-close" aria-label="Close magic menu"></button>${renderMagicMenu()}` : ""}</div><div class="web-menu-wrap">${button("⋮", "Browser menu", "web-menu", `aria-haspopup="menu" aria-expanded="${state.ui.webMenuOpen}"`)}${state.ui.webMenuOpen && !native ? `<button class="web-menu-dismiss" type="button" data-action="web-menu-close" aria-label="Close browser menu"></button>${renderWebMenu(subtab)}` : ""}</div></div>

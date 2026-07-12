@@ -117,10 +117,12 @@ test("requesting a permission refreshes controller state", async () => {
   assert.deepEqual(controller.state.permissions, { microphone: "authorized", screenRecording: "authorized" });
 });
 
-test("macOS bundle declares why Auri needs microphone access", async () => {
+test("macOS bundle declares why HTML previews may need microphone, camera, and location access", async () => {
   const plist = await readFile("src-tauri/Info.plist", "utf8");
   assert.match(plist, /<key>NSMicrophoneUsageDescription<\/key>/);
   assert.match(plist, /voice|microphone|record/i);
+  assert.match(plist, /<key>NSCameraUsageDescription<\/key>/);
+  assert.match(plist, /<key>NSLocationWhenInUseUsageDescription<\/key>/);
 });
 
 test("permission commands delegate status and requests through the shared action layer", async () => {

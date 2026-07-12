@@ -7,6 +7,7 @@
 //! - `GET /path/to/folder`           — folder browser app
 //! - `GET /api/meta?path=<path>`     — file or folder metadata
 //! - `GET /api/list?path=<path>`     — folder entries
+//! - `GET /api/blend-preview?file=…` — cached Blender-to-GLB preview
 //! - `POST /api/save?file=<path>`    — save UTF-8 text
 //! - `POST /api/save-b64?file=<path>`— save base64 binary content
 //! - `POST /api/convert?...`         — native ffmpeg conversion and final save
@@ -15,21 +16,26 @@ use super::files;
 use super::util::{decode_base64, default_file_server_port, file_kind, mime_type};
 use once_cell::sync::Lazy;
 use serde::Serialize;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 static SERVER: Lazy<Mutex<Option<u16>>> = Lazy::new(Default::default);
+static BLEND_EXPORT_LOCK: Lazy<Mutex<()>> = Lazy::new(Default::default);
 
 const VIEWER_HTML: &str = include_str!("viewer.html");
 const THREE_VIEWER_JS: &str = include_str!("three-viewer.js");
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub const PORT: u16 = default_file_server_port(cfg!(debug_assertions));
 const PORT_SEARCH_LIMIT: u16 = 100;
+const BLEND_EXPORT_TIMEOUT: Duration = Duration::from_secs(180);
+const HTML_PERMISSIONS_POLICY: &str = "accelerometer=(self), autoplay=(self), camera=(self), clipboard-read=(self), clipboard-write=(self), display-capture=(self), encrypted-media=(self), fullscreen=(self), geolocation=(self), gyroscope=(self), hid=(self), magnetometer=(self), microphone=(self), midi=(self), payment=(self), picture-in-picture=(self), publickey-credentials-get=(self), screen-wake-lock=(self), serial=(self), usb=(self), web-share=(self), xr-spatial-tracking=(self)";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,6 +280,169 @@ fn write_error(stream: &mut TcpStream, status: &str, message: &str) -> std::io::
     write_response(stream, status, "application/json", &[], body.as_bytes())
 }
 
+fn html_permission_header() -> String {
+    format!("Permissions-Policy: {HTML_PERMISSIONS_POLICY}")
+}
+
+fn blender_executable_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("AURI_BLENDER") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Ok(output) = Command::new("which").arg("blender").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                candidates.push(PathBuf::from(path));
+            }
+        }
+    }
+    candidates.extend([
+        PathBuf::from("/Applications/Blender.app/Contents/MacOS/Blender"),
+        PathBuf::from("/usr/bin/blender"),
+        PathBuf::from("/usr/local/bin/blender"),
+        PathBuf::from("/snap/bin/blender"),
+    ]);
+    let mut unique = std::collections::HashSet::new();
+    candidates
+        .into_iter()
+        .filter(|path| path.is_file() && unique.insert(path.clone()))
+        .collect()
+}
+
+fn blend_preview_cache_path(source: &Path) -> Result<PathBuf, String> {
+    let metadata = fs::metadata(source)
+        .map_err(|error| format!("Could not inspect the Blender file: {error}"))?;
+    let modified = metadata
+        .modified()
+        .unwrap_or(UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut hasher = DefaultHasher::new();
+    source.to_string_lossy().hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    modified.hash(&mut hasher);
+    let directory = std::env::temp_dir().join("auri-blend-previews");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create the Blender preview cache: {error}"))?;
+    Ok(directory.join(format!("{:016x}.glb", hasher.finish())))
+}
+
+fn run_blender_export(source: &Path, output: &Path) -> Result<(), String> {
+    let candidates = blender_executable_candidates();
+    if candidates.is_empty() {
+        return Err(
+            "Blender is required to preview .blend files. Install Blender or set AURI_BLENDER to its executable."
+                .to_string(),
+        );
+    }
+    let output_literal = serde_json::to_string(&output.to_string_lossy())
+        .map_err(|error| format!("Could not prepare the Blender export path: {error}"))?;
+    let script = format!(
+        "import bpy; bpy.ops.export_scene.gltf(filepath={output_literal}, export_format='GLB', export_apply=True)"
+    );
+    let executable = &candidates[0];
+    let mut child = Command::new(executable)
+        .arg("--background")
+        .arg("--disable-autoexec")
+        .arg(source)
+        .arg("--python-expr")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            format!(
+                "Could not start Blender at {}: {error}",
+                executable.display()
+            )
+        })?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "Blender could not export this file (exit status {status})."
+                ));
+            }
+            Ok(None) if started.elapsed() < BLEND_EXPORT_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Blender preview conversion timed out after 180 seconds.".to_string());
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Could not wait for Blender preview conversion: {error}"
+                ));
+            }
+        }
+    }
+}
+
+fn ensure_blend_preview(source: &Path) -> Result<PathBuf, String> {
+    if source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        != Some("blend".to_string())
+    {
+        return Err("Choose a .blend file.".to_string());
+    }
+    let output = blend_preview_cache_path(source)?;
+    if fs::metadata(&output)
+        .map(|value| value.len() > 20)
+        .unwrap_or(false)
+    {
+        return Ok(output);
+    }
+    let _guard = BLEND_EXPORT_LOCK
+        .lock()
+        .map_err(|_| "Blender preview conversion is busy.".to_string())?;
+    if fs::metadata(&output)
+        .map(|value| value.len() > 20)
+        .unwrap_or(false)
+    {
+        return Ok(output);
+    }
+    let _ = fs::remove_file(&output);
+    run_blender_export(source, &output)?;
+    if !fs::metadata(&output)
+        .map(|value| value.len() > 20)
+        .unwrap_or(false)
+    {
+        return Err("Blender finished without creating a usable GLB preview.".to_string());
+    }
+    Ok(output)
+}
+
+fn handle_blend_preview(
+    stream: &mut TcpStream,
+    root: &Path,
+    query: &str,
+    range: Option<&str>,
+) -> std::io::Result<()> {
+    let Some(relative) = query_param(query, "file") else {
+        return write_error(stream, "400 Bad Request", "Choose a .blend file.");
+    };
+    let source = match resolve(root, &relative, true) {
+        Ok(path) if path.is_file() => path,
+        Ok(_) => return write_error(stream, "400 Bad Request", "Not a file."),
+        Err(message) => return write_error(stream, "404 Not Found", &message),
+    };
+    match ensure_blend_preview(&source) {
+        Ok(preview) => serve_file(stream, &preview, range),
+        Err(message) => write_error(stream, "503 Service Unavailable", &message),
+    }
+}
+
 fn parse_range(header: &str, size: u64) -> Option<(u64, u64)> {
     let spec = header.trim().strip_prefix("bytes=")?;
     let (start_text, end_text) = spec.split_once('-')?;
@@ -310,16 +479,14 @@ fn serve_file(stream: &mut TcpStream, path: &Path, range: Option<&str>) -> std::
                 "Could not read the file.",
             );
         }
-        return write_response(
-            stream,
-            "206 Partial Content",
-            mime,
-            &[
-                format!("Content-Range: bytes {start}-{end}/{size}"),
-                "Accept-Ranges: bytes".to_string(),
-            ],
-            &body,
-        );
+        let mut headers = vec![
+            format!("Content-Range: bytes {start}-{end}/{size}"),
+            "Accept-Ranges: bytes".to_string(),
+        ];
+        if mime == "text/html" {
+            headers.push(html_permission_header());
+        }
+        return write_response(stream, "206 Partial Content", mime, &headers, &body);
     }
     let mut body = Vec::new();
     if file.read_to_end(&mut body).is_err() {
@@ -329,13 +496,11 @@ fn serve_file(stream: &mut TcpStream, path: &Path, range: Option<&str>) -> std::
             "Could not read the file.",
         );
     }
-    write_response(
-        stream,
-        "200 OK",
-        mime,
-        &["Accept-Ranges: bytes".to_string()],
-        &body,
-    )
+    let mut headers = vec!["Accept-Ranges: bytes".to_string()];
+    if mime == "text/html" {
+        headers.push(html_permission_header());
+    }
+    write_response(stream, "200 OK", mime, &headers, &body)
 }
 
 fn list_directory(stream: &mut TcpStream, path: &Path) -> std::io::Result<()> {
@@ -484,6 +649,9 @@ fn handle_connection(mut stream: TcpStream, root: &Path, port: u16) -> std::io::
                 THREE_VIEWER_JS.as_bytes(),
             );
         }
+        if decoded_path == "/api/blend-preview" {
+            return handle_blend_preview(&mut stream, root, query, range_header.as_deref());
+        }
         if decoded_path == "/api/list" || decoded_path == "/api/meta" {
             let relative = query_param(query, "path").unwrap_or_default();
             return match resolve(root, &relative, true) {
@@ -527,7 +695,7 @@ fn handle_connection(mut stream: TcpStream, root: &Path, port: u16) -> std::io::
                     &mut stream,
                     "200 OK",
                     "text/html; charset=utf-8",
-                    &[],
+                    &[html_permission_header()],
                     VIEWER_HTML.as_bytes(),
                 )
             }

@@ -8,6 +8,7 @@ test("m4a files use the WebKit-compatible audio/mp4 MIME type", () => {
   assert.equal(previewMimeForPath("/tmp/test.m4a", "audio/x-m4a"), "audio/mp4");
   assert.equal(previewMimeForPath("/tmp/movie.mp4", "application/octet-stream"), "video/mp4");
   assert.equal(previewMimeForPath("/tmp/manual.pdf", "application/octet-stream"), "application/pdf");
+  assert.equal(previewMimeForPath("/tmp/scene.blend", "application/octet-stream"), "application/x-blender");
 });
 
 test("local file URLs map absolute paths onto the fixed loopback server", () => {
@@ -117,9 +118,9 @@ test("opened files render through a blob-backed HTML viewer app document", () =>
     payload: { id, patch: { url: "blob:auri-media-page", filePath: "/tmp/test.m4a", fileMime: "text/html" } }
   });
   const html = renderWebview(state);
-  assert.match(html, /data="blob:auri-media-page"/);
-  assert.match(html, /type="text\/html"/);
-  assert.doesNotMatch(html, /data="\/tmp\/test\.m4a"/);
+  assert.match(html, /<iframe[^>]+src="blob:auri-media-page"/);
+  assert.match(html, /allow="[^"]*camera[^"]*microphone[^"]*geolocation/);
+  assert.doesNotMatch(html, /src="\/tmp\/test\.m4a"/);
 });
 
 
@@ -290,7 +291,7 @@ test("desktop media files are inside the Tauri asset protocol scope", () => {
   assert.ok(scope.includes("$HOME/Movies/**"), "Movies should keep common video previews streamable");
 });
 
-test("file webview object is sized as an embedded app surface", () => {
+test("file webview frame is sized as an embedded app surface and delegates browser capabilities", () => {
   let state = createInitialState();
   state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
   const id = state.tabs[0].activeSubtabId;
@@ -300,8 +301,11 @@ test("file webview object is sized as an embedded app surface", () => {
   });
 
   const html = renderWebview(state);
-  assert.match(html, /class="file-web-object"/);
-  assert.match(html, /blob:auri-file-viewer/);
+  assert.match(html, /<iframe class="file-web-object"/);
+  assert.match(html, /src="blob:auri-file-viewer"/);
+  for (const capability of ["camera", "microphone", "geolocation", "display-capture", "clipboard-read", "clipboard-write", "fullscreen"]) {
+    assert.match(html, new RegExp("allow=\"[^\"]*" + capability));
+  }
 });
 
 test("file serve starts the folder HTTP server and opens the web viewer", async () => {
@@ -324,6 +328,35 @@ test("file serve starts the folder HTTP server and opens the web viewer", async 
   const subtab = state.tabs[0].subtabs.find((item) => item.type === "webview");
   assert.ok(subtab);
   assert.equal(subtab.url, result.url);
+});
+
+test("Blender files are safely exported to GLB and reused by the existing Three.js viewer", () => {
+  const server = readFileSync(new URL("../src-tauri/src/core/fileserver.rs", import.meta.url), "utf8");
+  const viewer = readFileSync(new URL("../src-tauri/src/core/viewer.html", import.meta.url), "utf8");
+
+  assert.match(server, /\/api\/blend-preview/);
+  assert.match(server, /--disable-autoexec/);
+  assert.match(server, /export_scene\.gltf/);
+  assert.match(server, /Blender\.app\/Contents\/MacOS\/Blender/);
+  assert.match(viewer, /blend-preview/);
+  assert.match(viewer, /GLTFLoader/);
+  assert.doesNotMatch(viewer, /blend[^\n]+needs conversion/i);
+});
+
+test("HTML previews delegate browser capabilities and macOS declares camera and location use", () => {
+  const server = readFileSync(new URL("../src-tauri/src/core/fileserver.rs", import.meta.url), "utf8");
+  const viewer = readFileSync(new URL("../src-tauri/src/core/viewer.html", import.meta.url), "utf8");
+  const plist = readFileSync(new URL("../src-tauri/Info.plist", import.meta.url), "utf8");
+
+  assert.match(server, /Permissions-Policy/);
+  const iframeAllow = viewer.match(/const htmlFeaturePolicy='([^']+)'/)?.[1] || "";
+  assert.match(viewer, /allow="'\+htmlFeaturePolicy\+'"/);
+  for (const capability of ["camera", "microphone", "geolocation", "display-capture", "clipboard-read", "clipboard-write", "fullscreen"]) {
+    assert.match(server, new RegExp(capability + "=\\(self\\)"));
+    assert.match(iframeAllow, new RegExp("(?:^|;\\s*)" + capability + "(?:;|$)"));
+  }
+  assert.match(plist, /NSCameraUsageDescription/);
+  assert.match(plist, /NSLocationWhenInUseUsageDescription/);
 });
 
 test("the embedded web viewer serves ranges, saves, and covers common file types", () => {

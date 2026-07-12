@@ -50,6 +50,8 @@ pub fn file_kind(path: &str) -> &'static str {
         "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "svg" => "image",
         "wav" | "m4a" | "mp3" | "ogg" | "flac" | "aac" => "audio",
         "mp4" | "mov" | "webm" | "mkv" | "avi" => "video",
+        "glb" | "gltf" | "obj" | "stl" | "ply" | "3mf" | "blend" | "step" | "stp" | "iges"
+        | "igs" => "model",
         "txt" | "md" | "json" | "js" | "mjs" | "ts" | "tsx" | "rs" | "toml" | "yaml" | "yml"
         | "html" | "css" | "sh" | "py" => "text",
         _ => "file",
@@ -80,6 +82,7 @@ pub fn mime_type(path: &str) -> &'static str {
         "aac" => "audio/aac",
         "opus" => "audio/opus",
         "pdf" => "application/pdf",
+        "blend" => "application/x-blender",
         "glb" => "model/gltf-binary",
         "gltf" => "model/gltf+json",
         "obj" => "model/obj",

@@ -22,6 +22,7 @@ fn file_kinds_cover_supported_viewers() {
     assert_eq!(util::file_kind("voice.m4a"), "audio");
     assert_eq!(util::file_kind("movie.webm"), "video");
     assert_eq!(util::file_kind("notes.md"), "text");
+    assert_eq!(util::file_kind("scene.blend"), "model");
     assert_eq!(util::file_kind("archive.bin"), "file");
 }
 
@@ -30,6 +31,7 @@ fn mime_types_match_media_kind() {
     assert_eq!(util::mime_type("image.png"), "image/png");
     assert_eq!(util::mime_type("clip.mp4"), "video/mp4");
     assert_eq!(util::mime_type("readme.txt"), "text/plain");
+    assert_eq!(util::mime_type("scene.blend"), "application/x-blender");
 }
 
 #[test]
