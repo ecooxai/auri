@@ -255,7 +255,10 @@ export class AppController {
           this.view.showToast(error?.message || String(error), "error");
           throw error;
         }
-      }
+      },
+      preparePreview: (target) => this.prepareTerminalPreview(target),
+      openPreview: (target) => this.openTerminalPreview(target),
+      releasePreview: (preview) => this.backend.releaseFileView?.(preview?.url)
     });
     session.onCwdChange = (path) => this.handleTerminalCwdChange(target.workspace.id, target.subtab.id, path);
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
@@ -2807,6 +2810,30 @@ export class AppController {
     if (this.backend.isNative && this.backend.openExternalUrl) return this.backend.openExternalUrl(url);
     if (typeof window !== "undefined") return window.open(url, "_blank", "noopener,noreferrer");
     throw new Error("External browser opening is unavailable.");
+  }
+
+  async prepareTerminalPreview(target) {
+    if (target?.kind === "url") {
+      const parsed = new URL(target.value);
+      return { ...target, url: parsed.href, title: parsed.hostname || "Website", viewerKind: "web" };
+    }
+    if (target?.kind !== "file" || !target.value) throw new Error("Choose a file path or web URL.");
+    const metadata = await this.backend.inspectFile(target.value);
+    const fileView = await this.backend.createFileView(target.value, metadata, { autoplay: false });
+    return { ...target, ...fileView, title: fileView.title || metadata.name || target.text, viewerKind: fileView.viewerKind || metadata.kind || "file" };
+  }
+
+  async openTerminalPreview(target) {
+    if (target?.kind === "url") {
+      await this.runInternal("subtab new webview");
+      await this.runInternal(`web open ${quoteArg(target.value)}`);
+      return;
+    }
+    if (target?.kind === "file") {
+      await this.runInternal(`file open ${quoteArg(target.value)}`, { fileOpenMode: "new" });
+      return;
+    }
+    throw new Error("Choose a file path or web URL.");
   }
 
   async openFileInWebview(path, metadata, options = {}) {

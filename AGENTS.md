@@ -192,6 +192,7 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - Every workspace retains its own folder, terminal cwd/history, viewer, and subtab selection.
 - Terminal remains the central panel.
 - Enter inserts a newline; Command/Ctrl+Enter runs.
+- Terminal path/URL previews belong in `TerminalSession`: parse clicked xterm buffer cells or drag selections, resolve `./` and `../` against the session `cwd`, position the roughly 300 px card below the anchor or above when space is tight, and route card opening through `file open` or a fresh `webview` plus `web open`. Preserve context-menu selection copy. Keep website iframe previews best-effort because remote embedding policy may block them; the card must still open the URL in a real web subtab.
 - Use Unicode icons only when system fonts reliably render them; retain accessible labels and tooltips.
 - Keep the aurora-light, modern, clean visual language and avoid boxes around every element.
 - Every click has hover, pressed, focus, busy, success, or error feedback as appropriate.

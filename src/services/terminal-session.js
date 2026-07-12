@@ -3,6 +3,118 @@ import { terminalAssistantSegments } from "../model/assistant.js";
 const encoder = new TextEncoder();
 let terminalModulesPromise = null;
 
+const TERMINAL_TARGET_PATTERN = /(?:https?:\/\/|file:\/\/\/)[^\s<>"'`]+|(?:[A-Za-z]:[\\/]|~\/|\.{1,2}\/|\/)(?:\\[ \t]|[^\s<>"'`])+/gi;
+const TERMINAL_TRAILING_PUNCTUATION = /[),.;:!?\]}]+$/;
+
+function trimTerminalCandidate(value) {
+  return String(value || "")
+    .trim()
+    .replace(TERMINAL_TRAILING_PUNCTUATION, "")
+    .replace(/\\([ \t'"\\])/g, "$1");
+}
+
+function normalizeAbsolutePath(value) {
+  const windows = /^[A-Za-z]:[\\/]/.test(value);
+  const normalized = String(value || "").replaceAll("\\", "/");
+  const prefix = windows ? normalized.slice(0, 2) : normalized.startsWith("/") ? "/" : "";
+  const body = windows ? normalized.slice(2) : normalized;
+  const parts = [];
+  for (const part of body.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length) parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  if (windows) return `${prefix}/${parts.join("/")}`;
+  return `${prefix}${parts.join("/")}` || prefix || "/";
+}
+
+function inferredHome(cwd) {
+  const match = String(cwd || "").match(/^\/(?:Users|home)\/[^/]+/);
+  return match?.[0] || null;
+}
+
+function resolveTerminalPath(value, cwd) {
+  let path = trimTerminalCandidate(value);
+  if (/^file:\/\/\//i.test(path)) {
+    try { path = decodeURIComponent(new URL(path).pathname); } catch { return null; }
+  }
+  if (/^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/")) return normalizeAbsolutePath(path);
+  if (path.startsWith("~/")) {
+    const home = inferredHome(cwd);
+    return home ? normalizeAbsolutePath(`${home}/${path.slice(2)}`) : path;
+  }
+  if (!/^\.{1,2}\//.test(path)) return null;
+  const base = String(cwd || "").replaceAll("\\", "/");
+  return base.startsWith("/") || /^[A-Za-z]:\//.test(base)
+    ? normalizeAbsolutePath(`${base}/${path}`)
+    : path;
+}
+
+function parsedTerminalCandidate(raw, cwd) {
+  const text = trimTerminalCandidate(raw);
+  if (!text) return null;
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      const parsed = new URL(text);
+      if (!/^https?:$/.test(parsed.protocol)) return null;
+      return { kind: "url", value: parsed.href, text };
+    } catch {
+      return null;
+    }
+  }
+  const value = resolveTerminalPath(text, cwd);
+  return value ? { kind: "file", value, text } : null;
+}
+
+function terminalCandidateSpans(input, cwd) {
+  const text = String(input || "");
+  const spans = [];
+  const quoted = /(["'])([^"'\n]+)\1/g;
+  for (const match of text.matchAll(quoted)) {
+    const parsed = parsedTerminalCandidate(match[2], cwd);
+    if (!parsed) continue;
+    spans.push({ ...parsed, start: match.index + 1, end: match.index + 1 + match[2].length });
+  }
+  TERMINAL_TARGET_PATTERN.lastIndex = 0;
+  for (const match of text.matchAll(TERMINAL_TARGET_PATTERN)) {
+    const parsed = parsedTerminalCandidate(match[0], cwd);
+    if (!parsed) continue;
+    const start = match.index;
+    const end = start + match[0].length;
+    if (spans.some((item) => start >= item.start && end <= item.end)) continue;
+    spans.push({ ...parsed, start, end });
+  }
+  return spans.sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start));
+}
+
+export function extractTerminalPreviewTarget(input, cwd = "", cursorIndex = null) {
+  const candidates = terminalCandidateSpans(input, cwd);
+  const candidate = Number.isInteger(cursorIndex)
+    ? candidates.find((item) => cursorIndex >= item.start && cursorIndex < item.end)
+    : candidates[0];
+  if (!candidate) return null;
+  return { kind: candidate.kind, value: candidate.value, text: candidate.text };
+}
+
+export function terminalPreviewPlacement(anchor, viewport, size = { width: 300, height: 220 }) {
+  const margin = 8;
+  const gap = 8;
+  const width = Math.max(1, Number(size.width) || 300);
+  const height = Math.max(1, Number(size.height) || 220);
+  const viewportWidth = Math.max(width + margin * 2, Number(viewport.width) || width + margin * 2);
+  const viewportHeight = Math.max(height + margin * 2, Number(viewport.height) || height + margin * 2);
+  const left = Math.min(viewportWidth - width - margin, Math.max(margin, Number(anchor.left) || margin));
+  const below = (Number(anchor.bottom) || 0) + gap;
+  const above = below + height > viewportHeight - margin;
+  const top = above
+    ? Math.max(margin, (Number(anchor.top) || 0) - gap - height)
+    : Math.min(viewportHeight - height - margin, below);
+  return { left, top, above };
+}
+
 async function loadTerminalModules() {
   if (!terminalModulesPromise) {
     terminalModulesPromise = Promise.all([
@@ -55,6 +167,11 @@ export class TerminalSession {
     this.renderQueue = Promise.resolve();
     this.assistantStreamAtLineStart = true;
     this.clipboardAbort = null;
+    this.previewElement = null;
+    this.previewData = null;
+    this.previewRequest = 0;
+    this.previewDocumentAbort = null;
+    this.previewPointerDown = null;
   }
 
   async initialize() {
@@ -241,6 +358,7 @@ export class TerminalSession {
 
     const generation = ++this.mountGeneration;
     this.clipboardAbort?.abort();
+    this.dismissPreview();
     this.term?.dispose();
     const { Terminal, FitAddon } = await loadTerminalModules();
     this.fitAddon = new FitAddon();
@@ -336,10 +454,175 @@ export class TerminalSession {
     return true;
   }
 
+  terminalTextAtEvent(element, event) {
+    const screen = element.querySelector?.(".xterm-screen") || element;
+    const rect = screen.getBoundingClientRect?.();
+    const cols = Math.max(1, Number(this.term?.cols) || 1);
+    const rows = Math.max(1, Number(this.term?.rows) || 1);
+    if (!rect?.width || !rect?.height) return null;
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return null;
+    const column = Math.min(cols - 1, Math.max(0, Math.floor(((event.clientX - rect.left) / rect.width) * cols)));
+    const viewportRow = Math.min(rows - 1, Math.max(0, Math.floor(((event.clientY - rect.top) / rect.height) * rows)));
+    const buffer = this.term?.buffer?.active;
+    const line = buffer?.getLine?.((Number(buffer.viewportY) || 0) + viewportRow);
+    const text = line?.translateToString?.(true) || "";
+    const cellWidth = rect.width / cols;
+    const cellHeight = rect.height / rows;
+    return {
+      text,
+      column,
+      anchor: {
+        left: rect.left + column * cellWidth,
+        right: rect.left + (column + 1) * cellWidth,
+        top: rect.top + viewportRow * cellHeight,
+        bottom: rect.top + (viewportRow + 1) * cellHeight
+      }
+    };
+  }
+
+  dismissPreview() {
+    this.previewRequest += 1;
+    this.previewDocumentAbort?.abort();
+    this.previewDocumentAbort = null;
+    if (this.previewData) this.assistantActions.releasePreview?.(this.previewData);
+    this.previewData = null;
+    this.previewElement?.remove?.();
+    this.previewElement = null;
+  }
+
+  positionPreview(element, anchor) {
+    const view = element.ownerDocument?.defaultView || globalThis;
+    const placement = terminalPreviewPlacement(anchor, {
+      width: Number(view.innerWidth) || 1024,
+      height: Number(view.innerHeight) || 768
+    }, {
+      width: element.offsetWidth || 300,
+      height: element.offsetHeight || 220
+    });
+    element.style.left = `${placement.left}px`;
+    element.style.top = `${placement.top}px`;
+    element.dataset.placement = placement.above ? "above" : "below";
+  }
+
+  async openPreviewTarget(target, status) {
+    if (!this.assistantActions.openPreview) return;
+    status.textContent = "Opening…";
+    try {
+      await this.assistantActions.openPreview(target);
+      this.dismissPreview();
+    } catch (error) {
+      status.textContent = error?.message || String(error);
+      console.error("Could not open terminal preview", error);
+    }
+  }
+
+  showPreview(target, anchor, document) {
+    if (!target || !document?.body) return;
+    this.dismissPreview();
+    const request = ++this.previewRequest;
+    const preview = document.createElement("aside");
+    preview.className = "terminal-link-preview";
+    preview.setAttribute("role", "dialog");
+    preview.setAttribute("aria-label", `Preview ${target.text}`);
+
+    const header = document.createElement("header");
+    const title = document.createElement("strong");
+    title.textContent = target.text;
+    const status = document.createElement("small");
+    status.textContent = target.kind === "url" ? "Website preview" : "File preview";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "terminal-link-preview-close";
+    close.setAttribute("aria-label", "Close preview");
+    close.textContent = "×";
+    header.append(title, status, close);
+
+    const body = document.createElement("div");
+    body.className = "terminal-link-preview-body";
+    body.setAttribute("role", "button");
+    body.setAttribute("tabindex", "0");
+    body.setAttribute("aria-label", `Open ${target.text} in a new tab`);
+    const frame = document.createElement("iframe");
+    frame.className = "terminal-link-preview-frame";
+    frame.title = `Preview of ${target.text}`;
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads");
+    frame.setAttribute("tabindex", "-1");
+    const loading = document.createElement("span");
+    loading.className = "terminal-link-preview-loading";
+    loading.textContent = "Loading preview…";
+    body.append(frame, loading);
+    preview.append(header, body);
+    document.body.append(preview);
+    this.previewElement = preview;
+    this.positionPreview(preview, anchor);
+
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.dismissPreview();
+    });
+    const open = () => this.openPreviewTarget(target, status);
+    body.addEventListener("click", open);
+    body.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open();
+    });
+    frame.addEventListener("load", () => loading.remove());
+
+    this.previewDocumentAbort = new AbortController();
+    const { signal } = this.previewDocumentAbort;
+    document.addEventListener("pointerdown", (event) => {
+      if (!preview.contains(event.target)) this.dismissPreview();
+    }, { capture: true, signal });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") this.dismissPreview();
+    }, { signal });
+    document.defaultView?.addEventListener?.("resize", () => this.dismissPreview(), { signal });
+
+    Promise.resolve(this.assistantActions.preparePreview?.(target) || target)
+      .then((prepared) => {
+        if (request !== this.previewRequest || this.previewElement !== preview) {
+          this.assistantActions.releasePreview?.(prepared);
+          return;
+        }
+        this.previewData = prepared;
+        title.textContent = prepared.title || target.text;
+        status.textContent = prepared.viewerKind === "web" ? "Website · click to open" : `${prepared.viewerKind || "file"} · click to open`;
+        if (!prepared.url) throw new Error("Preview URL is unavailable.");
+        frame.src = prepared.url;
+      })
+      .catch((error) => {
+        if (request !== this.previewRequest || this.previewElement !== preview) return;
+        loading.textContent = error?.message || String(error);
+        status.textContent = "Click to try opening";
+      });
+  }
+
+  handlePreviewMouseUp(element, event) {
+    if (event.button !== 0) return;
+    const down = this.previewPointerDown;
+    this.previewPointerDown = null;
+    const moved = down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4;
+    const point = this.terminalTextAtEvent(element, event);
+    const anchor = point?.anchor || { left: event.clientX, right: event.clientX + 1, top: event.clientY, bottom: event.clientY + 1 };
+    const document = element.ownerDocument;
+    setTimeout(() => {
+      const selected = extractTerminalPreviewTarget(this.selectedText(), this.cwd);
+      const clicked = point ? extractTerminalPreviewTarget(point.text, this.cwd, point.column) : null;
+      const target = moved ? selected || clicked : clicked;
+      if (target) this.showPreview(target, anchor, document);
+      else this.dismissPreview();
+    }, 0);
+  }
+
   installClipboardHandlers(element) {
     this.clipboardAbort?.abort();
     this.clipboardAbort = new AbortController();
     const { signal } = this.clipboardAbort;
+    element.addEventListener("mousedown", (event) => {
+      if (event.button === 0) this.previewPointerDown = { x: event.clientX, y: event.clientY };
+    }, { signal });
+    element.addEventListener("mouseup", (event) => this.handlePreviewMouseUp(element, event), { signal });
     element.addEventListener("keydown", (event) => {
       const key = String(event.key || "").toLowerCase();
       const isCopyShortcut = (event.ctrlKey && event.shiftKey && key === "c") || (event.metaKey && key === "c") || (event.ctrlKey && event.key === "Insert");
@@ -386,6 +669,7 @@ export class TerminalSession {
     clearTimeout(this.cwdRefreshTimer);
     this.clipboardAbort?.abort();
     this.clipboardAbort = null;
+    this.dismissPreview();
     this.term?.dispose();
     this.term = null;
     this.mountedElement = null;

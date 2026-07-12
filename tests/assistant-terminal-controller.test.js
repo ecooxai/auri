@@ -31,6 +31,52 @@ test("terminal sessions receive command-backed Insert and Copy callbacks", async
   ]);
 });
 
+
+
+test("terminal sessions receive file and URL mini-preview actions", async () => {
+  let actions;
+  const calls = [];
+  const backend = {
+    isNative: true,
+    inspectFile: async (path) => ({ path, name: "test.png", kind: "image", mime: "image/png" }),
+    createFileView: async (path) => ({ url: `http://localhost:8890${path}?view=1`, title: "test.png", filePath: path, mime: "text/html", viewerKind: "image" }),
+    releaseFileView: (url) => calls.push(["release", url])
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend,
+    terminalSessionFactory: (_backend, receivedActions) => {
+      actions = receivedActions;
+      return { initialize: async () => {} };
+    }
+  });
+  const commands = [];
+  controller.runInternal = async (command, options) => { commands.push([command, options]); };
+
+  controller.terminalSessionFor();
+  const filePreview = await actions.preparePreview({ kind: "file", value: "/tmp/test.png", text: "/tmp/test.png" });
+  const webPreview = await actions.preparePreview({ kind: "url", value: "https://example.com/page", text: "https://example.com/page" });
+  await actions.openPreview({ kind: "file", value: "/tmp/test.png" });
+  await actions.openPreview({ kind: "url", value: "https://example.com/page" });
+  actions.releasePreview(filePreview);
+
+  assert.equal(filePreview.url, "http://localhost:8890/tmp/test.png?view=1");
+  assert.equal(filePreview.viewerKind, "image");
+  assert.equal(webPreview.url, "https://example.com/page");
+  assert.equal(webPreview.title, "example.com");
+  assert.deepEqual(commands, [
+    ['file open "/tmp/test.png"', { fileOpenMode: "new" }],
+    ["subtab new webview", undefined],
+    ['web open "https://example.com/page"', undefined]
+  ]);
+  assert.deepEqual(calls, [["release", "http://localhost:8890/tmp/test.png?view=1"]]);
+});
 test("platform copy prefers the native backend clipboard writer", async () => {
   const copied = [];
   const view = {
