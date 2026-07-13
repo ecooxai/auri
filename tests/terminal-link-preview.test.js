@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   extractTerminalPreviewTarget,
+  extractTerminalSelectionPreviewTarget,
   terminalPreviewPlacement
 } from "../src/services/terminal-session.js";
 
@@ -74,6 +75,26 @@ test("terminal preview parser resolves bare filenames and nested relative file p
   assert.deepEqual(
     extractTerminalPreviewTarget("open My\\ Screenshot.webp", cwd),
     { kind: "file", value: "/Users/me/project/My Screenshot.webp", text: "My Screenshot.webp" }
+  );
+});
+
+test("terminal drag selection treats an unquoted filename with spaces as one complete path", () => {
+  const cwd = "/Users/me/Desktop";
+  assert.deepEqual(
+    extractTerminalSelectionPreviewTarget("Screenshot 2026-07-08 at 09.22.36.png", cwd),
+    {
+      kind: "file",
+      value: "/Users/me/Desktop/Screenshot 2026-07-08 at 09.22.36.png",
+      text: "Screenshot 2026-07-08 at 09.22.36.png"
+    }
+  );
+  assert.deepEqual(
+    extractTerminalSelectionPreviewTarget("/Users/me/Desktop/Screenshot 2026-07-08 at 09.22.36.png", "/tmp"),
+    {
+      kind: "file",
+      value: "/Users/me/Desktop/Screenshot 2026-07-08 at 09.22.36.png",
+      text: "/Users/me/Desktop/Screenshot 2026-07-08 at 09.22.36.png"
+    }
   );
 });
 
@@ -193,6 +214,31 @@ test("terminal pointer coordinates map to the visible xterm buffer cell", async 
   assert.equal(point.text, "open /tmp/test.png");
   assert.deepEqual(point.anchor, { left: 200, right: 220, top: 90, bottom: 110 });
 });
+test("terminal drag selection previews the complete selected filename when it contains spaces", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const session = new TerminalSession({ isNative: false });
+  session.cwd = "/Users/me/Desktop";
+  session.term = { getSelection: () => "Screenshot 2026-07-08 at 09.22.36.png" };
+  session.previewPointerDown = { x: 10, y: 10 };
+  session.terminalTextAtEvent = () => ({
+    text: "ordinary output",
+    column: 3,
+    anchor: { left: 20, right: 21, top: 20, bottom: 21 }
+  });
+  let shown = null;
+  session.showPreview = (target) => { shown = target; };
+  session.dismissPreview = () => {};
+
+  session.handlePreviewMouseUp({ ownerDocument: {} }, { button: 0, clientX: 30, clientY: 10 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  assert.deepEqual(shown, {
+    kind: "file",
+    value: "/Users/me/Desktop/Screenshot 2026-07-08 at 09.22.36.png",
+    text: "Screenshot 2026-07-08 at 09.22.36.png"
+  });
+});
+
 test("terminal drag selection previews a contained relative directory path", async () => {
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const session = new TerminalSession({ isNative: false });

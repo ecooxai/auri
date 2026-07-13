@@ -138,6 +138,16 @@ export function extractTerminalPreviewTarget(input, cwd = "", cursorIndex = null
   return { kind: candidate.kind, value: candidate.value, text: candidate.text };
 }
 
+export function extractTerminalSelectionPreviewTarget(input, cwd = "") {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+  const quoted = raw.match(/^(["'])([\s\S]*)\1$/);
+  const selected = quoted ? quoted[2] : raw;
+  const exact = parsedTerminalCandidate(selected, cwd);
+  if (exact) return exact;
+  return extractTerminalPreviewTarget(raw, cwd);
+}
+
 export function terminalPreviewPlacement(anchor, viewport, size = { width: 450, height: 330 }) {
   const margin = 8;
   const gap = 8;
@@ -674,7 +684,7 @@ export class TerminalSession {
     const anchor = point?.anchor || { left: event.clientX, right: event.clientX + 1, top: event.clientY, bottom: event.clientY + 1 };
     const document = element.ownerDocument;
     setTimeout(() => {
-      const selected = extractTerminalPreviewTarget(this.selectedText(), this.cwd);
+      const selected = extractTerminalSelectionPreviewTarget(this.selectedText(), this.cwd);
       const clicked = point ? extractTerminalPreviewTarget(point.text, this.cwd, point.column) : null;
       const target = moved ? selected || clicked : clicked;
       if (target) this.showPreview(target, anchor, document);

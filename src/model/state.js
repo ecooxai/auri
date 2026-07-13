@@ -46,7 +46,7 @@ export function createWorkspace(title = "Home", options = {}) {
     subtabs,
     folder: { visible: true, path: "~", entries: [], expanded: {}, selectedPath: null, selectedCount: 0, sortBy: "name" },
     terminal: { cwd: "~", history: [], commandHistory: [], draft: "", running: false },
-    viewer: { path: null, metadata: null, mode: "empty" }
+    viewer: { path: null, metadata: null, mode: "empty", preview: null, pinned: false }
   };
 }
 
@@ -207,19 +207,47 @@ export function reduceState(state, event) {
         };
       });
     case "WORKDIR_SET":
-      return updateTab(state, event.payload.workspaceId, (tab) => ({
-        ...tab,
-        folder: { ...tab.folder, path: event.payload.path, expanded: {}, selectedPath: null, selectedCount: 0 },
-        terminal: { ...tab.terminal, cwd: event.payload.path },
-        subtabs: tab.subtabs.map((item) => item.id === tab.activeSubtabId && item.type === "terminal"
-          ? { ...item, cwd: event.payload.path }
-          : item)
-      }));
+      return updateTab(state, event.payload.workspaceId, (tab) => {
+        const preservePinnedPreview = tab.folder.path === event.payload.path
+          && tab.viewer.mode === "inspect"
+          && tab.viewer.pinned;
+        return {
+          ...tab,
+          folder: {
+            ...tab.folder,
+            path: event.payload.path,
+            expanded: {},
+            selectedPath: preservePinnedPreview ? tab.viewer.path : null,
+            selectedCount: preservePinnedPreview ? Math.max(1, tab.folder.selectedCount || 0) : 0
+          },
+          terminal: { ...tab.terminal, cwd: event.payload.path },
+          viewer: tab.viewer.mode === "inspect" && !preservePinnedPreview
+            ? { ...tab.viewer, mode: "empty", preview: null, pinned: false }
+            : tab.viewer,
+          subtabs: tab.subtabs.map((item) => item.id === tab.activeSubtabId && item.type === "terminal"
+            ? { ...item, cwd: event.payload.path }
+            : item)
+        };
+      });
     case "FOLDER_PATH_SET":
-      return updateTab(state, event.payload.workspaceId, (tab) => ({
-        ...tab,
-        folder: { ...tab.folder, path: event.payload.path, expanded: {}, selectedPath: null, selectedCount: 0 }
-      }));
+      return updateTab(state, event.payload.workspaceId, (tab) => {
+        const preservePinnedPreview = tab.folder.path === event.payload.path
+          && tab.viewer.mode === "inspect"
+          && tab.viewer.pinned;
+        return {
+          ...tab,
+          folder: {
+            ...tab.folder,
+            path: event.payload.path,
+            expanded: {},
+            selectedPath: preservePinnedPreview ? tab.viewer.path : null,
+            selectedCount: preservePinnedPreview ? Math.max(1, tab.folder.selectedCount || 0) : 0
+          },
+          viewer: tab.viewer.mode === "inspect" && !preservePinnedPreview
+            ? { ...tab.viewer, mode: "empty", preview: null, pinned: false }
+            : tab.viewer
+        };
+      });
     case "TERMINAL_CWD_SET":
       return updateTab(state, event.payload.workspaceId, (tab) => {
         const terminalId = event.payload.terminalId || tab.activeSubtabId;
@@ -261,7 +289,8 @@ export function reduceState(state, event) {
           ...tab.folder,
           selectedPath: event.payload.path,
           selectedCount: tab.folder.selectedPath === event.payload.path ? tab.folder.selectedCount + 1 : 1
-        }
+        },
+        viewer: tab.viewer.mode === "inspect" ? { ...tab.viewer, mode: "empty", preview: null, pinned: false } : tab.viewer
       }));
     case "FILE_SELECT":
       return updateActiveTab(state, (tab) => ({
@@ -271,7 +300,24 @@ export function reduceState(state, event) {
           selectedPath: event.payload.path,
           selectedCount: tab.folder.selectedPath === event.payload.path ? tab.folder.selectedCount + 1 : 1
         },
-        viewer: { ...tab.viewer, path: event.payload.path, metadata: event.payload.metadata ?? null, mode: event.payload.open ? "open" : "inspect" }
+        viewer: {
+          ...tab.viewer,
+          path: event.payload.path,
+          metadata: event.payload.metadata ?? null,
+          mode: event.payload.open ? "open" : "inspect",
+          preview: event.payload.open ? null : event.payload.preview ?? null,
+          pinned: false
+        }
+      }));
+    case "FILE_PREVIEW_PIN_SET":
+      return updateActiveTab(state, (tab) => tab.viewer.mode !== "inspect" ? tab : ({
+        ...tab,
+        viewer: { ...tab.viewer, pinned: Boolean(event.payload?.pinned) }
+      }));
+    case "FILE_PREVIEW_DISMISS":
+      return updateActiveTab(state, (tab) => tab.viewer.mode !== "inspect" ? tab : ({
+        ...tab,
+        viewer: { ...tab.viewer, mode: "empty", preview: null, pinned: false }
       }));
     case "TERMINAL_DRAFT_SET":
       return updateActiveTab(state, (tab) => ({ ...tab, terminal: { ...tab.terminal, draft: event.payload.value } }));

@@ -1,5 +1,7 @@
 # Auri Agent Guide
 
+Current release: **v0.5** (package version `0.5.0`).
+
 ## Common commands
 
 Native development (esbuild watch + Tauri debug app):
@@ -51,7 +53,7 @@ Use `npm run dev` (or its `npm run native:watch` alias) for normal native develo
 
 ## Local file web app contract
 
-- Native folder-pane file clicks must execute `file open`, which resolves the active loopback server port and opens `/<absolute-path>?view=1`. Do not reintroduce separate native blob viewers for individual formats.
+- Folder-pane file clicks use a two-step command flow. The first click must execute `file inspect`, preserve the active subtab, select the row, and render a floating mini preview backed by the shared loopback viewer. A repeat click on the selected row executes `file open` for the full viewer. Clicking outside dismisses an unpinned preview and releases any blob resource; the pin control must route through `file preview-pin <on|off>` and keep the preview visible across other UI clicks and same-directory focus/cwd synchronization. A real folder-path change still clears it. The adjacent open control executes `file open` with a forced fresh web-view subtab. Audio/video mini previews use `autoplay=1&compact=1`; full media viewers use `autoplay=1`. Compact mode must hide the inner viewer topbar and duplicate media identity so only the outer mini-preview bar and player remain. Do not reintroduce separate native blob viewers for individual formats.
 - Keep direct `/<absolute-path>` requests as raw file responses with byte-range support. Use `?view=1` for viewing, `?edit=1` for editing, and a query-free directory path for folder browsing.
 - Folder pages put `..` first, navigate folders without leaving the web app, and open files in view mode. HTML preview must use the raw sibling-aware path so `./asset` references work.
 - The embedded `src-tauri/src/core/viewer.html` is the shared native shell for text/HTML, image, audio, video, PDF, DOCX, 3D, and generic file fallbacks. Extend this shell instead of adding another native viewer implementation. `src/services/file-viewer-page.js` remains only the browser-capability fallback.
@@ -88,8 +90,9 @@ auri folder sort <name|date|type>                                             So
 auri folder create-file <name>                                                Create an empty file in the active folder.
 auri folder create-folder <name>                                              Create a folder in the active folder.
 auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
-auri file inspect <path>                                                       Show file metadata; repeat to open it.
-auri file open <path>                                                          Open a file in the unified local HTTP viewer.
+auri file inspect <path>                                                       Select a file and show its floating preview.
+auri file preview-pin <on|off>                                                  Keep or release the floating preview when other UI is clicked.
+auri file open <path>                                                          Open a file in a full unified local HTTP viewer tab.
 auri file external [path]                                                      Open a file with the operating system.
 auri file serve [path]                                                         Open a file or folder in the loopback cloud-disk web app.
 auri terminal run <command...>                                                 Run a shell command in the active workspace.
@@ -182,7 +185,7 @@ Add tests at the lowest useful layer:
 - Pure helper tests for formatting, truncation, transcript parsing, codecs, and filenames.
 - Rust core tests before dependency-light native utility changes.
 
-Do not test pixels or automate the GUI when the behavior can be proven in the model/controller layer. Terminal path-preview regressions belong in `tests/terminal-link-preview.test.js` for parsing, soft-wrap hit-testing, and selection behavior; use `tests/file-webview.test.js` for query-free directory preview URLs and `tests/assistant-terminal-controller.test.js` for command-backed folder opening. After logic tests pass, perform a browser render smoke test for layout and runtime errors.
+Do not test pixels or automate the GUI when the behavior can be proven in the model/controller layer. Terminal path-preview regressions belong in `tests/terminal-link-preview.test.js` for parsing, soft-wrap hit-testing, and selection behavior; folder first-click/repeat-click and new-tab command routing belong in `tests/controller.test.js`, floating preview markup belongs in `tests/minimal-ui.test.js`, query-free directory preview URLs belong in `tests/file-webview.test.js`, and command-backed terminal folder opening belongs in `tests/assistant-terminal-controller.test.js`. After logic tests pass, perform a browser render smoke test for layout and runtime errors.
 
 ## Native implementation rules
 
@@ -199,7 +202,7 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - Every terminal subtab owns an independent `cwd`. Before switching away, refresh and store that terminal's native PTY `pwd`; after selecting another terminal, refresh its `pwd` and move the folder pane to that path. Never run `cd` merely because a terminal gained focus. Inactive terminal cwd notifications update only that terminal record and must not move the visible folder pane or overwrite the active terminal cwd.
 - Terminal remains the central panel.
 - Enter inserts a newline; Command/Ctrl+Enter runs.
-- Terminal path/URL previews belong in `TerminalSession`: reconstruct the clicked logical xterm line by walking backward and forward through `isWrapped` buffer rows, while keeping the preview anchor on the actual clicked cell. Scan drag selections for contained targets. Resolve absolute, `~/`, explicit `./` and `../`, recognized bare filenames and nested relative file paths, plus relative directory paths that end in `/`, against the session `cwd`; keep other implicit matching behind the common-file extension allowlist so dotted prose, versions, domains, flags, assignments, and unrelated URI schemes do not become file targets. Strip compiler-style `:line[:column]` suffixes before opening. Position the 450 × 330 card below the anchor or above when space is tight. Files route through `file open`, URLs through a fresh `webview` plus `web open`, and directories preview with the query-free loopback folder URL before opening through the shared `folder cd` command. Native image previews must use the raw loopback resource URL and render only the image—no outer header or file-viewer filename/path chrome. Preserve context-menu selection copy. Keep website iframe previews best-effort because remote embedding policy may block them; the card must still open the URL in a real web subtab.
+- Terminal path/URL previews belong in `TerminalSession`: reconstruct the clicked logical xterm line by walking backward and forward through `isWrapped` buffer rows, while keeping the preview anchor on the actual clicked cell. Treat the complete drag selection as the first candidate so unquoted filenames and paths containing spaces stay intact; only when that exact selection is not a valid target should parsing scan for contained targets. Resolve absolute, `~/`, explicit `./` and `../`, recognized bare filenames and nested relative file paths, plus relative directory paths that end in `/`, against the session `cwd`; keep other implicit matching behind the common-file extension allowlist so dotted prose, versions, domains, flags, assignments, and unrelated URI schemes do not become file targets. Strip compiler-style `:line[:column]` suffixes before opening. Position the 450 × 330 card below the anchor or above when space is tight. Files route through `file open`, URLs through a fresh `webview` plus `web open`, and directories preview with the query-free loopback folder URL before opening through the shared `folder cd` command. Native image previews must use the raw loopback resource URL and render only the image—no outer header or file-viewer filename/path chrome. Preserve context-menu selection copy. Keep website iframe previews best-effort because remote embedding policy may block them; the card must still open the URL in a real web subtab.
 - Use Unicode icons only when system fonts reliably render them; retain accessible labels and tooltips.
 - Keep the aurora-light, modern, clean visual language and avoid boxes around every element.
 - Every click has hover, pressed, focus, busy, success, or error feedback as appropriate.

@@ -38,6 +38,7 @@ auri folder create-file <name>                                                Cr
 auri folder create-folder <name>                                              Create a folder in the active folder.
 auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
 auri file inspect <path>                                                       Show file metadata; repeat to open it.
+auri file preview-pin <on|off>                                                  Keep or release the floating preview when other UI is clicked.
 auri file open <path>                                                          Open a file in the viewer.
 auri file external [path]                                                      Open a file with the operating system.
 auri file serve [path]                                                         Serve the current folder over local HTTP and open the file in the web viewer.

@@ -43,6 +43,27 @@ test("local file viewer URLs use the resolved server port and path query modes",
   assert.equal(localFileViewerUrl("/tmp/My File.txt", 8893, "edit"), "http://localhost:8893/tmp/My%20File.txt?edit=1");
 });
 
+test("local media viewer URLs preserve autoplay and compact preview options", () => {
+  assert.equal(
+    localFileViewerUrl("/tmp/My Song.mp3", 8895, "view", { autoplay: true, compact: true }),
+    "http://localhost:8895/tmp/My%20Song.mp3?view=1&autoplay=1&compact=1"
+  );
+  assert.equal(
+    localFileViewerUrl("/tmp/My Movie.mp4", 8895, "view", { autoplay: true }),
+    "http://localhost:8895/tmp/My%20Movie.mp4?view=1&autoplay=1"
+  );
+});
+
+test("native media viewer honors autoplay and compact chrome query flags", () => {
+  const viewer = readFileSync(new URL("../src-tauri/src/core/viewer.html", import.meta.url), "utf8");
+
+  assert.match(viewer, /query\.has\('autoplay'\)/);
+  assert.match(viewer, /query\.has\('compact'\)/);
+  assert.match(viewer, /\.compact-media \.topbar\{display:none\}/);
+  assert.match(viewer, /\.compact-media \.media-title\{display:none\}/);
+  assert.match(viewer, /player\.play\(\)\?\.catch/);
+});
+
 test("folder scroll is preserved only while rendering the same directory", () => {
   const list = { dataset: { folderPath: "/same" }, scrollTop: 384 };
   const root = { querySelector: () => list };

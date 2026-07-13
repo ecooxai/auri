@@ -223,6 +223,13 @@ export async function executeCommand(input, context) {
     }
 
     if (domain === "file") {
+      if (action === "preview-pin") {
+        const value = String(args[0] || "").toLowerCase();
+        if (value !== "on" && value !== "off") throw new Error("Choose file preview-pin on or off.");
+        if (activeWorkspace(getState()).viewer.mode !== "inspect") throw new Error("No floating file preview is open.");
+        dispatch({ type: "FILE_PREVIEW_PIN_SET", payload: { pinned: value === "on" } });
+        return { pinned: value === "on" };
+      }
       const path = args.join(" ") || activeWorkspace(getState()).viewer.path;
       if (!path) throw new Error("Choose a file path.");
       if (action === "external") {
@@ -250,11 +257,14 @@ export async function executeCommand(input, context) {
       }
       if (action !== "inspect" && action !== "open") throw new Error(`Unknown file action: ${action}`);
       const metadata = await backend.inspectFile(path);
-      dispatch({ type: "FILE_SELECT", payload: { path, metadata, open: action === "open" } });
       if (action === "inspect") {
-        openSubtab("viewer", context);
-        return metadata;
+        const preview = actions.prepareFilePreview
+          ? await actions.prepareFilePreview(path, metadata)
+          : null;
+        dispatch({ type: "FILE_SELECT", payload: { path, metadata, preview, open: false } });
+        return { ...metadata, preview };
       }
+      dispatch({ type: "FILE_SELECT", payload: { path, metadata, open: true } });
       if (!actions.openFileInWebview) throw new Error("File WebView opening is unavailable.");
       const fileView = await actions.openFileInWebview(path, metadata, {
         autoplay: metadata.kind === "audio" || metadata.kind === "video"

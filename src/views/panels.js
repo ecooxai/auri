@@ -288,6 +288,34 @@ function metadataRows(meta) {
   return values.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
 }
 
+export function renderFolderFilePreview(state) {
+  const workspace = activeWorkspace(state);
+  const viewer = workspace.viewer || {};
+  if (viewer.mode !== "inspect" || !viewer.path || workspace.folder.selectedPath !== viewer.path) return "";
+  const meta = viewer.metadata || {};
+  const preview = viewer.preview || {};
+  const title = meta.name || preview.title || viewer.path.split("/").pop() || "File";
+  const kind = preview.viewerKind || meta.kind || "file";
+  const imageUrl = preview.resourceUrl || meta.assetUrl || "";
+  let body = `<div class="folder-file-preview-fallback"><span>${iconForEntry(meta)}</span><p>Preview is unavailable. Open the file in a full tab.</p></div>`;
+  if (kind === "image" && imageUrl) {
+    body = `<img class="folder-file-preview-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}">`;
+  } else if (preview.url) {
+    body = `<iframe class="folder-file-preview-frame" src="${escapeHtml(preview.url)}" title="Preview of ${escapeHtml(title)}" allow="${FILE_WEBVIEW_FEATURE_POLICY}" allowfullscreen></iframe>`;
+  } else if (meta.kind === "text" && meta.preview) {
+    body = `<pre class="folder-file-preview-text">${escapeHtml(meta.preview)}</pre>`;
+  }
+  return `<aside class="folder-file-preview" role="dialog" aria-label="Preview ${escapeHtml(title)}">
+    <header><div class="folder-file-preview-title"><strong title="${escapeHtml(viewer.path)}">${escapeHtml(title)}</strong><small>${escapeHtml(kind)} preview</small></div>
+      <div class="folder-file-preview-actions">
+        <button type="button" class="icon-button folder-file-preview-pin${viewer.pinned ? " is-active" : ""}" data-action="file-preview-pin" aria-label="${viewer.pinned ? "Unpin" : "Pin"} ${escapeHtml(title)} preview" aria-pressed="${viewer.pinned ? "true" : "false"}" title="${viewer.pinned ? "Unpin preview" : "Pin preview"}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2h-4v7l-1 1-1-1v-7H7v-2l3-3-1-5Z"/></svg></button>
+        <button type="button" class="icon-button folder-file-preview-open" data-action="file-preview-open-tab" data-path="${escapeHtml(viewer.path)}" aria-label="Open ${escapeHtml(title)} in a new tab" title="Open in new tab">↗</button>
+      </div>
+    </header>
+    <div class="folder-file-preview-body">${body}</div>
+  </aside>`;
+}
+
 export function renderViewer(state) {
   const viewer = activeWorkspace(state).viewer;
   if (!viewer.path) return renderEmptyPanel("◈", "Choose a file", "Click a file once for details and again to open it.");

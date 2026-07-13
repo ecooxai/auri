@@ -252,6 +252,33 @@ test("inspected media files render an immediate local preview", async () => {
   assert.doesNotMatch(html, /inspect-hint/);
 });
 
+test("folder inspection renders a floating mini preview with a new-tab button", async () => {
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  const { renderFolderFilePreview } = await import("../src/views/panels.js");
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "FILE_SELECT",
+    payload: {
+      path: "/tmp/Screenshot 2026-07-08 at 09.22.36.png",
+      metadata: { name: "Screenshot 2026-07-08 at 09.22.36.png", kind: "image" },
+      preview: {
+        resourceUrl: "http://localhost:8895/tmp/Screenshot%202026-07-08%20at%2009.22.36.png",
+        viewerKind: "image"
+      },
+      open: false
+    }
+  });
+
+  const html = renderFolderFilePreview(state);
+  assert.match(html, /class="folder-file-preview/);
+  assert.match(html, /data-action="file-preview-pin"/);
+  assert.match(html, /aria-pressed="false"/);
+  assert.ok(html.indexOf('data-action="file-preview-pin"') < html.indexOf('data-action="file-preview-open-tab"'));
+  assert.match(html, /data-action="file-preview-open-tab"/);
+  assert.match(html, /aria-label="Open Screenshot 2026-07-08 at 09\.22\.36\.png in a new tab"/);
+  assert.match(html, /folder-file-preview-image/);
+});
+
 test("new file and folder use an inline floating name form below the path", async () => {
   const panels = await readFile("src/views/panels.js", "utf8");
   const view = await readFile("src/views/app-view.js", "utf8");

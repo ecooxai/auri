@@ -166,6 +166,14 @@ test("unsupported files offer an open-as-text fallback", () => {
   assert.match(html, /Could not decode as text/);
 });
 
+test("compact media previews hide duplicate viewer chrome and audio identity", () => {
+  const audio = fileViewerPageHtml({ resourceUrl: "blob:audio", mime: "audio/mpeg", title: "song.mp3", path: "/tmp/song.mp3", autoplay: true, compact: true });
+
+  assert.match(audio, /<body class="compact-media">/);
+  assert.match(audio, /\.compact-media \.topbar\{display:none\}/);
+  assert.match(audio, /\.compact-media \.audio-hero\{display:none\}/);
+});
+
 test("autoplay is passed into media viewers", () => {
   const audio = fileViewerPageHtml({ resourceUrl: "blob:audio", mime: "audio/mpeg", title: "song.mp3", path: "/tmp/song.mp3", autoplay: true });
   const video = fileViewerPageHtml({ resourceUrl: "blob:video", mime: "video/mp4", title: "clip.mp4", path: "/tmp/clip.mp4", autoplay: true });

@@ -56,6 +56,28 @@ test("folder and terminal working directories stay synchronized", () => {
   assert.equal(state.tabs[0].terminal.cwd, "/tmp/project");
 });
 
+test("same-directory synchronization preserves a pinned file preview but real navigation clears it", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "FOLDER_PATH_SET", payload: { path: "/tmp/project" } });
+  state = reduceState(state, {
+    type: "FILE_SELECT",
+    payload: { path: "/tmp/project/song.mp3", metadata: { name: "song.mp3", kind: "audio" }, preview: { url: "preview" }, open: false }
+  });
+  state = reduceState(state, { type: "FILE_PREVIEW_PIN_SET", payload: { pinned: true } });
+
+  state = reduceState(state, { type: "FOLDER_PATH_SET", payload: { path: "/tmp/project" } });
+  assert.equal(state.tabs[0].viewer.mode, "inspect");
+  assert.equal(state.tabs[0].viewer.pinned, true);
+
+  state = reduceState(state, { type: "WORKDIR_SET", payload: { path: "/tmp/project" } });
+  assert.equal(state.tabs[0].viewer.mode, "inspect");
+  assert.equal(state.tabs[0].viewer.pinned, true);
+
+  state = reduceState(state, { type: "FOLDER_PATH_SET", payload: { path: "/tmp/other" } });
+  assert.equal(state.tabs[0].viewer.mode, "empty");
+  assert.equal(state.tabs[0].viewer.pinned, false);
+});
+
 test("switching terminal subtabs restores each terminal cwd without overwriting the others", () => {
   let state = createInitialState();
   const first = state.tabs[0].subtabs.find((item) => item.type === "terminal");

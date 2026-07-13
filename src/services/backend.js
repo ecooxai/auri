@@ -41,9 +41,12 @@ export function localFileUrl(path, port = 8890) {
   return `${localFileServerOrigin(port)}${pathname.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-export function localFileViewerUrl(path, port = 8890, mode = "view") {
+export function localFileViewerUrl(path, port = 8890, mode = "view", options = {}) {
   const queryMode = mode === "edit" ? "edit" : "view";
-  return `${localFileUrl(path, port)}?${queryMode}=1`;
+  const query = [`${queryMode}=1`];
+  if (options.autoplay) query.push("autoplay=1");
+  if (options.compact) query.push("compact=1");
+  return `${localFileUrl(path, port)}?${query.join("&")}`;
 }
 
 
@@ -440,7 +443,7 @@ export class Backend {
   }
 
 
-  createFileViewPage({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false }) {
+  createFileViewPage({ resourceUrl = "", mime = "application/octet-stream", title = "File", path = "", text = null, autoplay = false, compact = false }) {
     const page = new Blob([fileViewerPageHtml({
       resourceUrl,
       mime,
@@ -448,6 +451,7 @@ export class Backend {
       path,
       text,
       autoplay,
+      compact,
       codemirrorModuleUrl: appAssetUrl("codemirror-viewer.js"),
       threeModuleUrl: appAssetUrl("three-viewer.js")
     })], { type: "text/html" });
@@ -456,6 +460,7 @@ export class Backend {
 
   async createFileView(path, metadata = {}, options = {}) {
     const autoplay = Boolean(options.autoplay);
+    const compact = Boolean(options.compact);
     if (!this.invoke) {
       const item = browserMetadata(path);
       const mime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime);
@@ -463,7 +468,7 @@ export class Backend {
       const text = options.asText || isEditableTextFile(path, mime)
         ? item.preview || `Preview for ${path}`
         : null;
-      const url = this.createFileViewPage({ mime, title, path, text, autoplay });
+      const url = this.createFileViewPage({ mime, title, path, text, autoplay, compact });
       return { url, title, filePath: path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
     }
 
@@ -488,7 +493,7 @@ export class Backend {
     const mode = options.asText ? "edit" : "view";
     const isHtml = mediaMime.toLowerCase() === "text/html" || /\.html?$/i.test(String(path || ""));
     return {
-      url: localFileViewerUrl(path, server.port, mode),
+      url: localFileViewerUrl(path, server.port, mode, { autoplay, compact }),
       resourceUrl,
       title,
       filePath: path,

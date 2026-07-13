@@ -1,5 +1,7 @@
 # Auri
 
+Current release: **v0.5** (package version `0.5.0`).
+
 ## Common commands
 
 Start guarded native development with restart-on-change watching:
@@ -34,11 +36,11 @@ Implemented now:
 - Per-workspace folder pane synchronized with terminal `cwd`.
 - Startup always selects the first workspace and its first terminal, synchronizes that terminal `cwd` with the folder pane, and keeps a System monitor subtab pre-opened in the first workspace.
 - Every terminal subtab owns its own working directory. Selecting a terminal refreshes its native PTY `pwd`, preserves the terminal you switched away from, and opens the folder pane at the selected terminal path without sending an automatic `cd`.
-- File inspection with size, type, image dimensions, and optional `ffprobe` codec/bitrate metadata.
+- Folder file inspection uses a two-step flow: the first click selects the file and opens a floating mini preview over the current panel, while clicking the same row again opens the full loopback viewer. Clicking elsewhere dismisses an unpinned preview; the pin button keeps it visible, and the adjacent open icon creates a fresh full viewer tab. Audio and video start automatically in both mini and full views. Compact media previews show only Auri’s outer preview bar and the player, without repeating the file identity and viewer actions inside the frame. Inspection includes size, type, image dimensions, and optional `ffprobe` codec/bitrate metadata.
 - A loopback cloud-disk file web app with folder browsing, text/HTML editing, raw file serving, PDF/DOCX/3D/media viewers, and image/audio/video conversion.
 - Shell command execution and explicit `cd` synchronization.
 - Terminal composer where Enter inserts a newline and Command/Ctrl+Enter runs.
-- Clicked terminal paths, recognized bare filenames such as `notes.md`, nested relative file paths such as `assets/photo.png`, trailing-slash relative folders such as `dir1/dir2/`, and HTTP(S) URLs open a 450 × 330 preview near the text. Click hit-testing reconstructs the complete logical xterm line across soft-wrapped display rows, so a long filename remains whole even when it occupies several visual lines. Drag selections are scanned for contained absolute, `~/`, `./`, `../`, recognized file, and trailing-slash relative-folder targets. Implicit filenames resolve against that terminal session's current working directory and stay limited to common media, text/web, programming-language, document/archive, PDF, and 3D extensions so dotted prose, version numbers, domains, flags, and assignments are ignored. Folder targets use the query-free local folder browser to show their contents, and clicking that preview navigates through the shared `folder cd` command; file and URL previews continue to open new file or web subtabs. Image paths show only the raw image with no filename/path chrome, while URL, folder, and other non-image previews retain their normal viewer surface. Right-click selection copy remains unchanged.
+- Clicked terminal paths, recognized bare filenames such as `notes.md`, nested relative file paths such as `assets/photo.png`, trailing-slash relative folders such as `dir1/dir2/`, and HTTP(S) URLs open a 450 × 330 preview near the text. Click hit-testing reconstructs the complete logical xterm line across soft-wrapped display rows, so a long filename remains whole even when it occupies several visual lines. Drag selections first treat the complete selected text as one filename or path—including unquoted spaces such as `Screenshot 2026-07-08 at 09.22.36.png`—then fall back to scanning for contained absolute, `~/`, `./`, `../`, recognized file, and trailing-slash relative-folder targets. Implicit filenames resolve against that terminal session's current working directory and stay limited to common media, text/web, programming-language, document/archive, PDF, and 3D extensions so dotted prose, version numbers, domains, flags, and assignments are ignored. Folder targets use the query-free local folder browser to show their contents, and clicking that preview navigates through the shared `folder cd` command; file and URL previews continue to open new file or web subtabs. Image paths show only the raw image with no filename/path chrome, while URL, folder, and other non-image previews retain their normal viewer surface. Right-click selection copy remains unchanged.
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
 - Assistant replies can expose allowlisted shell-command and input-ready actions in a floating panel, with Run, Insert, and Copy controls.
 - Local model/settings management and an Info tab for errors, notices, and sanitized AI request details with text plus playable image/audio previews.
@@ -97,7 +99,7 @@ The model never imports DOM or Tauri APIs. Controllers dispatch model events. Vi
 
 ## Local file web app
 
-Native file opening is unified through Auri's loopback-only cloud-disk web app. A click on a file in the folder pane opens the HTTP viewer immediately; browser-only preview mode keeps the blob-backed capability fallback.
+Native file opening is unified through Auri's loopback-only cloud-disk web app. The first folder-pane click runs `file inspect`, keeps the current subtab active, and shows a floating mini preview backed by the same loopback viewer. An unpinned preview closes when another UI surface is clicked; `file preview-pin on` keeps it visible until unpinned, replaced, opened, or the folder actually changes. Same-directory focus/cwd refreshes preserve pinned previews. Clicking the selected file again runs `file open` for the full viewer, while the preview's top-right open icon creates a new full viewer tab. Audio/video preview URLs carry `autoplay=1`; mini media previews also carry `compact=1`, which removes duplicate inner filename, path, action, and media-title chrome. Browser-only mode keeps the equivalent blob-backed fallback.
 
 URL contract:
 
@@ -232,8 +234,9 @@ auri folder sort <name|date|type>                                             So
 auri folder create-file <name>                                                Create an empty file in the active folder.
 auri folder create-folder <name>                                              Create a folder in the active folder.
 auri folder info [path]                                                        Show folder size, disk, owner, and permission details.
-auri file inspect <path>                                                       Show file metadata; repeat to open it.
-auri file open <path>                                                          Open a file in the unified local HTTP viewer.
+auri file inspect <path>                                                       Select a file and show its floating preview.
+auri file preview-pin <on|off>                                                  Keep or release the floating preview when other UI is clicked.
+auri file open <path>                                                          Open a file in a full unified local HTTP viewer tab.
 auri file external [path]                                                      Open a file with the operating system.
 auri file serve [path]                                                         Open a file or folder in the loopback cloud-disk web app.
 auri terminal run <command...>                                                 Run a shell command in the active workspace.
