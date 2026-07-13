@@ -128,11 +128,11 @@ function renderMedia(tag,metadata={}){
   const autoplayAttribute=autoplay?' autoplay':'';
   const content=tag==='audio'?'<audio id="media" controls preload="metadata"'+autoplayAttribute+' src="'+rawUrl()+'"></audio><canvas id="wave" class="wave"></canvas>':'<video id="media" controls playsinline preload="metadata"'+autoplayAttribute+' src="'+rawUrl()+'"></video>';
   main.innerHTML='<div class="stage media-stage"><section class="media-card">'+content+'</section></div>';
-  const media=document.getElementById('media');
-  const refreshFacts=()=>showMediaFacts(metadata,{kind:tag,width:tag==='video'?media.videoWidth:0,height:tag==='video'?media.videoHeight:0,bitrateKbps:estimatedBitrate(metadata.size,media.duration)});
-  showMediaFacts(metadata);media.addEventListener('loadedmetadata',refreshFacts);
-  if(autoplay){const start=()=>media.play().catch(()=>{});media.addEventListener('canplay',start,{once:true});start();}
-  if(tag==='audio'){const canvas=document.getElementById('wave');const refresh=()=>drawWave(canvas,media.duration?media.currentTime/media.duration:0);media.addEventListener('timeupdate',refresh);media.addEventListener('loadedmetadata',refresh);canvas.addEventListener('click',(event)=>{if(media.duration)media.currentTime=(event.offsetX/canvas.clientWidth)*media.duration;});addEventListener('resize',refresh);refresh();}
+  const player=document.getElementById('media');
+  const refreshFacts=()=>showMediaFacts(metadata,{kind:tag,width:tag==='video'?player.videoWidth:0,height:tag==='video'?player.videoHeight:0,bitrateKbps:estimatedBitrate(metadata.size,player.duration)});
+  showMediaFacts(metadata);player.addEventListener('loadedmetadata',refreshFacts);
+  if(autoplay){const start=()=>{try{player.play()?.catch(()=>{});}catch{}};player.addEventListener('canplay',start,{once:true});start();}
+  if(tag==='audio'){const canvas=document.getElementById('wave');const refresh=()=>drawWave(canvas,player.duration?player.currentTime/player.duration:0);player.addEventListener('timeupdate',refresh);player.addEventListener('loadedmetadata',refresh);canvas.addEventListener('click',(event)=>{if(player.duration)player.currentTime=(event.offsetX/canvas.clientWidth)*player.duration;});addEventListener('resize',refresh);refresh();}
 }
 function renderPdf(){main.innerHTML='<iframe class="frame" src="'+rawUrl()+'" title="PDF"></iframe>';}
 async function renderDocument(){

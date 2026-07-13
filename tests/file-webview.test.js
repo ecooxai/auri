@@ -455,7 +455,7 @@ test("the embedded web viewer serves ranges, saves, and covers common file types
   assert.match(viewer, /auri-convert-bitrate/);
   assert.match(viewer, /4000/);
   assert.match(viewer, /query\.has\('autoplay'\)/);
-  assert.match(viewer, /media\.play\(\)/);
+  assert.match(viewer, /player\.play\(\)\?\.catch/);
   assert.doesNotMatch(viewer, /<div class="media-title"/);
   assert.match(viewer, /\.app\{[^}]*grid-template-rows:1fr auto/s);
   assert.match(viewer, /<main class="main"[^>]*>[\s\S]*<header class="topbar">/);

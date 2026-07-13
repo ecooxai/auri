@@ -22,6 +22,14 @@ Build and run the release app in the current terminal session on macOS or Linux:
 npm run app
 ```
 
+Package the already-built Linux executable as a downloadable archive:
+
+```bash
+npm run release:linux
+```
+
+The Linux archive preserves the executable bit and includes `Auri`, `Auri.desktop`, an icon, launch instructions, and SHA-256 checksums. Current Linux artifacts are built and tested on an Arch Linux-based x86_64 host and dynamically link to its GTK/WebKitGTK stack, so Debian and Ubuntu may not work until distribution-specific builds are published. More Linux builds are coming soon.
+
 Auri is a terminal-centered assistant workspace for macOS and Linux, built with Rust and Tauri. Its interface combines browser-like workspaces, a synchronized folder pane, terminal and AI composer, file inspection and viewing, webviews, clipboard history, settings, and audio/video capture.
 
 The project follows a command-first MVC design: every meaningful GUI action maps to a text command. A user types the public form (`auri tab new`), while internal GUI code calls the same command without the `auri` prefix (`tab new`). This keeps behavior testable and makes automation predictable.

@@ -34,6 +34,14 @@ Build and run the release app in the current terminal session on macOS or Linux:
 npm run app
 ```
 
+Package the already-built Linux release executable and checksum:
+
+```bash
+npm run release:linux
+```
+
+The Linux release archive must identify its version, architecture, and Arch Linux build base in the filename. It contains a directly executable `Auri` binary, colocated desktop launcher, icon, README compatibility warning, internal checksums, and an external archive checksum. Release notes must state that Debian/Ubuntu compatibility is not yet guaranteed and that more Linux builds are planned.
+
 This file is the implementation contract for contributors and coding agents working on Auri.
 
 ## Non-negotiable workflow
