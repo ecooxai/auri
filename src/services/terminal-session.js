@@ -63,6 +63,14 @@ function hasRecognizedFileExtension(value) {
   return TERMINAL_FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
+function hasRelativeDirectoryShape(value) {
+  const path = String(value || "").replaceAll("\\", "/");
+  if (!path.endsWith("/") || path.startsWith("/") || path.startsWith("~/") || /^\.{1,2}\//.test(path)) return false;
+  if (/^[A-Za-z]:\//.test(path) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(path)) return false;
+  if (path.includes("//") || /[?#=|&*$<>@]/.test(path)) return false;
+  return path.slice(0, -1).split("/").every((part) => part && part !== "." && part !== "..");
+}
+
 function resolveTerminalPath(value, cwd) {
   let path = trimTerminalCandidate(value);
   if (/^file:\/\/\//i.test(path)) {
@@ -74,7 +82,7 @@ function resolveTerminalPath(value, cwd) {
     return home ? normalizeAbsolutePath(`${home}/${path.slice(2)}`) : path;
   }
   const explicitRelative = /^\.{1,2}\//.test(path);
-  if (!explicitRelative && !hasRecognizedFileExtension(path)) return null;
+  if (!explicitRelative && !hasRecognizedFileExtension(path) && !hasRelativeDirectoryShape(path)) return null;
   const base = String(cwd || "").replaceAll("\\", "/");
   return base.startsWith("/") || /^[A-Za-z]:\//.test(base)
     ? normalizeAbsolutePath(`${base}/${path}`)
@@ -495,13 +503,27 @@ export class TerminalSession {
     const column = Math.min(cols - 1, Math.max(0, Math.floor(((event.clientX - rect.left) / rect.width) * cols)));
     const viewportRow = Math.min(rows - 1, Math.max(0, Math.floor(((event.clientY - rect.top) / rect.height) * rows)));
     const buffer = this.term?.buffer?.active;
-    const line = buffer?.getLine?.((Number(buffer.viewportY) || 0) + viewportRow);
-    const text = line?.translateToString?.(true) || "";
+    const bufferRow = (Number(buffer?.viewportY) || 0) + viewportRow;
+    const line = buffer?.getLine?.(bufferRow);
+    if (!line) return null;
+
+    let startRow = bufferRow;
+    while (startRow > 0 && buffer.getLine?.(startRow)?.isWrapped) startRow -= 1;
+    let endRow = bufferRow;
+    while (buffer.getLine?.(endRow + 1)?.isWrapped) endRow += 1;
+
+    let text = "";
+    let logicalColumn = column;
+    for (let row = startRow; row <= endRow; row += 1) {
+      const segment = buffer.getLine?.(row)?.translateToString?.(row === endRow) || "";
+      if (row < bufferRow) logicalColumn += segment.length;
+      text += segment;
+    }
     const cellWidth = rect.width / cols;
     const cellHeight = rect.height / rows;
     return {
       text,
-      column,
+      column: logicalColumn,
       anchor: {
         left: rect.left + column * cellWidth,
         right: rect.left + (column + 1) * cellWidth,

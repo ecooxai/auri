@@ -8,7 +8,7 @@ Native development (esbuild watch + Tauri debug app):
 npm run dev
 ```
 
-Watch native development (starts a new independent Auri app process):
+Alias for the same guarded native development watcher:
 
 ```bash
 npm run native:watch
@@ -47,7 +47,7 @@ This file is the implementation contract for contributors and coding agents work
 
 ## Development instance safety
 
-Before starting a new development app or watcher, check whether an Auri development instance is already running. Stop only the existing dev/watch process that would conflict with the new test run, and do not kill release-version Auri processes. A build plus a manually started dev app is preferred for verification when continuous watch mode is unnecessary.
+Use `npm run dev` (or its `npm run native:watch` alias) for normal native development. The launcher must scan for an existing `target/debug/auri-desktop` or `target/debug/auri-dev` process and hold a project-specific lock; when either is present, exit successfully without opening another development window. Never match, stop, or replace a packaged app or any binary under `target/release`. Source changes use Cargo Watch with a trailing 10-second debounce, so each additional change resets the timer before the debug app rebuilds and restarts. The isolated frontend server must keep its temporary bundle current by watching JavaScript dependencies and recopying root HTML, CSS, favicon, and browser-overlay assets. `AURI_WATCH_DELAY` may override the delay with another non-negative number of seconds. `npm run tauri:dev` bypasses this guard and therefore requires the same manual existing-instance check before use.
 
 ## Local file web app contract
 
@@ -62,6 +62,12 @@ Before starting a new development app or watcher, check whether an Auri developm
 - Reuse `files::convert_media_file` and `files::save_converted_media_file` for audio/video conversion. The persisted default bitrate is 4000 kbps under `auri-convert-bitrate`; apply codec-safe caps such as 320 kbps for MP3. Image PNG/JPG/WebP conversion stays in the viewer canvas path.
 - When changing this subsystem, test URL generation and folder-click command routing in JavaScript, run the dependency-light Rust tests, run `cargo check`, and smoke-test fallback-port binding while preserving any release process on 8890. For Blender changes, create a disposable `.blend`, verify a valid GLB response and cached repeat, and render it through the browser when Blender is installed. For HTML capability changes, test the outer and inner frame delegation, response policy header, and platform usage declarations together.
 - macOS Finder `Open With` uses the `public.data` document registration and `RunEvent::Opened`. Queue file URLs natively, drain them after frontend startup, and route every path through `file open` so each file creates a normal web-view subtab.
+
+## Startup and system monitor contract
+
+- Startup must select the first restored workspace and its first terminal subtab, mirror that terminal working directory into the folder pane, and ensure the first workspace contains a pre-opened System monitor subtab.
+- Process monitor views must sort and search the full snapshot before pagination. Render 15 process rows initially, append 15 near the scroll boundary, reset paging when search or sort changes, and keep CPU, RAM, network, disk, and port sorts independent of the visible slice.
+- Keep keyboard search available on System, Disk, and Net with Command/Ctrl+F and `/`; Escape closes the focused search field.
 
 ## Command-first rule
 
@@ -137,7 +143,7 @@ auri settings set <key> <value>                                                U
 auri permission status                                                         Refresh macOS media permission status.
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri system open                                                              Open the System monitor.
-auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system sort <cpu|port|name|pid|ram|net|disk>                                      Sort System monitor processes.
 auri system search [keyword...]                                                   Filter the process list by keyword (space separates OR terms); empty clears.
 auri system refresh                                                           Refresh System monitor statistics.
 auri system select <pid>                                                    Select a System monitor process.
@@ -150,7 +156,7 @@ auri info clear                                                                C
 auri help                                                                      Show all available commands.
 ```
 
-System monitor UI note: keep the process table Name column at twice the previous width (`minmax(240px, 3fr)`) so short process names stay readable before truncation; disk and network process tables share the same grid. The selected-process detail shows listening ports below the path field, one port per row. Each port can start or stop a confirmed Cloudflare `cloudflared` HTTPS tunnel; Auri checks `PATH` and `~/.local/bin`, can install supported macOS/Linux binaries to `~/.local/bin` after confirmation, closes the confirmation prompt into a per-port starting/stopping state, shows the generated `trycloudflare.com` URL beside the port, and copies that URL when clicked. The automatic 5-second system snapshot poll may keep `state.system` current while another subtab is active, but it must not re-render inactive tabs or recreate focused terminal, AI, settings, folder, or editor inputs; only the active System, Disk, or Net monitor view refreshes live.
+System monitor UI note: process lists sort and filter the complete native snapshot first, then render exactly one 10-process page. Scrolling down at the bottom replaces the table with the next page, and scrolling up at the top returns to the previous page instead of growing the DOM. The System title shows disabled-at-the-edge `<` and `>` page buttons around `Page X / Y`; explicit button clicks are not wheel-throttled. Refreshes preserve the current page and clamp it only when the filtered result set becomes shorter. Command/Ctrl+F or `/` focuses keyboard search, and CPU, RAM, network, disk, and port sorting always considers every matching process, not only the current page. Keep the process table Name column at twice the previous width (`minmax(240px, 3fr)`) so short process names stay readable before truncation; disk and network process tables share the same grid. The selected-process detail shows listening ports below the path field, one port per row. Each port can start or stop a confirmed Cloudflare `cloudflared` HTTPS tunnel; Auri checks `PATH` and `~/.local/bin`, can install supported macOS/Linux binaries to `~/.local/bin` after confirmation, closes the confirmation prompt into a per-port starting/stopping state, shows the generated `trycloudflare.com` URL beside the port, and copies that URL when clicked. The automatic 5-second system snapshot poll may keep `state.system` current while another subtab is active, but it must not re-render inactive tabs or recreate focused terminal, AI, settings, folder, or editor inputs; only the active System, Disk, or Net monitor view refreshes live.
 
 When a command accepts paths, prompts, shell syntax, URLs, or secrets, test quoting, whitespace, empty optional values, and malformed input. Preserve raw shell and AI tails where their punctuation is semantically meaningful.
 
@@ -176,7 +182,7 @@ Add tests at the lowest useful layer:
 - Pure helper tests for formatting, truncation, transcript parsing, codecs, and filenames.
 - Rust core tests before dependency-light native utility changes.
 
-Do not test pixels or automate the GUI when the behavior can be proven in the model/controller layer. After logic tests pass, perform a browser render smoke test for layout and runtime errors.
+Do not test pixels or automate the GUI when the behavior can be proven in the model/controller layer. Terminal path-preview regressions belong in `tests/terminal-link-preview.test.js` for parsing, soft-wrap hit-testing, and selection behavior; use `tests/file-webview.test.js` for query-free directory preview URLs and `tests/assistant-terminal-controller.test.js` for command-backed folder opening. After logic tests pass, perform a browser render smoke test for layout and runtime errors.
 
 ## Native implementation rules
 
@@ -190,9 +196,10 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 
 - Preserve the vertical workspace tabs and horizontal subtab model.
 - Every workspace retains its own folder, terminal cwd/history, viewer, and subtab selection.
+- Every terminal subtab owns an independent `cwd`. Before switching away, refresh and store that terminal's native PTY `pwd`; after selecting another terminal, refresh its `pwd` and move the folder pane to that path. Never run `cd` merely because a terminal gained focus. Inactive terminal cwd notifications update only that terminal record and must not move the visible folder pane or overwrite the active terminal cwd.
 - Terminal remains the central panel.
 - Enter inserts a newline; Command/Ctrl+Enter runs.
-- Terminal path/URL previews belong in `TerminalSession`: parse clicked xterm buffer cells or drag selections; resolve explicit `./` and `../` paths plus recognized bare filenames and nested relative paths against the session `cwd`; and keep implicit matching behind the common-file extension allowlist so dotted prose, versions, domains, flags, assignments, and unrelated URI schemes do not become file targets. Strip compiler-style `:line[:column]` suffixes before opening. Position the 450 × 330 card below the anchor or above when space is tight, and route card opening through `file open` or a fresh `webview` plus `web open`. Native image previews must use the raw loopback resource URL and render only the image—no outer header or file-viewer filename/path chrome. Preserve context-menu selection copy. Keep website iframe previews best-effort because remote embedding policy may block them; the card must still open the URL in a real web subtab.
+- Terminal path/URL previews belong in `TerminalSession`: reconstruct the clicked logical xterm line by walking backward and forward through `isWrapped` buffer rows, while keeping the preview anchor on the actual clicked cell. Scan drag selections for contained targets. Resolve absolute, `~/`, explicit `./` and `../`, recognized bare filenames and nested relative file paths, plus relative directory paths that end in `/`, against the session `cwd`; keep other implicit matching behind the common-file extension allowlist so dotted prose, versions, domains, flags, assignments, and unrelated URI schemes do not become file targets. Strip compiler-style `:line[:column]` suffixes before opening. Position the 450 × 330 card below the anchor or above when space is tight. Files route through `file open`, URLs through a fresh `webview` plus `web open`, and directories preview with the query-free loopback folder URL before opening through the shared `folder cd` command. Native image previews must use the raw loopback resource URL and render only the image—no outer header or file-viewer filename/path chrome. Preserve context-menu selection copy. Keep website iframe previews best-effort because remote embedding policy may block them; the card must still open the URL in a real web subtab.
 - Use Unicode icons only when system fonts reliably render them; retain accessible labels and tooltips.
 - Keep the aurora-light, modern, clean visual language and avoid boxes around every element.
 - Every click has hover, pressed, focus, busy, success, or error feedback as appropriate.
@@ -214,4 +221,5 @@ The external CLI socket must stay user-only, bounded, and line-break safe. Curre
 - `npm run check` passes.
 - `cargo check --manifest-path src-tauri/Cargo.toml` passes.
 - Browser render smoke test has no JavaScript runtime errors.
+- README.md and AGENTS.md record important workflow, architecture, and behavior changes from the task.
 auri live record toggle                                                       Connect and record, or disconnect the active Live chat.

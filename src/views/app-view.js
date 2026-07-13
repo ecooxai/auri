@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { buildDiskMountRows, buildNetInterfaceRows, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
+import { buildDiskMountRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -197,6 +197,7 @@ export class AppView {
     if (!panel) return false;
     const kind = activeSubtab(state)?.type;
     if (!["system", "disk", "net"].includes(kind)) return false;
+    const processPage = buildProcessMonitorPage(state, kind);
 
     const status = panel.querySelector("[data-system-status]");
     if (status && kind === "system") {
@@ -205,6 +206,12 @@ export class AppView {
     }
     const host = panel.querySelector("[data-system-host]");
     if (host) host.textContent = state.system.snapshot?.host?.hostname || "—";
+    const pageLabel = panel.querySelector("[data-system-page]");
+    if (pageLabel) pageLabel.textContent = `Page ${processPage.currentPage} / ${processPage.pageCount}`;
+    const previousPageButton = panel.querySelector("[data-system-page-prev]");
+    if (previousPageButton) previousPageButton.disabled = !processPage.hasPrevious;
+    const nextPageButton = panel.querySelector("[data-system-page-next]");
+    if (nextPageButton) nextPageButton.disabled = !processPage.hasNext;
 
     for (const metric of buildSystemMetrics(state, kind)) {
       const tile = panel.querySelector(`[data-metric="${metric.key}"]`);
@@ -228,8 +235,7 @@ export class AppView {
 
     const monitor = panel.querySelector(".process-monitor");
     if (monitor) {
-      const rows = buildProcessMonitorRows(state, kind);
-      if (!this.patchProcessRows(monitor, rows)) {
+      if (!this.patchProcessRows(monitor, processPage.rows, processPage)) {
         const scrollTop = monitor.querySelector(".process-table")?.scrollTop || 0;
         monitor.innerHTML = renderProcessMonitorContent(state, kind);
         const table = monitor.querySelector(".process-table");
@@ -259,7 +265,7 @@ export class AppView {
     return true;
   }
 
-  patchProcessRows(monitor, rows) {
+  patchProcessRows(monitor, rows, page = { total: rows.length, currentPage: 1, pageCount: 1, hasPrevious: false, hasNext: false }) {
     const table = monitor?.querySelector?.(".process-table");
     if (!table || !rows.length) return false;
     const existing = table.querySelectorAll?.("[data-process-row]");
@@ -284,8 +290,27 @@ export class AppView {
       if (netCell) netCell.textContent = row.net;
       element.classList?.toggle?.("is-selected", row.selected);
     }
+    if (table.dataset) {
+      table.dataset.hasPrevious = String(Boolean(page.hasPrevious));
+      table.dataset.hasNext = String(Boolean(page.hasNext));
+      table.dataset.processPage = String(Number(page.currentPage) || 1);
+      table.dataset.processPages = String(Number(page.pageCount) || 1);
+      table.dataset.processTotal = String(Number(page.total) || 0);
+    }
+    const status = table.querySelector?.("[data-process-load-status]");
+    if (status) {
+      const pageProcessLabel = `${rows.length} process${rows.length === 1 ? "" : "es"} on page ${page.currentPage} of ${page.pageCount}`;
+      const scrollHint = page.hasPrevious && page.hasNext
+        ? "scroll up or down to change page"
+        : page.hasPrevious
+          ? "scroll up for previous page"
+          : page.hasNext
+            ? "scroll down for next page"
+            : "";
+      status.textContent = scrollHint ? `${pageProcessLabel} · ${scrollHint}` : pageProcessLabel;
+    }
     const countLabel = monitor.querySelector(".process-monitor-head span:last-child");
-    if (countLabel) countLabel.textContent = `${rows.length} shown`;
+    if (countLabel) countLabel.textContent = `${rows.length} on page`;
     return true;
   }
 

@@ -162,6 +162,28 @@ test("native large video preview streams through the active local HTTP viewer", 
   }
 });
 
+test("native directory previews use the query-free folder browser URL", async () => {
+  const backend = new Backend();
+  const calls = [];
+  backend.invoke = async (command, payload) => {
+    calls.push({ command, payload });
+    if (command === "fileserver_start") return { port: 8897, root: "/" };
+    return {};
+  };
+
+  const view = await backend.createFileView("/Users/me/project/src", {
+    name: "src",
+    kind: "directory",
+    mime: "inode/directory"
+  });
+
+  assert.equal(view.url, "http://localhost:8897/Users/me/project/src");
+  assert.equal(view.resourceUrl, "http://localhost:8897/Users/me/project/src");
+  assert.equal(view.viewerKind, "directory");
+  assert.equal(view.mediaMime, "inode/directory");
+  assert.deepEqual(calls, [{ command: "fileserver_start", payload: {} }]);
+});
+
 test("native image previews expose both the full viewer and raw image resource URLs", async () => {
   const backend = new Backend();
   const calls = [];

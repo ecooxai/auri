@@ -155,7 +155,9 @@ export class AppController {
     this.terminalCompletionRange = null;
     this.terminalCompletionTimer = null;
     this.terminalCompletionPending = null;
+    this.terminalSelectionRequest = 0;
     this.systemMonitorQuietPollCount = 0;
+    this.systemProcessPageTurnAt = 0;
     this.terminalEnterHoldTimer = null;
     this.terminalEnterHeld = false;
     this.zoomHoldTimer = null;
@@ -201,6 +203,7 @@ export class AppController {
           : navigator.clipboard.writeText(text),
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
+        selectSubtab: (id) => this.selectSubtab(id),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
         showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
         refreshSystemMonitor: () => this.refreshSystemMonitor(),
@@ -722,6 +725,7 @@ export class AppController {
     this.view.root.addEventListener("input", (event) => this.handleInput(event));
     this.view.root.addEventListener("change", (event) => this.handleChange(event));
     this.view.root.addEventListener("scroll", (event) => this.handleScroll(event), true);
+    this.view.root.addEventListener("wheel", (event) => this.handleProcessPageWheel(event), { passive: false });
     this.view.root.addEventListener("submit", (event) => this.handleSubmit(event));
     window.addEventListener("keydown", (event) => this.handleGlobalKeydown(event));
     window.addEventListener("keyup", (event) => this.handleGlobalKeyup(event));
@@ -989,10 +993,7 @@ export class AppController {
   }
 
   scrollProcessTableToTop() {
-    const table = this.view.root.querySelector?.(".process-table");
-    if (!table) return;
-    if (typeof table.scrollTo === "function") table.scrollTo({ top: 0, left: table.scrollLeft || 0, behavior: "auto" });
-    else table.scrollTop = 0;
+    this.scrollProcessTableToEdge("top");
   }
 
   async handleClick(event) {
@@ -1051,7 +1052,6 @@ export class AppController {
           break;
         case "subtab-select":
           await this.runInternal(`subtab select ${target.dataset.id}`);
-          if (activeSubtab(this.state).type === "terminal") await this.synchronizeActiveTerminalToFolder();
           if (activeSubtab(this.state).type === "info") this.dispatch({ type: "INFO_READ", payload: {} });
           if (activeSubtab(this.state).type === "settings") await this.runInternal("permission status");
           if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
@@ -1074,7 +1074,6 @@ export class AppController {
         case "command-menu-tab":
           this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
           await this.runInternal(`subtab select ${target.dataset.id}`);
-          if (activeSubtab(this.state).type === "terminal") await this.synchronizeActiveTerminalToFolder();
           break;
         case "app-exit":
           this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
@@ -1094,6 +1093,12 @@ export class AppController {
           break;
         case "system-sort":
           await this.runInternal(`system sort ${target.dataset.sort || "cpu"}`);
+          break;
+        case "system-process-page-prev":
+          this.turnSystemProcessPage(-1, { throttle: false });
+          break;
+        case "system-process-page-next":
+          this.turnSystemProcessPage(1, { throttle: false });
           break;
         case "system-search-toggle": {
           const open = !this.state.ui.systemSearchOpen;
@@ -1552,6 +1557,31 @@ export class AppController {
   }
 
   async handleKeydown(event) {
+    const keyTarget = event.target || {};
+    const tagName = String(keyTarget.tagName || "").toLowerCase();
+    const isEditing = Boolean(keyTarget.isContentEditable || ["input", "textarea", "select"].includes(tagName));
+    const searchShortcut = this.isSystemMonitorActive()
+      && !isEditing
+      && !event.altKey
+      && String(event.key || "").toLowerCase() === "f"
+      && Boolean(event.metaKey || event.ctrlKey);
+    const slashShortcut = this.isSystemMonitorActive()
+      && !isEditing
+      && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey
+      && event.key === "/";
+    if (searchShortcut || slashShortcut) {
+      event.preventDefault?.();
+      if (!this.state.ui.systemSearchOpen) {
+        this.dispatch({ type: "UI_SET", payload: { systemSearchOpen: true } }, { preserveInput: true });
+      }
+      this.view.root.querySelector?.("#system-search-input")?.focus?.();
+      return;
+    }
+    if (keyTarget.id === "system-search-input" && event.key === "Escape") {
+      event.preventDefault?.();
+      this.dispatch({ type: "UI_SET", payload: { systemSearchOpen: false } }, { preserveInput: true });
+      return;
+    }
     if (event.target?.id === "wake-shortcut-input") {
       event.preventDefault?.();
       event.stopPropagation?.();
@@ -1710,6 +1740,7 @@ export class AppController {
       // the person types multi-keyword queries; the list updates in place.
       this.dispatch({ type: "SYSTEM_FILTER_SET", payload: { filter: input.value } }, { render: false });
       this.view.patchSystemMonitor?.(this.state);
+      this.scrollProcessTableToTop();
       return;
     }
     if (input.id === "custom-completions") {
@@ -1730,10 +1761,70 @@ export class AppController {
     this.scheduleFolderPathNavigation(input);
   }
 
+  turnSystemProcessPage(direction, { throttle = true } = {}) {
+    const step = Number(direction) < 0 ? -1 : 1;
+    const now = Date.now();
+    if (throttle && now - this.systemProcessPageTurnAt < 250) return false;
+    const before = Number(this.state.system.processPage) || 1;
+    this.dispatch({ type: step < 0 ? "SYSTEM_PROCESS_PAGE_PREVIOUS" : "SYSTEM_PROCESS_PAGE_NEXT" }, { render: false });
+    if ((Number(this.state.system.processPage) || 1) === before) return false;
+    if (throttle) this.systemProcessPageTurnAt = now;
+    const patched = this.view.patchSystemMonitor?.(this.state);
+    if (patched === false) this.render({ preserveInput: true });
+    this.scrollProcessTableToEdge(step < 0 ? "bottom" : "top");
+    return true;
+  }
+
+  advanceSystemProcessPage() {
+    return this.turnSystemProcessPage(1);
+  }
+
+  scrollProcessTableToEdge(edge = "top") {
+    const table = this.view.root.querySelector?.(".process-table");
+    if (!table) return;
+    const top = edge === "bottom" ? Math.max(0, Number(table.scrollHeight || 0) - Number(table.clientHeight || 0)) : 0;
+    if (typeof table.scrollTo === "function") table.scrollTo({ top, left: table.scrollLeft || 0, behavior: "auto" });
+    else table.scrollTop = top;
+    if (table.dataset) table.dataset.lastScrollTop = String(top);
+  }
+
   handleScroll(event) {
-    const target = event.target;
-    if (target.id !== "custom-completions") return;
+    const target = event.target || {};
+    if (target.id !== "custom-completions") {
+      if (!target.classList?.contains?.("process-table")) return;
+      const current = Number(target.scrollTop || 0);
+      const previous = Number(target.dataset?.lastScrollTop ?? 0);
+      if (target.dataset) target.dataset.lastScrollTop = String(current);
+      const remaining = Number(target.scrollHeight || 0) - current - Number(target.clientHeight || 0);
+      if (current < previous && current <= 48 && target.dataset?.hasPrevious === "true") {
+        this.turnSystemProcessPage(-1);
+      } else if (current > previous && remaining <= 48 && target.dataset?.hasNext === "true") {
+        this.turnSystemProcessPage(1);
+      }
+      return;
+    }
     this.view.syncCustomCompletionScroll?.(target);
+  }
+
+  handleProcessPageWheel(event) {
+    const deltaY = Number(event?.deltaY);
+    if (!deltaY) return false;
+    const directTarget = event?.target || {};
+    const table = directTarget.classList?.contains?.("process-table")
+      ? directTarget
+      : directTarget.closest?.(".process-table");
+    if (!table) return false;
+    const scrollTop = Number(table.scrollTop || 0);
+    const remaining = Number(table.scrollHeight || 0) - scrollTop - Number(table.clientHeight || 0);
+    const direction = deltaY < 0 ? -1 : 1;
+    if (direction < 0) {
+      if (table.dataset?.hasPrevious !== "true" || scrollTop > 48) return false;
+    } else if (table.dataset?.hasNext !== "true" || remaining > 48) {
+      return false;
+    }
+    if (!this.turnSystemProcessPage(direction)) return false;
+    event.preventDefault?.();
+    return true;
   }
 
   cancelFolderPathNavigation() {
@@ -2211,6 +2302,35 @@ export class AppController {
     }
   }
 
+  async selectSubtab(id) {
+    const request = ++this.terminalSelectionRequest;
+    const previousWorkspace = activeWorkspace(this.state);
+    const previousTerminal = activeSubtab(this.state);
+    if (previousTerminal?.type === "terminal") {
+      const previousSession = this.terminalSessions.get(previousTerminal.id);
+      try {
+        await previousSession?.refreshCwd?.();
+      } catch (error) {
+        this.reportError("Terminal directory", error);
+      }
+      if (request !== this.terminalSelectionRequest) return false;
+      const previousPath = previousSession?.cwd || previousTerminal.cwd;
+      if (previousPath && previousPath !== previousTerminal.cwd) {
+        this.dispatch({
+          type: "TERMINAL_CWD_SET",
+          payload: { workspaceId: previousWorkspace.id, terminalId: previousTerminal.id, path: previousPath }
+        }, { preserveInput: true, render: false });
+      }
+    }
+
+    if (request !== this.terminalSelectionRequest) return false;
+    this.dispatch({ type: "SUBTAB_SELECT", payload: { id } }, { preserveInput: true });
+    if (activeSubtab(this.state)?.type === "terminal") {
+      await this.synchronizeActiveTerminalToFolder();
+    }
+    return true;
+  }
+
   async runInternal(command, options = {}) {
     return executeCommand(command, { ...this.context(), ...options });
   }
@@ -2251,6 +2371,13 @@ export class AppController {
     const workspace = this.state.tabs.find((tab) => tab.id === workspaceId);
     const terminal = workspace?.subtabs.find((item) => item.id === terminalId);
     if (!workspace || !terminal || !path || path === terminal.cwd) return;
+    if (workspace.activeSubtabId !== terminalId) {
+      this.dispatch({
+        type: "TERMINAL_CWD_SET",
+        payload: { workspaceId, terminalId, path, mirrorWorkspace: false }
+      }, { preserveInput: true, render: false });
+      return;
+    }
     await this.syncDirectory(path, workspaceId, terminalId);
   }
 
@@ -2265,7 +2392,7 @@ export class AppController {
     // (and one workspace persist) instead of two full DOM rebuilds.
     this.dispatch({ type: "FOLDER_PATH_SET", payload: { workspaceId, path } }, { preserveInput: true, focusTerminal, render: false });
     if (resolvedTerminalId) {
-      this.dispatch({ type: "TERMINAL_CWD_SET", payload: { workspaceId, terminalId: resolvedTerminalId, path } }, { preserveInput: true, focusTerminal, render: false });
+      this.dispatch({ type: "TERMINAL_CWD_SET", payload: { workspaceId, terminalId: resolvedTerminalId, path, mirrorWorkspace: true } }, { preserveInput: true, focusTerminal, render: false });
     }
     this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } }, { preserveInput: true, focusTerminal });
   }
@@ -2274,15 +2401,19 @@ export class AppController {
     const workspace = activeWorkspace(this.state);
     const terminal = activeSubtab(this.state);
     if (terminal?.type !== "terminal") return false;
-    const path = workspace.folder.path;
     const session = this.terminalSessionFor(terminal.id);
-    const currentPath = terminal.cwd || session.cwd || workspace.terminal.cwd;
-    if (!path || currentPath === path) return false;
-    if (await session.isBusy?.()) return false;
-    const command = path === "~" ? "cd ~" : `cd ${shellQuote(path)}`;
-    if (this.native) await session.run(command);
-    session.cwd = path;
-    this.dispatch({ type: "TERMINAL_CWD_SET", payload: { terminalId: terminal.id, path } }, { preserveInput: true, focusTerminal: true });
+    try {
+      await session.refreshCwd?.();
+    } catch (error) {
+      this.reportError("Terminal directory", error);
+    }
+    const latestWorkspace = activeWorkspace(this.state);
+    const latestTerminal = activeSubtab(this.state);
+    if (latestWorkspace?.id !== workspace.id || latestTerminal?.id !== terminal.id) return false;
+    const path = session.cwd || latestTerminal.cwd || latestWorkspace.terminal.cwd;
+    if (!path) return false;
+    if (latestTerminal.cwd === path && latestWorkspace.folder.path === path) return false;
+    await this.syncDirectory(path, latestWorkspace.id, latestTerminal.id);
     return true;
   }
 
@@ -2834,6 +2965,11 @@ export class AppController {
       return;
     }
     if (target?.kind === "file") {
+      const metadata = await this.backend.inspectFile(target.value);
+      if (metadata?.kind === "directory") {
+        await this.runInternal(`folder cd ${quoteArg(target.value)}`);
+        return;
+      }
       await this.runInternal(`file open ${quoteArg(target.value)}`, { fileOpenMode: "new" });
       return;
     }

@@ -1,4 +1,6 @@
-const VALID_SORTS = new Set(["cpu", "port", "name", "pid", "ram", "net"]);
+export const SYSTEM_PROCESS_PAGE_SIZE = 10;
+
+const VALID_SORTS = new Set(["cpu", "port", "name", "pid", "ram", "net", "disk"]);
 
 export const emptySystemSnapshot = Object.freeze({
   capturedAt: null,
@@ -108,6 +110,15 @@ export function filterSystemProcesses(processes = [], query = "") {
   return list.filter((process) => matchesProcessSearch(process, query));
 }
 
+export function systemProcessPageCount(processes = [], query = "") {
+  return Math.max(1, Math.ceil(filterSystemProcesses(processes, query).length / SYSTEM_PROCESS_PAGE_SIZE));
+}
+
+export function clampSystemProcessPage(page, processes = [], query = "") {
+  const requested = Number.isFinite(Number(page)) ? Math.trunc(Number(page)) : 1;
+  return Math.min(systemProcessPageCount(processes, query), Math.max(1, requested));
+}
+
 // Derives per-process network throughput (bytes/second) by diffing the
 // cumulative download/upload counters against the previous snapshot. Pure and
 // deterministic; the first snapshot (no previous) yields zero rates.
@@ -143,6 +154,10 @@ function combinedNetworkBytes(process) {
   return finiteNumber(process?.downloadBytes) + finiteNumber(process?.uploadBytes);
 }
 
+function combinedDiskBytes(process) {
+  return finiteNumber(process?.diskReadBytes) + finiteNumber(process?.diskWriteBytes);
+}
+
 export function primaryProcessPort(process) {
   const ports = normalizePortList(process?.ports);
   return ports.length ? ports[0] : null;
@@ -164,6 +179,7 @@ export function sortSystemProcesses(processes = [], sortBy = "cpu") {
     if (normalizedSort === "pid") return finiteNumber(left.pid) - finiteNumber(right.pid);
     if (normalizedSort === "ram") return finiteNumber(right.memoryBytes) - finiteNumber(left.memoryBytes) || finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent);
     if (normalizedSort === "net") return combinedNetworkBytes(right) - combinedNetworkBytes(left) || finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent);
+    if (normalizedSort === "disk") return combinedDiskBytes(right) - combinedDiskBytes(left) || finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent);
     return finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent) || finiteNumber(right.memoryBytes) - finiteNumber(left.memoryBytes);
   });
 }

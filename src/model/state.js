@@ -1,4 +1,4 @@
-import { attachProcessNetworkRates } from "./system.js";
+import { attachProcessNetworkRates, clampSystemProcessPage } from "./system.js";
 
 let idSequence = 0;
 const id = (prefix) => `${prefix}-${++idSequence}`;
@@ -51,13 +51,13 @@ export function createWorkspace(title = "Home", options = {}) {
 }
 
 export function createInitialState() {
-  const workspace = createWorkspace("Home", { includeSystem: true, activeSubtabType: "system" });
+  const workspace = createWorkspace("Home", { includeSystem: true });
   return {
     activeTabId: workspace.id,
     tabs: [workspace],
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
-    system: { status: "idle", error: null, sortBy: "cpu", filter: "", selectedProcessPid: null, snapshot: null, tunnels: {}, tunnelStatus: {} },
+    system: { status: "idle", error: null, sortBy: "cpu", filter: "", processPage: 1, selectedProcessPid: null, snapshot: null, tunnels: {}, tunnelStatus: {} },
     browser: { bookmarks: [], history: [] },
     completion: { shellHistory: [] },
     permissions: { microphone: "unknown", screenRecording: "unknown" },
@@ -122,9 +122,12 @@ function workspaceFromSession(item, index) {
   const fallbackTitle = index === 0 ? "Home" : `Space ${index + 1}`;
   const title = String(item?.title || fallbackTitle).trim() || fallbackTitle;
   const path = String(item?.path || "~").trim() || "~";
-  const workspace = createWorkspace(title);
+  const workspace = createWorkspace(title, { includeSystem: index === 0 });
+  const firstTerminal = workspace.subtabs.find((item) => item.type === "terminal");
   return {
     ...workspace,
+    activeSubtabId: firstTerminal?.id || workspace.activeSubtabId,
+    subtabs: workspace.subtabs.map((item) => item.id === firstTerminal?.id ? { ...item, cwd: path } : item),
     folder: { ...workspace.folder, path },
     terminal: {
       ...workspace.terminal,
@@ -142,11 +145,7 @@ export function reduceState(state, event) {
       const items = Array.isArray(event.payload?.items) ? event.payload.items.slice(0, 50) : [];
       if (!items.length) return state;
       const tabs = items.map(workspaceFromSession);
-      const requestedIndex = Number(event.payload?.activeIndex);
-      const activeIndex = Number.isInteger(requestedIndex)
-        ? Math.min(tabs.length - 1, Math.max(0, requestedIndex))
-        : 0;
-      return { ...state, tabs, activeTabId: tabs[activeIndex].id };
+      return { ...state, tabs, activeTabId: tabs[0].id };
     }
     case "TAB_NEW": {
       const workspace = createWorkspace(event.payload?.title || `Space ${state.tabs.length + 1}`);
@@ -182,9 +181,17 @@ export function reduceState(state, event) {
         return { ...tab, subtabs, activeSubtabId: subtab.id, terminal: { ...tab.terminal, cwd: subtab.cwd } };
       });
     case "SUBTAB_SELECT":
-      return updateActiveTab(state, (tab) => tab.subtabs.some((item) => item.id === event.payload.id)
-        ? { ...tab, activeSubtabId: event.payload.id }
-        : tab);
+      return updateActiveTab(state, (tab) => {
+        const selected = tab.subtabs.find((item) => item.id === event.payload.id);
+        if (!selected) return tab;
+        return {
+          ...tab,
+          activeSubtabId: selected.id,
+          terminal: selected.type === "terminal"
+            ? { ...tab.terminal, cwd: selected.cwd || tab.terminal.cwd }
+            : tab.terminal
+        };
+      });
     case "SUBTAB_CLOSE":
       return updateActiveTab(state, (tab) => {
         if (tab.subtabs.length === 1) return tab;
@@ -218,7 +225,9 @@ export function reduceState(state, event) {
         const terminalId = event.payload.terminalId || tab.activeSubtabId;
         return {
           ...tab,
-          terminal: { ...tab.terminal, cwd: event.payload.path },
+          terminal: (event.payload.mirrorWorkspace ?? (terminalId === tab.activeSubtabId))
+            ? { ...tab.terminal, cwd: event.payload.path }
+            : tab.terminal,
           subtabs: tab.subtabs.map((item) => item.id === terminalId && item.type === "terminal"
             ? { ...item, cwd: event.payload.path }
             : item)
@@ -373,12 +382,31 @@ export function reduceState(state, event) {
     }
     case "SYSTEM_STATUS_SET":
       return { ...state, system: { ...state.system, status: event.payload.status, error: event.payload.error || null } };
-    case "SYSTEM_SNAPSHOT_SET":
-      return { ...state, system: { ...state.system, status: "ready", error: null, snapshot: attachProcessNetworkRates(event.payload.snapshot, state.system.snapshot) } };
+    case "SYSTEM_SNAPSHOT_SET": {
+      const snapshot = attachProcessNetworkRates(event.payload.snapshot, state.system.snapshot);
+      const processPage = clampSystemProcessPage(state.system.processPage, snapshot?.processes, state.system.filter);
+      return { ...state, system: { ...state.system, status: "ready", error: null, snapshot, processPage } };
+    }
     case "SYSTEM_SORT_SET":
-      return { ...state, system: { ...state.system, sortBy: event.payload.sortBy || "cpu" } };
+      return { ...state, system: { ...state.system, sortBy: event.payload.sortBy || "cpu", processPage: 1 } };
     case "SYSTEM_FILTER_SET":
-      return { ...state, system: { ...state.system, filter: String(event.payload?.filter ?? "").trim() } };
+      return { ...state, system: { ...state.system, filter: String(event.payload?.filter ?? "").trim(), processPage: 1 } };
+    case "SYSTEM_PROCESS_PAGE_NEXT":
+      return {
+        ...state,
+        system: {
+          ...state.system,
+          processPage: clampSystemProcessPage((Number(state.system.processPage) || 1) + 1, state.system.snapshot?.processes, state.system.filter)
+        }
+      };
+    case "SYSTEM_PROCESS_PAGE_PREVIOUS":
+      return {
+        ...state,
+        system: {
+          ...state.system,
+          processPage: clampSystemProcessPage((Number(state.system.processPage) || 1) - 1, state.system.snapshot?.processes, state.system.filter)
+        }
+      };
     case "SYSTEM_PROCESS_SELECT": {
       const selectedProcessPid = Number(event.payload.pid) || null;
       // Closing or switching the detail card must not leave a kill prompt for the old process.

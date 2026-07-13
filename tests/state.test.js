@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createInitialState, reduceState, serializeWorkspaceSession } from "../src/model/state.js";
 
-test("initial workspace focuses system monitor and includes folder pane", () => {
+test("initial workspace focuses its first terminal and pre-opens system monitor", () => {
   const state = createInitialState();
   assert.equal(state.tabs.length, 1);
-  assert.equal(state.tabs[0].activeSubtabId, state.tabs[0].subtabs.find((item) => item.type === "system").id);
   assert.equal(state.tabs[0].subtabs[0].type, "terminal");
+  assert.equal(state.tabs[0].activeSubtabId, state.tabs[0].subtabs[0].id);
+  assert.ok(state.tabs[0].subtabs.some((item) => item.type === "system"));
   assert.equal(state.tabs[0].folder.visible, true);
 });
 
@@ -53,6 +54,22 @@ test("folder and terminal working directories stay synchronized", () => {
   });
   assert.equal(state.tabs[0].folder.path, "/tmp/project");
   assert.equal(state.tabs[0].terminal.cwd, "/tmp/project");
+});
+
+test("switching terminal subtabs restores each terminal cwd without overwriting the others", () => {
+  let state = createInitialState();
+  const first = state.tabs[0].subtabs.find((item) => item.type === "terminal");
+  state = reduceState(state, { type: "SUBTAB_SELECT", payload: { id: first.id } });
+  state = reduceState(state, { type: "TERMINAL_CWD_SET", payload: { terminalId: first.id, path: "/tmp/first" } });
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "terminal", cwd: "/tmp/second" } });
+  const second = state.tabs[0].subtabs.find((item) => item.type === "terminal" && item.id !== first.id);
+
+  state = reduceState(state, { type: "TERMINAL_CWD_SET", payload: { terminalId: first.id, path: "/tmp/first-latest" } });
+  assert.equal(state.tabs[0].terminal.cwd, "/tmp/second");
+
+  state = reduceState(state, { type: "SUBTAB_SELECT", payload: { id: first.id } });
+  assert.equal(state.tabs[0].terminal.cwd, "/tmp/first-latest");
+  assert.equal(state.tabs[0].subtabs.find((item) => item.id === second.id).cwd, "/tmp/second");
 });
 
 test("errors and malformed render output are routed to Info", () => {
@@ -144,11 +161,11 @@ test("folder creation UI opens and closes without changing folder contents", () 
   assert.equal(state.ui.folderCreateKind, null);
 });
 
-test("initial workspace opens Terminal, System, Clipboard, and Info with System active", () => {
+test("initial workspace opens Terminal, System, Clipboard, and Info with Terminal active", () => {
   const state = createInitialState();
   const workspace = state.tabs[0];
   assert.deepEqual(workspace.subtabs.map((item) => item.type), ["terminal", "system", "clipboard", "info"]);
-  assert.equal(workspace.activeSubtabId, workspace.subtabs[1].id);
+  assert.equal(workspace.activeSubtabId, workspace.subtabs[0].id);
 });
 
 test("terminal line retention defaults to 4000 and rejects unsafe values", () => {
@@ -206,6 +223,27 @@ test("workspace sessions preserve all open folder paths and the active workspace
     "/Users/auri/Projects/client-app"
   ]);
   assert.equal(restored.activeTabId, restored.tabs[0].id);
+});
+
+
+test("restored workspace sessions always focus the first space and its first terminal", () => {
+  const restored = reduceState(createInitialState(), {
+    type: "WORKSPACES_RESTORE",
+    payload: {
+      activeIndex: 1,
+      items: [
+        { title: "Home", path: "/Users/auri/Desktop" },
+        { title: "Client", path: "/Users/auri/Projects/client-app" }
+      ]
+    }
+  });
+  const first = restored.tabs[0];
+  const firstTerminal = first.subtabs.find((item) => item.type === "terminal");
+  assert.equal(restored.activeTabId, first.id);
+  assert.equal(first.activeSubtabId, firstTerminal.id);
+  assert.equal(firstTerminal.cwd, "/Users/auri/Desktop");
+  assert.equal(first.folder.path, firstTerminal.cwd);
+  assert.ok(first.subtabs.some((item) => item.type === "system"));
 });
 
 

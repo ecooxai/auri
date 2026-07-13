@@ -1,4 +1,5 @@
 import { build, context } from "esbuild";
+import { watch as watchFileSystem } from "node:fs";
 import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -13,16 +14,44 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error(`Invalid AURI_DEV_PORT: ${process.env.AURI_DEV_PORT}`);
 }
 
+const STATIC_FILES = new Set([
+  "index.html",
+  "styles.css",
+  "favicon.png",
+  "browser-overlay.html",
+  "browser-overlay.css",
+  "browser-overlay.js"
+]);
+const staticCopyTimers = new Map();
+let staticCopyQueue = Promise.resolve();
+
+async function copyStaticFile(filename) {
+  if (filename === "index.html") {
+    const index = (await readFile(path.join(root, filename), "utf8"))
+      .replace('src="src/main.js"', 'src="app.js?v=3"');
+    await writeFile(path.join(dist, filename), index);
+    return;
+  }
+  await cp(path.join(root, filename), path.join(dist, filename));
+}
+
 async function copyStatic() {
   await mkdir(dist, { recursive: true });
-  const index = (await readFile(path.join(root, "index.html"), "utf8"))
-    .replace('src="src/main.js"', 'src="app.js?v=3"');
-  await writeFile(path.join(dist, "index.html"), index);
-  await cp(path.join(root, "styles.css"), path.join(dist, "styles.css"));
-  await cp(path.join(root, "favicon.png"), path.join(dist, "favicon.png"));
-  await cp(path.join(root, "browser-overlay.html"), path.join(dist, "browser-overlay.html"));
-  await cp(path.join(root, "browser-overlay.css"), path.join(dist, "browser-overlay.css"));
-  await cp(path.join(root, "browser-overlay.js"), path.join(dist, "browser-overlay.js"));
+  await Promise.all([...STATIC_FILES].map((filename) => copyStaticFile(filename)));
+}
+
+function scheduleStaticCopy(filename) {
+  if (!STATIC_FILES.has(filename)) return;
+  const previous = staticCopyTimers.get(filename);
+  if (previous) clearTimeout(previous);
+  const timer = setTimeout(() => {
+    staticCopyTimers.delete(filename);
+    staticCopyQueue = staticCopyQueue
+      .then(() => copyStaticFile(filename))
+      .catch((error) => console.error(`Failed to refresh ${filename}:`, error));
+  }, 50);
+  timer.unref?.();
+  staticCopyTimers.set(filename, timer);
 }
 
 await rm(dist, { recursive: true, force: true });
@@ -60,6 +89,13 @@ const codemirrorCtx = await context({
   sourcemap: "inline"
 });
 await codemirrorCtx.watch();
+
+// esbuild watches JavaScript dependency graphs, but root-level HTML/CSS/assets
+// need their own watcher so the isolated AURI_DIST_DIR stays current between
+// native app restarts.
+const staticWatcher = watchFileSystem(root, (_eventType, filename) => {
+  scheduleStaticCopy(String(filename || ""));
+});
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -99,6 +135,10 @@ server.listen(port, "127.0.0.1", () => {
 
 async function shutdown() {
   server.close();
+  staticWatcher.close();
+  for (const timer of staticCopyTimers.values()) clearTimeout(timer);
+  staticCopyTimers.clear();
+  await staticCopyQueue.catch(() => {});
   await ctx.dispose();
   await codemirrorCtx.dispose();
   process.exit(0);

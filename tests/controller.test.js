@@ -150,6 +150,126 @@ test("system search toggle opens the filter box and clear runs the search comman
   assert.deepEqual(commands, ["system search"]);
 });
 
+
+test("system monitor keyboard shortcut opens and focuses process search", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let focused = 0;
+  const searchInput = { focus() { focused += 1; } };
+  const view = {
+    root: { querySelector: (selector) => selector === "#system-search-input" ? searchInput : null },
+    render() {}, getTerminalInputValue: () => "", showToast() {}
+  };
+  const controller = new AppController({ view, backend: { isNative: false }, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  const systemTab = controller.state.tabs[0].subtabs.find((item) => item.type === "system");
+  controller.state = reduceState(controller.state, { type: "SUBTAB_SELECT", payload: { id: systemTab.id } });
+  let prevented = false;
+  await controller.handleKeydown({
+    key: "f", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false,
+    target: { tagName: "DIV", isContentEditable: false },
+    preventDefault() { prevented = true; }
+  });
+  assert.equal(prevented, true);
+  assert.equal(controller.state.ui.systemSearchOpen, true);
+  assert.equal(focused, 1);
+});
+
+test("scrolling near the end of the process table replaces it with the next 10-row page", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let patches = 0;
+  let topResets = 0;
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {}, patchSystemMonitor() { patches += 1; } };
+  const controller = new AppController({ view, backend: { isNative: false }, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.scrollProcessTableToEdge = (edge) => { if (edge === "top") topResets += 1; };
+  controller.state = reduceState(controller.state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: { snapshot: { capturedAt: "2026-01-01T00:00:00.000Z", processes: Array.from({ length: 25 }, (_, index) => ({ pid: index + 1, name: `process-${index + 1}` })) } }
+  });
+  const target = {
+    id: "", dataset: { hasNext: "true" }, scrollTop: 680, clientHeight: 300, scrollHeight: 1000,
+    classList: { contains: (name) => name === "process-table" }
+  };
+  controller.handleScroll({ target });
+  assert.equal(controller.state.system.processPage, 2);
+  assert.equal(patches, 1);
+  assert.equal(topResets, 1);
+});
+
+test("wheel scrolling advances a fully visible 10-row process page without skipping pages", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let prevented = 0;
+  const table = {
+    dataset: { hasNext: "true" }, scrollTop: 0, clientHeight: 500, scrollHeight: 500,
+    classList: { contains: (name) => name === "process-table" },
+    closest: (selector) => selector === ".process-table" ? table : null
+  };
+  const view = { root: { querySelector: () => table }, render() {}, getTerminalInputValue: () => "", showToast() {}, patchSystemMonitor() {} };
+  const controller = new AppController({ view, backend: { isNative: false }, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.state = reduceState(controller.state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: { snapshot: { capturedAt: "2026-01-01T00:00:00.000Z", processes: Array.from({ length: 25 }, (_, index) => ({ pid: index + 1, name: `process-${index + 1}` })) } }
+  });
+
+  controller.handleProcessPageWheel({ target: table, deltaY: 40, preventDefault() { prevented += 1; } });
+  controller.handleProcessPageWheel({ target: table, deltaY: 40, preventDefault() { prevented += 1; } });
+  assert.equal(controller.state.system.processPage, 2);
+  assert.equal(prevented, 1);
+});
+
+test("scrolling upward at the top returns to the previous process page", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let patches = 0;
+  let bottomResets = 0;
+  const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {}, patchSystemMonitor() { patches += 1; } };
+  const controller = new AppController({ view, backend: { isNative: false }, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.scrollProcessTableToEdge = (edge) => { if (edge === "bottom") bottomResets += 1; };
+  controller.state = reduceState(controller.state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: { snapshot: { capturedAt: "2026-01-01T00:00:00.000Z", processes: Array.from({ length: 25 }, (_, index) => ({ pid: index + 1, name: `process-${index + 1}` })) } }
+  });
+  controller.state = reduceState(controller.state, { type: "SYSTEM_PROCESS_PAGE_NEXT" });
+  const target = {
+    id: "", dataset: { hasPrevious: "true", hasNext: "true", lastScrollTop: "120" }, scrollTop: 0, clientHeight: 300, scrollHeight: 1000,
+    classList: { contains: (name) => name === "process-table" }
+  };
+  controller.handleScroll({ target });
+  assert.equal(controller.state.system.processPage, 1);
+  assert.equal(patches, 1);
+  assert.equal(bottomResets, 1);
+});
+
+test("wheel scrolling upward returns one page and page arrows navigate both directions", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let prevented = 0;
+  const table = {
+    dataset: { hasPrevious: "true", hasNext: "true" }, scrollTop: 0, clientHeight: 500, scrollHeight: 500,
+    classList: { contains: (name) => name === "process-table" },
+    closest: (selector) => selector === ".process-table" ? table : null
+  };
+  const view = { root: { querySelector: () => table }, render() {}, getTerminalInputValue: () => "", showToast() {}, patchSystemMonitor() {} };
+  const controller = new AppController({ view, backend: { isNative: false }, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.state = reduceState(controller.state, {
+    type: "SYSTEM_SNAPSHOT_SET",
+    payload: { snapshot: { capturedAt: "2026-01-01T00:00:00.000Z", processes: Array.from({ length: 25 }, (_, index) => ({ pid: index + 1, name: `process-${index + 1}` })) } }
+  });
+  controller.state = reduceState(controller.state, { type: "SYSTEM_PROCESS_PAGE_NEXT" });
+
+  controller.handleProcessPageWheel({ target: table, deltaY: -40, preventDefault() { prevented += 1; } });
+  assert.equal(controller.state.system.processPage, 1);
+  assert.equal(prevented, 1);
+
+  controller.systemProcessPageTurnAt = 0;
+  const click = (action) => controller.handleClick({
+    target: { closest: (selector) => selector === "[data-action]" ? { dataset: { action } } : null },
+    preventDefault() {}
+  });
+  await click("system-process-page-next");
+  assert.equal(controller.state.system.processPage, 2);
+  await click("system-process-page-next");
+  assert.equal(controller.state.system.processPage, 3, "explicit arrow clicks are not gesture-throttled");
+  await click("system-process-page-prev");
+  assert.equal(controller.state.system.processPage, 2);
+});
+
 test("tunnelling a non-http port warns the person but still starts the tunnel", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const toasts = [];
@@ -177,7 +297,7 @@ test("tunnelling a non-http port warns the person but still starts the tunnel", 
   assert.ok(!toasts.some((t) => t.kind === "info"), "http port should not warn");
 });
 
-test("system process RAM, Port, and CPU headers sort through the command layer", async () => {
+test("system process RAM, Port, CPU, Net, and Disk headers sort through the command layer", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const commands = [];
   const view = {
@@ -200,8 +320,10 @@ test("system process RAM, Port, and CPU headers sort through the command layer",
   await clickSort("ram");
   await clickSort("port");
   await clickSort("cpu");
+  await clickSort("net");
+  await clickSort("disk");
 
-  assert.deepEqual(commands, ["system sort ram", "system sort port", "system sort cpu"]);
+  assert.deepEqual(commands, ["system sort ram", "system sort port", "system sort cpu", "system sort net", "system sort disk"]);
 });
 
 test("killing a process opens a confirmation prompt and only kills after confirm", async () => {
@@ -899,8 +1021,8 @@ test("new terminal subtabs create independent sessions at the workspace cwd", as
 
     await controller.runInternal("subtab new terminal");
 
-    assert.equal(created.length, 1);
-    assert.deepEqual(mounts.map((item) => item.cwd), ["/tmp/auri-space"]);
+    assert.equal(created.length, 2);
+    assert.deepEqual(mounts.map((item) => item.cwd), ["/tmp/auri-space", "/tmp/auri-space"]);
   } finally {
     globalThis.requestAnimationFrame = previousAnimationFrame;
   }
@@ -1063,32 +1185,42 @@ test("folder navigation outside a terminal changes only the folder path", async 
   assert.deepEqual(runs, []);
 });
 
-test("selecting an idle terminal synchronizes it to the folder path but leaves a busy terminal alone", async () => {
+test("switching terminals keeps their own pwd and opens the folder at the selected terminal pwd", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
+  const listed = [];
   const runs = [];
-  let busy = false;
+  const sessions = new Map();
   const view = { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} };
   const controller = new AppController({
     view,
-    backend: { isNative: true, listDirectory: async () => [] },
-    terminalSessionFactory: () => ({
-      cwd: "~",
-      initialize: async () => {},
-      isBusy: async () => busy,
-      run: async (command) => runs.push(command)
-    })
+    backend: {
+      isNative: true,
+      listDirectory: async (path) => {
+        listed.push(path);
+        return [{ name: path.split("/").at(-1), path, kind: "directory" }];
+      }
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {}, run: async (command) => runs.push(command) })
   });
-  controller.dispatch({ type: "FOLDER_PATH_SET", payload: { path: "/tmp/project" } });
-  const terminal = controller.state.tabs[0].subtabs.find((item) => item.type === "terminal");
-  controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: terminal.id } });
+  const workspace = controller.state.tabs[0];
+  const first = workspace.subtabs.find((item) => item.type === "terminal");
+  controller.dispatch({ type: "SUBTAB_SELECT", payload: { id: first.id } });
+  controller.dispatch({ type: "TERMINAL_CWD_SET", payload: { terminalId: first.id, path: "/tmp/first" } });
+  controller.dispatch({ type: "SUBTAB_NEW", payload: { type: "terminal", cwd: "/tmp/second" } });
+  const second = controller.state.tabs[0].subtabs.find((item) => item.type === "terminal" && item.id !== first.id);
+  sessions.set(first.id, { cwd: "/tmp/first-latest", refreshCwd: async () => {}, run: async (command) => runs.push(command) });
+  sessions.set(second.id, { cwd: "/tmp/second", refreshCwd: async () => {}, run: async (command) => runs.push(command) });
+  controller.terminalSessions = sessions;
 
-  await controller.synchronizeActiveTerminalToFolder();
-  assert.deepEqual(runs, ["cd '/tmp/project'"]);
+  await controller.runInternal(`subtab select ${first.id}`);
+  assert.equal(controller.state.tabs[0].folder.path, "/tmp/first-latest");
+  assert.equal(controller.state.tabs[0].subtabs.find((item) => item.id === second.id).cwd, "/tmp/second");
 
-  controller.dispatch({ type: "TERMINAL_CWD_SET", payload: { terminalId: controller.state.tabs[0].subtabs[0].id, path: "~" } });
-  busy = true;
-  await controller.synchronizeActiveTerminalToFolder();
-  assert.deepEqual(runs, ["cd '/tmp/project'"]);
+  await controller.runInternal(`subtab select ${second.id}`);
+  assert.equal(controller.state.tabs[0].folder.path, "/tmp/second");
+  assert.equal(controller.state.tabs[0].subtabs.find((item) => item.id === first.id).cwd, "/tmp/first-latest");
+  assert.deepEqual(listed, ["/tmp/first-latest", "/tmp/second"]);
+  assert.deepEqual(runs, []);
 });
 
 test("typed terminal cd synchronizes the folder pane without a printf probe", async () => {
@@ -1678,8 +1810,11 @@ test("app startup restores open workspaces and loads the active saved folder", a
       "/Users/auri/Desktop",
       "/Users/auri/Projects/client-app"
     ]);
-    assert.equal(controller.state.activeTabId, controller.state.tabs[1].id);
-    assert.equal(loadedPaths.at(-1), "/Users/auri/Projects/client-app");
+    assert.equal(controller.state.activeTabId, controller.state.tabs[0].id);
+    assert.equal(controller.state.tabs[0].activeSubtabId, controller.state.tabs[0].subtabs[0].id);
+    assert.equal(controller.state.tabs[0].folder.path, controller.state.tabs[0].subtabs[0].cwd);
+    assert.ok(controller.state.tabs[0].subtabs.some((item) => item.type === "system"));
+    assert.equal(loadedPaths.at(-1), "/Users/auri/Desktop");
   } finally {
     globalThis.window = previousWindow;
     globalThis.localStorage = previousLocalStorage;

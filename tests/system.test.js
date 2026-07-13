@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { attachProcessNetworkRates, filterSystemProcesses, matchesProcessSearch, normalizeSystemSnapshot, primaryProcessPort, protocolForPort, sortSystemProcesses } from "../src/model/system.js";
+import { SYSTEM_PROCESS_PAGE_SIZE, attachProcessNetworkRates, filterSystemProcesses, matchesProcessSearch, normalizeSystemSnapshot, primaryProcessPort, protocolForPort, sortSystemProcesses } from "../src/model/system.js";
 import { renderActivePanel, renderSubtabs, renderSystemKillPrompt } from "../src/views/panels.js";
 import { createInitialState, reduceState } from "../src/model/state.js";
 
@@ -68,6 +68,93 @@ test("process sorting supports combined network traffic", () => {
   ], "net");
 
   assert.deepEqual(sorted.map((item) => item.pid), [2, 3, 1]);
+});
+
+
+test("process sorting supports combined disk activity", () => {
+  const sorted = sortSystemProcesses([
+    { pid: 1, name: "quiet", diskReadBytes: 5, diskWriteBytes: 5 },
+    { pid: 2, name: "writer", diskReadBytes: 0, diskWriteBytes: 50 },
+    { pid: 3, name: "reader", diskReadBytes: 80, diskWriteBytes: 0 }
+  ], "disk");
+  assert.deepEqual(sorted.map((item) => item.pid), [3, 2, 1]);
+});
+
+test("system process list renders one 10-row page, sorts the full dataset, and replaces rows on next page", () => {
+  let state = createInitialState();
+  const systemTab = state.tabs[0].subtabs.find((item) => item.type === "system");
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: systemTab.id }] };
+  const processes = Array.from({ length: 32 }, (_, index) => ({
+    pid: index + 1,
+    name: `process-${index + 1}`,
+    cpuPercent: index === 31 ? 999 : index,
+    memoryBytes: index
+  }));
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ processes }) } });
+
+  let html = renderActivePanel(state);
+  assert.equal(SYSTEM_PROCESS_PAGE_SIZE, 10);
+  assert.equal((html.match(/data-process-row=/g) || []).length, SYSTEM_PROCESS_PAGE_SIZE);
+  assert.match(html, /data-process-row="32"/, "sorting must happen before selecting page one");
+  assert.match(html, /data-system-page>Page 1 \/ 4<\/span>/);
+  assert.match(html, /data-action="system-process-page-prev"[^>]*disabled[^>]*>&lt;<\/button>/);
+  assert.match(html, /data-action="system-process-page-next"[^>]*>&gt;<\/button>/);
+  assert.match(html, /data-has-previous="false"/);
+  assert.match(html, /data-has-next="true"/);
+
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PAGE_NEXT" });
+  html = renderActivePanel(state);
+  assert.equal((html.match(/data-process-row=/g) || []).length, SYSTEM_PROCESS_PAGE_SIZE);
+  assert.doesNotMatch(html, /data-process-row="32"/, "page two replaces page one instead of appending it");
+  assert.match(html, /data-process-row="22"/);
+  assert.match(html, /data-system-page>Page 2 \/ 4<\/span>/);
+  assert.match(html, /data-action="system-process-page-prev"[^>]*>&lt;<\/button>/);
+  assert.match(html, /data-has-previous="true"/);
+
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PAGE_PREVIOUS" });
+  html = renderActivePanel(state);
+  assert.equal(state.system.processPage, 1);
+  assert.match(html, /data-process-row="32"/);
+});
+
+test("system refresh preserves the current process page and clamps it only when the result set shrinks", () => {
+  let state = createInitialState();
+  const makeSnapshot = (count) => normalizeSystemSnapshot({
+    capturedAt: new Date(2026, 0, count).toISOString(),
+    processes: Array.from({ length: count }, (_, index) => ({ pid: index + 1, name: `process-${index + 1}`, cpuPercent: count - index }))
+  });
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: makeSnapshot(25) } });
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PAGE_NEXT" });
+  assert.equal(state.system.processPage, 2);
+
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: makeSnapshot(25) } });
+  assert.equal(state.system.processPage, 2, "refresh keeps the current page");
+
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: makeSnapshot(12) } });
+  assert.equal(state.system.processPage, 2, "page two remains valid after a smaller refresh");
+
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: makeSnapshot(5) } });
+  assert.equal(state.system.processPage, 1, "refresh clamps an invalid page to the last available page");
+});
+
+test("system search filters the full process dataset before paging and resets to page one", () => {
+  let state = createInitialState();
+  const systemTab = state.tabs[0].subtabs.find((item) => item.type === "system");
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: systemTab.id }] };
+  const processes = Array.from({ length: 30 }, (_, index) => ({
+    pid: index + 1,
+    name: index === 27 ? "needle-worker" : `process-${index + 1}`,
+    cpuPercent: 30 - index
+  }));
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ processes }) } });
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PAGE_NEXT" });
+  state = reduceState(state, { type: "SYSTEM_FILTER_SET", payload: { filter: "needle" } });
+
+  const html = renderActivePanel(state);
+  assert.equal(state.system.processPage, 1, "typing a new filter resets paging");
+  assert.match(html, /data-process-row="28"/);
+  assert.equal((html.match(/data-process-row=/g) || []).length, 1);
+  assert.match(html, /data-system-page>Page 1 \/ 1<\/span>/);
 });
 
 test("protocolForPort maps common tcp and udp ports to their protocol", () => {
@@ -208,7 +295,7 @@ test("system panel uses compact cards and centered selected-process detail", () 
   state = reduceState(state, { type: "SYSTEM_TUNNEL_SET", payload: { port: 5173, url: "https://auri-preview.trycloudflare.com", pid: 222 } });
 
   const html = renderActivePanel(state);
-  assert.match(html, /<h2>System <em data-system-host>auri-host<\/em><\/h2>/);
+  assert.match(html, /<h2>System <span class="system-page-controls"[^>]*>[\s\S]*data-system-page>Page 1 \/ 1<\/span>[\s\S]*<em data-system-host>auri-host<\/em><\/h2>/);
   assert.doesNotMatch(html, /<small>MONITOR<\/small><h2>System/);
   assert.match(html, /Net<span class="system-metric-unit" data-metric-unit>MB\/s<\/span><\/small><strong data-metric-value>↓ 1\.00  ↑ 0\.50<\/strong><span data-metric-detail>download · upload<\/span>/);
   assert.match(html, /Memory<span class="system-metric-unit" data-metric-unit>MB<\/span><\/small><strong data-metric-value>50%<\/strong><span data-metric-detail>1\.00 \/ 2\.00<\/span>/);
@@ -383,7 +470,9 @@ test("disk and net subtabs render beside the system monitor", () => {
   assert.match(tabs, />System<\/span>/);
   assert.match(tabs, />Disk<\/span>/);
   assert.match(tabs, />Net<\/span>/);
-  assert.match(renderActivePanel(state), /Disk monitor/);
+  const diskHtml = renderActivePanel(state);
+  assert.match(diskHtml, /Disk monitor/);
+  assert.match(diskHtml, /data-action="system-sort" data-sort="disk"/);
 
   state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: "net-tab" }] };
   const netHtml = renderActivePanel(state);
@@ -423,6 +512,8 @@ test("AppView.patchSystemMonitor updates the open system panel in place", async 
   }
   const statusEl = fakeNode();
   const hostEl = fakeNode();
+  const pageEl = fakeNode();
+  pageEl.textContent = "Page 9 / 9";
   const table = fakeNode();
   table.scrollTop = 40;
   const monitor = fakeNode({ ".process-table": table });
@@ -430,11 +521,14 @@ test("AppView.patchSystemMonitor updates the open system panel in place", async 
     ...tiles,
     "[data-system-status]": statusEl,
     "[data-system-host]": hostEl,
+    "[data-system-page]": pageEl,
     ".process-monitor": monitor
   });
   const root = { querySelector: (selector) => (selector === ".system-panel" ? panel : null) };
 
   let state = createInitialState();
+  const systemTab = state.tabs[0].subtabs.find((item) => item.type === "system");
+  state = reduceState(state, { type: "SUBTAB_SELECT", payload: { id: systemTab.id } });
   state = reduceState(state, {
     type: "SYSTEM_SNAPSHOT_SET",
     payload: {
@@ -454,6 +548,7 @@ test("AppView.patchSystemMonitor updates the open system panel in place", async 
   assert.equal(tileParts.cpu.value.textContent, "7.0%");
   assert.match(statusEl.textContent, /Updated/);
   assert.equal(hostEl.textContent, "auri-host");
+  assert.equal(pageEl.textContent, "Page 1 / 1");
   assert.match(monitor.innerHTML, /process-row/);
   assert.match(monitor.innerHTML, /77/);
   assert.equal(table.scrollTop, 40);
@@ -521,7 +616,7 @@ test("AppView.patchProcessRows updates process metrics in place", async () => {
   assert.equal(view.patchProcessRows(monitor, rows), true);
   assert.equal(cpuCell.textContent, "9.0%");
   assert.match(portCell.innerHTML, /8080/);
-  assert.equal(countLabel.textContent, "1 shown");
+  assert.equal(countLabel.textContent, "1 on page");
 });
 
 test("process table scroll resets when the sort changes", async () => {

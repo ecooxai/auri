@@ -13,7 +13,7 @@
     "tauri:build": "node scripts/tauri-build.mjs",
     "cli:build": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin auri",
     "cli:install": "cargo install --path src-tauri --bin auri --force",
-    "native:watch": "bash scripts/native-watch.sh",
+    "native:watch": "node scripts/native-dev.mjs",
     "dev:web": "node scripts/dev.mjs",
     "build:web": "node scripts/build.mjs",
     "app": "node scripts/app.mjs"

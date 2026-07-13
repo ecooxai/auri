@@ -37,6 +37,17 @@ test("terminal preview parser resolves relative paths against the terminal cwd",
 });
 
 
+test("terminal preview parser resolves selected relative directory paths against cwd", () => {
+  assert.deepEqual(
+    extractTerminalPreviewTarget("open dir1/dir2/ after selecting it", "/Users/me/project"),
+    { kind: "file", value: "/Users/me/project/dir1/dir2", text: "dir1/dir2/" }
+  );
+  assert.deepEqual(
+    extractTerminalPreviewTarget("choose src/", "/Users/me/project"),
+    { kind: "file", value: "/Users/me/project/src", text: "src/" }
+  );
+});
+
 test("terminal preview parser resolves bare filenames and nested relative file paths against cwd", () => {
   const cwd = "/Users/me/project";
   const cases = [
@@ -119,6 +130,45 @@ test("terminal click parsing chooses the candidate under the clicked cell", () =
 
 
 
+test("terminal pointer coordinates reconstruct a full logical line across soft wraps", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const session = new TerminalSession({ isNative: false });
+  const rows = [
+    { isWrapped: false, text: "open /Users/" },
+    { isWrapped: true, text: "me/Desktop/g" },
+    { isWrapped: true, text: "irl.jpg" }
+  ];
+  session.term = {
+    cols: 12,
+    rows: 3,
+    buffer: {
+      active: {
+        viewportY: 0,
+        getLine(row) {
+          const item = rows[row];
+          return item ? {
+            isWrapped: item.isWrapped,
+            translateToString(trimRight) {
+              return trimRight ? item.text.trimEnd() : item.text.padEnd(12, " ");
+            }
+          } : undefined;
+        }
+      }
+    }
+  };
+  const screen = { getBoundingClientRect: () => ({ left: 0, right: 120, top: 0, bottom: 60, width: 120, height: 60 }) };
+  const element = { querySelector: () => screen };
+
+  const point = session.terminalTextAtEvent(element, { clientX: 45, clientY: 50 });
+
+  assert.equal(point.text, "open /Users/me/Desktop/girl.jpg");
+  assert.equal(point.column, 28);
+  assert.deepEqual(
+    extractTerminalPreviewTarget(point.text, "/tmp", point.column),
+    { kind: "file", value: "/Users/me/Desktop/girl.jpg", text: "/Users/me/Desktop/girl.jpg" }
+  );
+});
+
 test("terminal pointer coordinates map to the visible xterm buffer cell", async () => {
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const session = new TerminalSession({ isNative: false });
@@ -129,8 +179,7 @@ test("terminal pointer coordinates map to the visible xterm buffer cell", async 
       active: {
         viewportY: 3,
         getLine(row) {
-          assert.equal(row, 5);
-          return { translateToString: () => "open /tmp/test.png" };
+          return row === 5 ? { isWrapped: false, translateToString: () => "open /tmp/test.png" } : undefined;
         }
       }
     }
@@ -144,6 +193,31 @@ test("terminal pointer coordinates map to the visible xterm buffer cell", async 
   assert.equal(point.text, "open /tmp/test.png");
   assert.deepEqual(point.anchor, { left: 200, right: 220, top: 90, bottom: 110 });
 });
+test("terminal drag selection previews a contained relative directory path", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const session = new TerminalSession({ isNative: false });
+  session.cwd = "/Users/me/project";
+  session.term = { getSelection: () => "selected dir1/dir2/ from output" };
+  session.previewPointerDown = { x: 10, y: 10 };
+  session.terminalTextAtEvent = () => ({
+    text: "ordinary output",
+    column: 3,
+    anchor: { left: 20, right: 21, top: 20, bottom: 21 }
+  });
+  let shown = null;
+  session.showPreview = (target) => { shown = target; };
+  session.dismissPreview = () => {};
+
+  session.handlePreviewMouseUp({ ownerDocument: {} }, { button: 0, clientX: 30, clientY: 10 });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  assert.deepEqual(shown, {
+    kind: "file",
+    value: "/Users/me/project/dir1/dir2",
+    text: "dir1/dir2/"
+  });
+});
+
 test("terminal mini preview stays below normal text and flips above near the bottom", () => {
   assert.deepEqual(
     terminalPreviewPlacement(

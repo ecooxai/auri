@@ -69,7 +69,7 @@ export const COMMANDS = Object.freeze([
   ["permission status", "Refresh macOS media permission status."],
   ["permission request <microphone|screen-recording>", "Request or open macOS settings for a media permission."],
   ["system open", "Open the System monitor."],
-  ["system sort <cpu|port|name|pid|ram|net>", "Sort System monitor processes."],
+  ["system sort <cpu|port|name|pid|ram|net|disk>", "Sort System monitor processes."],
   ["system search [keyword...]", "Filter the process list by keyword (space separates OR terms); empty clears."],
   ["system refresh", "Refresh System monitor statistics."],
   ["system select <pid>", "Select a System monitor process."],

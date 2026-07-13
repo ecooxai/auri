@@ -154,7 +154,10 @@ export async function executeCommand(input, context) {
       if (action === "new") {
         if (!args[0]) throw new Error("Choose a subtab type.");
         dispatch({ type: "SUBTAB_NEW", payload: { type: SUBTAB_ALIASES[args[0]] ?? args[0] } });
-      } else if (action === "select") dispatch({ type: "SUBTAB_SELECT", payload: { id: args[0] } });
+      } else if (action === "select") {
+        if (actions.selectSubtab) await actions.selectSubtab(args[0]);
+        else dispatch({ type: "SUBTAB_SELECT", payload: { id: args[0] } });
+      }
       else if (action === "close") dispatch({ type: "SUBTAB_CLOSE", payload: { id: args[0] } });
       else throw new Error(`Unknown subtab action: ${action}`);
       return { ok: true };

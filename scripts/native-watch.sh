@@ -9,6 +9,12 @@ INSTANCE_ID="${AURI_INSTANCE_ID:-watch-${PROJECT_ID:0:12}-$$}"
 RUN_DIR="${TMPDIR:-/tmp}/auri-native-watch-${PROJECT_ID}-$$"
 SERVER_PID=""
 WATCH_PID=""
+WATCH_DELAY="${AURI_WATCH_DELAY:-10}"
+
+if [[ ! "$WATCH_DELAY" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "AURI_WATCH_DELAY must be a non-negative number of seconds." >&2
+  exit 2
+fi
 
 mkdir -p "$RUN_DIR"
 
@@ -26,12 +32,12 @@ stop_pid() {
 }
 
 cleanup() {
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
   [[ -n "$WATCH_PID" ]] && stop_pid "$WATCH_PID"
   [[ -n "$SERVER_PID" ]] && stop_pid "$SERVER_PID"
   rm -rf "$RUN_DIR"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 
 if [[ -z "${AURI_DEV_PORT:-}" ]]; then
   AURI_DEV_PORT="$(node - <<'NODE'
@@ -67,10 +73,11 @@ if ! curl --silent --fail --max-time 1 "http://127.0.0.1:${AURI_DEV_PORT}/" >/de
   exit 1
 fi
 
-echo "Watching Auri sources as independent instance $INSTANCE_ID on port $AURI_DEV_PORT."
+echo "Watching Auri sources as instance $INSTANCE_ID on port $AURI_DEV_PORT with a ${WATCH_DELAY}s trailing debounce."
 echo "Press Ctrl+C to stop only this watcher and its app process."
 
 cargo watch \
+  --delay "$WATCH_DELAY" \
   --workdir src-tauri \
   --watch . \
   --watch ../src \

@@ -467,14 +467,29 @@ export class Backend {
       return { url, title, filePath: path, mime: "text/html", mediaMime: mime, viewerKind: viewerKindForFile(path, mime) };
     }
 
-    const mediaMime = options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime || "");
+    const isDirectory = metadata.kind === "directory" || metadata.mime === "inode/directory";
+    const mediaMime = isDirectory
+      ? "inode/directory"
+      : options.asText ? "text/plain" : previewMimeForPath(path, metadata.mime || "");
     const title = metadata.name || titleForPath(path);
     const server = await this.startFileServer("/");
+    const resourceUrl = localFileUrl(path, server.port);
+    if (isDirectory) {
+      return {
+        url: resourceUrl,
+        resourceUrl,
+        title,
+        filePath: path,
+        mime: "text/html",
+        mediaMime,
+        viewerKind: "directory"
+      };
+    }
     const mode = options.asText ? "edit" : "view";
     const isHtml = mediaMime.toLowerCase() === "text/html" || /\.html?$/i.test(String(path || ""));
     return {
       url: localFileViewerUrl(path, server.port, mode),
-      resourceUrl: localFileUrl(path, server.port),
+      resourceUrl,
       title,
       filePath: path,
       mime: "text/html",

@@ -4,7 +4,7 @@ import { previewClipboardText, formatImageMeta, describeClipboardText } from "..
 import { activeSubtab, activeWorkspace } from "../model/state.js";
 import { sortFolderEntries } from "../model/folder.js";
 import { defaultBookmarkName, normalizeWebUrl, webZoomPercent, webAiMenuItems } from "../model/browser.js";
-import { emptySystemSnapshot, filterSystemProcesses, sortSystemProcesses } from "../model/system.js";
+import { SYSTEM_PROCESS_PAGE_SIZE, emptySystemSnapshot, filterSystemProcesses, sortSystemProcesses } from "../model/system.js";
 
 const FILE_WEBVIEW_FEATURE_POLICY = "camera; microphone; geolocation; display-capture; clipboard-read; clipboard-write; fullscreen; autoplay; accelerometer; encrypted-media; gyroscope; hid; magnetometer; midi; payment; picture-in-picture; publickey-credentials-get; screen-wake-lock; serial; usb; web-share; xr-spatial-tracking";
 
@@ -1109,16 +1109,25 @@ export function formatProcessPortCell(ports) {
   }).join(" ");
 }
 
-function renderProcessTable(state, processes, { showDisk = false, showNet = true } = {}) {
+function renderProcessTable(state, processes, { showDisk = false, showNet = true, totalCount = processes.length, currentPage = 1, pageCount = 1, hasPrevious = false, hasNext = false } = {}) {
   const sortBy = state.system.sortBy || "cpu";
   const selectedPid = Number(state.system.selectedProcessPid);
-  return `<div class="process-table" role="table" aria-label="System processes">
+  const pageProcessLabel = `${processes.length} process${processes.length === 1 ? "" : "es"} on page ${currentPage} of ${pageCount}`;
+  const scrollHint = hasPrevious && hasNext
+    ? "scroll up or down to change page"
+    : hasPrevious
+      ? "scroll up for previous page"
+      : hasNext
+        ? "scroll down for next page"
+        : "";
+  const loadStatus = scrollHint ? `${pageProcessLabel} · ${scrollHint}` : pageProcessLabel;
+  return `<div class="process-table" role="table" aria-label="System processes" data-has-previous="${hasPrevious}" data-has-next="${hasNext}" data-process-page="${escapeHtml(currentPage)}" data-process-pages="${escapeHtml(pageCount)}" data-process-total="${escapeHtml(totalCount)}">
     <div class="process-row process-heading ${showDisk ? "is-disk" : ""}" role="row">
       <span role="columnheader">${processSortButton("Name", "name", sortBy)}</span>
       <span role="columnheader">${processSortButton("Port", "port", sortBy)}</span>
       <span role="columnheader">${processSortButton("RAM", "ram", sortBy)}</span>
       <span role="columnheader">${processSortButton("CPU", "cpu", sortBy)}</span>
-      ${showDisk ? `<span role="columnheader">Disk read | write</span>` : ""}
+      ${showDisk ? `<span role="columnheader">${processSortButton("Disk read | write", "disk", sortBy)}</span>` : ""}
       ${showNet ? `<span role="columnheader">${processSortButton("Net", "net", sortBy)}</span>` : ""}
       <span role="columnheader">PID</span>
     </div>
@@ -1131,27 +1140,37 @@ function renderProcessTable(state, processes, { showDisk = false, showNet = true
       ${showNet ? `<span role="cell" data-process-net>${formatArrowRateCompact(process.downloadBytesPerSecond, process.uploadBytesPerSecond)}</span>` : ""}
       <span role="cell" data-process-pid><code>${escapeHtml(process.pid)}</code></span>
     </div>`).join("") : `<div class="empty-state"><span>◬</span><h2>No process data</h2><p>Native process monitoring is available in the Tauri build.</p></div>`}
+    <div class="process-load-status" role="status" data-process-load-status>${escapeHtml(loadStatus)}</div>
   </div>`;
 }
 
-// Sorted, truncated process list shared by the full renders below and by
-// AppView.patchSystemMonitor, so the quiet 5s poll shows exactly the same
-// rows a full render would.
-function systemPanelProcesses(state, kind) {
+// Filter and sort the complete native snapshot before selecting exactly one
+// 10-row page. Search and every sort therefore operate on all processes, while
+// refreshes can preserve the current page without growing the DOM over time.
+function systemPanelProcessPage(state) {
   const snapshot = state.system.snapshot || emptySystemSnapshot;
-  const sortBy = kind === "disk" ? "ram" : kind === "net" ? "port" : state.system.sortBy || "cpu";
-  const sorted = sortSystemProcesses(snapshot.processes || [], sortBy);
-  const filtered = filterSystemProcesses(sorted, state.system.filter || "");
-  return filtered.slice(0, 400);
+  const sorted = sortSystemProcesses(snapshot.processes || [], state.system.sortBy || "cpu");
+  const all = filterSystemProcesses(sorted, state.system.filter || "");
+  const pageCount = Math.max(1, Math.ceil(all.length / SYSTEM_PROCESS_PAGE_SIZE));
+  const requestedPage = Number.isFinite(Number(state.system.processPage)) ? Math.trunc(Number(state.system.processPage)) : 1;
+  const currentPage = Math.min(pageCount, Math.max(1, requestedPage));
+  const start = (currentPage - 1) * SYSTEM_PROCESS_PAGE_SIZE;
+  return {
+    all,
+    visible: all.slice(start, start + SYSTEM_PROCESS_PAGE_SIZE),
+    total: all.length,
+    currentPage,
+    pageCount,
+    hasPrevious: currentPage > 1,
+    hasNext: currentPage < pageCount
+  };
 }
 
-// Normalized process rows keyed by pid so patchSystemMonitor can update
-// metric cells in place during quiet polls instead of rebuilding the table.
-export function buildProcessMonitorRows(state, kind) {
+function processRowData(state, kind, process) {
   const showDisk = kind === "disk";
   const showNet = kind !== "disk";
   const selectedPid = Number(state.system.selectedProcessPid);
-  return systemPanelProcesses(state, kind).map((process) => ({
+  return {
     key: String(process.pid),
     name: process.name,
     nameTitle: String(process.commandLine || process.path || process.name || ""),
@@ -1164,25 +1183,41 @@ export function buildProcessMonitorRows(state, kind) {
     selected: Number(process.pid) === selectedPid,
     showDisk,
     showNet
-  }));
+  };
+}
+
+export function buildProcessMonitorPage(state, kind) {
+  const page = systemPanelProcessPage(state);
+  return {
+    rows: page.visible.map((process) => processRowData(state, kind, process)),
+    total: page.total,
+    currentPage: page.currentPage,
+    pageCount: page.pageCount,
+    hasPrevious: page.hasPrevious,
+    hasNext: page.hasNext
+  };
+}
+
+export function buildProcessMonitorRows(state, kind) {
+  return buildProcessMonitorPage(state, kind).rows;
 }
 
 export function renderProcessMonitorContent(state, kind) {
-  const processes = systemPanelProcesses(state, kind);
+  const page = systemPanelProcessPage(state);
+  const options = { totalCount: page.total, currentPage: page.currentPage, pageCount: page.pageCount, hasPrevious: page.hasPrevious, hasNext: page.hasNext };
   if (kind === "disk") {
-    return `<div class="process-monitor-head"><div><h3>Process disk read | write</h3><p>Per-process disk counters are reported when the OS exposes them.</p></div><span>${processes.length} shown</span></div>${renderProcessTable(state, processes, { showDisk: true, showNet: false })}`;
+    return `<div class="process-monitor-head"><div><h3>Process disk read | write</h3><p>Per-process disk counters are reported when the OS exposes them.</p></div><span>${page.visible.length} on page</span></div>${renderProcessTable(state, page.visible, { ...options, showDisk: true, showNet: false })}`;
   }
   if (kind === "net") {
-    return `<div class="process-monitor-head"><div><h3>Process network and port status</h3><p>Processes using ports are listed first by default.</p></div><span>${processes.length} shown</span></div>${renderProcessTable(state, processes, { showNet: true })}`;
+    return `<div class="process-monitor-head"><div><h3>Process network and port status</h3><p>Sort and search use every process in the snapshot.</p></div><span>${page.visible.length} on page</span></div>${renderProcessTable(state, page.visible, { ...options, showNet: true })}`;
   }
-  return renderProcessTable(state, processes, { showNet: true });
+  return renderProcessTable(state, page.visible, { ...options, showNet: true });
 }
 
 export function renderSystemProcessDetail(state, kind) {
-  return renderProcessDetailDialog(state, systemPanelProcesses(state, kind));
+  return renderProcessDetailDialog(state, systemPanelProcessPage(state).all);
 }
 
-// Header action cluster: a search toggle immediately to the left of refresh.
 function systemHeaderActions(state) {
   const open = Boolean(state.ui?.systemSearchOpen);
   return `<div class="system-actions">${button("⌕", "Search processes", "system-search-toggle", `aria-pressed="${open}"`)}${button("↻", "Refresh system monitor", "system-refresh")}</div>`;
@@ -1206,8 +1241,15 @@ function renderSystem(state) {
   const hostName = snapshot.host?.hostname || "—";
   const statusCopy = buildSystemStatusText(state);
   const metrics = buildSystemMetrics(state, "system");
+  const processPage = systemPanelProcessPage(state);
 
-  return `<section class="system-panel"><header class="panel-title system-title"><div><span>◬</span><div><h2>System <em data-system-host>${escapeHtml(hostName)}</em></h2></div></div>${systemHeaderActions(state)}</header>
+  const pageControls = `<span class="system-page-controls" aria-label="Process pages">
+    <button type="button" class="system-page-button" data-action="system-process-page-prev" data-system-page-prev aria-label="Previous process page" title="Previous process page" ${processPage.hasPrevious ? "" : "disabled"}>&lt;</button>
+    <span class="system-page" data-system-page>Page ${processPage.currentPage} / ${processPage.pageCount}</span>
+    <button type="button" class="system-page-button" data-action="system-process-page-next" data-system-page-next aria-label="Next process page" title="Next process page" ${processPage.hasNext ? "" : "disabled"}>&gt;</button>
+  </span>`;
+
+  return `<section class="system-panel"><header class="panel-title system-title"><div><span>◬</span><div><h2>System ${pageControls}<em data-system-host>${escapeHtml(hostName)}</em></h2></div></div>${systemHeaderActions(state)}</header>
     ${renderSystemSearchBar(state)}
     <div class="system-status ${state.system.status === "error" ? "is-error" : ""}" role="status" data-system-status>${escapeHtml(statusCopy)}</div>
     <div class="system-grid">

@@ -78,6 +78,47 @@ test("terminal sessions receive file and URL mini-preview actions", async () => 
   ]);
   assert.deepEqual(calls, [["release", "http://localhost:8890/tmp/test.png?view=1"]]);
 });
+test("terminal directory previews show folder contents and open through the folder command", async () => {
+  let actions;
+  const backend = {
+    isNative: true,
+    inspectFile: async (path) => ({ path, name: "src", kind: "directory", mime: "inode/directory" }),
+    createFileView: async (path) => ({
+      url: `http://localhost:8890${path}`,
+      resourceUrl: `http://localhost:8890${path}`,
+      title: "src",
+      filePath: path,
+      mime: "text/html",
+      mediaMime: "inode/directory",
+      viewerKind: "directory"
+    })
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend,
+    terminalSessionFactory: (_backend, receivedActions) => {
+      actions = receivedActions;
+      return { initialize: async () => {} };
+    }
+  });
+  const commands = [];
+  controller.runInternal = async (command, options) => { commands.push([command, options]); };
+
+  controller.terminalSessionFor();
+  const preview = await actions.preparePreview({ kind: "file", value: "/tmp/project/src", text: "src/" });
+  await actions.openPreview({ kind: "file", value: "/tmp/project/src", text: "src/" });
+
+  assert.equal(preview.viewerKind, "directory");
+  assert.equal(preview.url, "http://localhost:8890/tmp/project/src");
+  assert.deepEqual(commands, [['folder cd "/tmp/project/src"', undefined]]);
+});
+
 test("platform copy prefers the native backend clipboard writer", async () => {
   const copied = [];
   const view = {

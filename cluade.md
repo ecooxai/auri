@@ -12,6 +12,12 @@ This file is the implementation contract for contributors and coding agents work
 6. Never fake a native capability. Expose a clear unsupported/fallback result instead.
 7. Run focused tests, then `npm run check` and `cargo check --manifest-path src-tauri/Cargo.toml`.
 
+## Startup and system monitor contract
+
+- Startup must select the first restored workspace and its first terminal subtab, mirror that terminal working directory into the folder pane, and ensure the first workspace contains a pre-opened System monitor subtab.
+- Process monitor views must sort and search the full snapshot before pagination. Render 15 process rows initially, append 15 near the scroll boundary, reset paging when search or sort changes, and keep CPU, RAM, network, disk, and port sorts independent of the visible slice.
+- Keep keyboard search available on System, Disk, and Net with Command/Ctrl+F and `/`; Escape closes the focused search field.
+
 ## Command-first rule
 
 `src/model/commands.js` is the source of truth. Add a registry entry and tests before implementing a new GUI action. GUI handlers call `executeCommand()` through `runInternal()` rather than changing state or invoking hardware directly. OS ingress that cannot originate as text—such as a file picker returning a browser `File` object—may create an attachment object, but an equivalent path-based command must exist for automation.
@@ -86,7 +92,7 @@ auri settings set <key> <value>                                                U
 auri permission status                                                         Refresh macOS media permission status.
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri system open                                                              Open the System monitor.
-auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system sort <cpu|port|name|pid|ram|net|disk>                                      Sort System monitor processes.
 auri system search [keyword...]                                                   Filter the process list by keyword (space separates OR terms); empty clears.
 auri system refresh                                                           Refresh System monitor statistics.
 auri system select <pid>                                                    Select a System monitor process.

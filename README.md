@@ -2,10 +2,10 @@
 
 ## Common commands
 
-Watch native development (starts a new independent Auri app process):
+Start guarded native development with restart-on-change watching:
 
 ```bash
-npm run native:watch
+npm run dev
 ```
 
 Build a release bundle:
@@ -32,11 +32,13 @@ Implemented now:
 
 - Vertical main workspaces and horizontal subtabs.
 - Per-workspace folder pane synchronized with terminal `cwd`.
+- Startup always selects the first workspace and its first terminal, synchronizes that terminal `cwd` with the folder pane, and keeps a System monitor subtab pre-opened in the first workspace.
+- Every terminal subtab owns its own working directory. Selecting a terminal refreshes its native PTY `pwd`, preserves the terminal you switched away from, and opens the folder pane at the selected terminal path without sending an automatic `cd`.
 - File inspection with size, type, image dimensions, and optional `ffprobe` codec/bitrate metadata.
 - A loopback cloud-disk file web app with folder browsing, text/HTML editing, raw file serving, PDF/DOCX/3D/media viewers, and image/audio/video conversion.
 - Shell command execution and explicit `cd` synchronization.
 - Terminal composer where Enter inserts a newline and Command/Ctrl+Enter runs.
-- Clicked terminal paths, recognized bare filenames such as `notes.md`, nested relative file paths such as `assets/photo.png`, and HTTP(S) URLs open a 450 × 330 preview near the text. Implicit filenames resolve against that terminal session's current working directory and are limited to common media, text/web, programming-language, document/archive, PDF, and 3D extensions so dotted prose, version numbers, domains, flags, and assignments are ignored. Drag selections containing a target behave the same. Image paths show only the raw image with no filename/path chrome, while URL and non-image previews retain their normal viewer surface. Clicking the preview opens a new file or web subtab, and right-click selection copy remains unchanged.
+- Clicked terminal paths, recognized bare filenames such as `notes.md`, nested relative file paths such as `assets/photo.png`, trailing-slash relative folders such as `dir1/dir2/`, and HTTP(S) URLs open a 450 × 330 preview near the text. Click hit-testing reconstructs the complete logical xterm line across soft-wrapped display rows, so a long filename remains whole even when it occupies several visual lines. Drag selections are scanned for contained absolute, `~/`, `./`, `../`, recognized file, and trailing-slash relative-folder targets. Implicit filenames resolve against that terminal session's current working directory and stay limited to common media, text/web, programming-language, document/archive, PDF, and 3D extensions so dotted prose, version numbers, domains, flags, and assignments are ignored. Folder targets use the query-free local folder browser to show their contents, and clicking that preview navigates through the shared `folder cd` command; file and URL previews continue to open new file or web subtabs. Image paths show only the raw image with no filename/path chrome, while URL, folder, and other non-image previews retain their normal viewer surface. Right-click selection copy remains unchanged.
 - OpenAI-compatible and Gemini-compatible text/image requests, including the current screenshot when enabled.
 - Assistant replies can expose allowlisted shell-command and input-ready actions in a floating panel, with Run, Insert, and Copy controls.
 - Local model/settings management and an Info tab for errors, notices, and sanitized AI request details with text plus playable image/audio previews.
@@ -148,6 +150,7 @@ Prerequisites:
 - Node.js 20 or newer.
 - A current stable Rust toolchain.
 - Tauri 2 CLI for native development: `cargo install tauri-cli --version '^2'`.
+- Cargo Watch for debounced native restarts: `cargo install cargo-watch`.
 - macOS: Xcode Command Line Tools.
 - Linux: the Tauri/WebKitGTK development packages for your distribution.
 
@@ -157,7 +160,7 @@ Native development:
 npm run dev
 ```
 
-This starts the esbuild frontend watcher and launches the Tauri debug app with full native capabilities.
+This starts an isolated frontend watcher and launches the Tauri debug app with full native capabilities. Source changes use a trailing 10-second debounce: every new change resets the timer, then Cargo rebuilds and restarts only the debug app after the source tree has been quiet for 10 seconds. Set `AURI_WATCH_DELAY` to another non-negative number of seconds when a different debounce is needed.
 
 Browser-only preview (no Tauri):
 
@@ -167,11 +170,11 @@ npm run dev:web
 
 Open `http://localhost:4173`. Preview mode supports the full interface and safe simulated/basic commands, but native filesystem, screenshot, global OS integration, and unrestricted shell features require `npm run dev` or `npm run tauri:dev`.
 
-For restart-on-change development, `npm run native:watch` launches an independent Auri process with its own frontend server, temporary build identity, and command socket. Starting it again does not stop or replace another running watcher or Auri window.
+`npm run native:watch` is an alias for the same guarded development launcher. The launcher uses its own frontend server, temporary build identity, and command socket.
 
 Agent development launch rule:
 
-Before starting a new development app or watcher, check for existing Auri development instances and stop only those dev/watch processes when they would conflict with the new run. Do not kill or replace release-version Auri processes. Prefer a build plus a manually started dev app for task verification when continuous watch mode is not needed.
+Before starting, the guarded launcher scans for an existing `target/debug/auri-desktop` or `target/debug/auri-dev` process and also acquires a project-specific lock. When a development window or launcher is already active, it exits successfully without opening another one. Release binaries under `target/release` or packaged `Auri.app` paths are deliberately ignored and are never stopped or replaced. The isolated frontend server watches bundled JavaScript and recopies root HTML, CSS, favicon, and browser-overlay assets so each guarded restart uses current files. `npm run tauri:dev` remains a low-level direct Tauri command, so contributors must perform the same existing-instance check before using it.
 
 Install the external CLI on your `PATH`:
 
@@ -284,7 +287,7 @@ auri settings set <key> <value>                                                U
 auri permission status                                                         Refresh macOS media permission status.
 auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
 auri system open                                                              Open the System monitor.
-auri system sort <cpu|port|name|pid|ram|net>                                      Sort System monitor processes.
+auri system sort <cpu|port|name|pid|ram|net|disk>                                      Sort System monitor processes.
 auri system search [keyword...]                                                   Filter the process list by keyword (space separates OR terms); empty clears.
 auri system refresh                                                           Refresh System monitor statistics.
 auri system select <pid>                                                    Select a System monitor process.
@@ -297,7 +300,7 @@ auri info clear                                                                C
 auri help                                                                      Show all available commands.
 ```
 
-System monitor UI note: keep the process table Name column at twice the previous width (`minmax(240px, 3fr)`) so short process names stay readable before truncation; disk and network process tables share the same grid. The selected-process detail shows listening ports below the path field, one port per row. Each port can start or stop a confirmed Cloudflare `cloudflared` HTTPS tunnel; Auri checks `PATH` and `~/.local/bin`, can install supported macOS/Linux binaries to `~/.local/bin` after confirmation, closes the confirmation prompt into a per-port starting/stopping state, shows the generated `trycloudflare.com` URL beside the port, and copies that URL when clicked. The automatic 5-second system snapshot poll may keep `state.system` current while another subtab is active, but it must not re-render inactive tabs or recreate focused terminal, AI, settings, folder, or editor inputs; only the active System, Disk, or Net monitor view refreshes live.
+System monitor UI note: process lists sort and filter the complete native snapshot first, then render exactly one 10-process page. Scrolling down at the bottom replaces the table with the next page, and scrolling up at the top returns to the previous page instead of growing the DOM. The System title shows disabled-at-the-edge `<` and `>` page buttons around `Page X / Y`; explicit button clicks are not wheel-throttled. Refreshes preserve the current page and clamp it only when the filtered result set becomes shorter. Command/Ctrl+F or `/` focuses keyboard search, and CPU, RAM, network, disk, and port sorting always considers every matching process, not only the current page. Keep the process table Name column at twice the previous width (`minmax(240px, 3fr)`) so short process names stay readable before truncation; disk and network process tables share the same grid. The selected-process detail shows listening ports below the path field, one port per row. Each port can start or stop a confirmed Cloudflare `cloudflared` HTTPS tunnel; Auri checks `PATH` and `~/.local/bin`, can install supported macOS/Linux binaries to `~/.local/bin` after confirmation, closes the confirmation prompt into a per-port starting/stopping state, shows the generated `trycloudflare.com` URL beside the port, and copies that URL when clicked. The automatic 5-second system snapshot poll may keep `state.system` current while another subtab is active, but it must not re-render inactive tabs or recreate focused terminal, AI, settings, folder, or editor inputs; only the active System, Disk, or Net monitor view refreshes live.
 
 Examples:
 
