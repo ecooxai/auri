@@ -181,6 +181,7 @@ test("autoplay is passed into media viewers", () => {
   assert.match(audio, /"autoplay":true/);
   assert.match(audio, /playMedia\(audio\)/);
   assert.match(video, /playMedia\(video\)/);
+  assert.doesNotMatch(audio, /<div class="audio-hero"/);
 });
 
 test("legacy mediaPageHtml export now returns the same rich viewer shell", () => {

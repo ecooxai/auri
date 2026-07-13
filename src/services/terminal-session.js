@@ -567,14 +567,14 @@ export class TerminalSession {
     element.dataset.placement = placement.above ? "above" : "below";
   }
 
-  async openPreviewTarget(target, status) {
+  async openPreviewTarget(target, showFeedback) {
     if (!this.assistantActions.openPreview) return;
-    status.textContent = "Opening…";
+    showFeedback?.("Opening…");
     try {
       await this.assistantActions.openPreview(target);
       this.dismissPreview();
     } catch (error) {
-      status.textContent = error?.message || String(error);
+      showFeedback?.(error?.message || String(error));
       console.error("Could not open terminal preview", error);
     }
   }
@@ -588,18 +588,6 @@ export class TerminalSession {
     preview.setAttribute("role", "dialog");
     preview.setAttribute("aria-label", `Preview ${target.text}`);
 
-    const header = document.createElement("header");
-    const title = document.createElement("strong");
-    title.textContent = target.text;
-    const status = document.createElement("small");
-    status.textContent = target.kind === "url" ? "Website preview" : "File preview";
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "terminal-link-preview-close";
-    close.setAttribute("aria-label", "Close preview");
-    close.textContent = "×";
-    header.append(title, status, close);
-
     const body = document.createElement("div");
     body.className = "terminal-link-preview-body";
     body.setAttribute("role", "button");
@@ -609,21 +597,22 @@ export class TerminalSession {
     frame.className = "terminal-link-preview-frame";
     frame.title = `Preview of ${target.text}`;
     frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads");
+    frame.setAttribute("allow", "autoplay");
     frame.setAttribute("tabindex", "-1");
     const loading = document.createElement("span");
     loading.className = "terminal-link-preview-loading";
     loading.textContent = "Loading preview…";
     body.append(frame, loading);
-    preview.append(header, body);
+    preview.append(body);
     document.body.append(preview);
     this.previewElement = preview;
     this.positionPreview(preview, anchor);
 
-    close.addEventListener("click", (event) => {
-      event.stopPropagation();
-      this.dismissPreview();
-    });
-    const open = () => this.openPreviewTarget(target, status);
+    const showFeedback = (message) => {
+      loading.textContent = message;
+      if (!loading.isConnected) body.append(loading);
+    };
+    const open = () => this.openPreviewTarget(target, showFeedback);
     body.addEventListener("click", open);
     body.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -649,8 +638,6 @@ export class TerminalSession {
           return;
         }
         this.previewData = prepared;
-        title.textContent = prepared.title || target.text;
-        status.textContent = prepared.viewerKind === "web" ? "Website · click to open" : `${prepared.viewerKind || "file"} · click to open`;
         if (prepared.viewerKind === "image" && prepared.resourceUrl) {
           const image = document.createElement("img");
           image.className = "terminal-link-preview-image";
@@ -660,7 +647,6 @@ export class TerminalSession {
             loading.textContent = "Image preview is unavailable. Click to open it.";
           });
           preview.classList.add("is-image");
-          header.remove();
           frame.replaceWith(image);
           image.src = prepared.resourceUrl;
           return;
@@ -670,8 +656,7 @@ export class TerminalSession {
       })
       .catch((error) => {
         if (request !== this.previewRequest || this.previewElement !== preview) return;
-        loading.textContent = error?.message || String(error);
-        status.textContent = "Click to try opening";
+        showFeedback(error?.message || String(error));
       });
   }
 

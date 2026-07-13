@@ -25,6 +25,20 @@ function folderPaneWidth(value) {
   return Math.min(420, Math.max(160, Number(value) || 230));
 }
 
+export function folderPanePreviewAnchor(rowAnchor = {}, folderPaneRect = null) {
+  const paneRight = Number(folderPaneRect?.right);
+  const rowRight = Number(rowAnchor?.right);
+  const rightEdge = Number.isFinite(paneRight)
+    ? paneRight
+    : (Number.isFinite(rowRight) ? rowRight : Number(rowAnchor?.left) || 0);
+  return {
+    left: rightEdge + 8,
+    right: rightEdge + 9,
+    top: Number(rowAnchor?.top) || 0,
+    bottom: Number(rowAnchor?.bottom) || Number(rowAnchor?.top) || 1
+  };
+}
+
 function scheduleFrame(callback) {
   if (typeof requestAnimationFrame === "function") requestAnimationFrame(callback);
   else callback();
@@ -142,7 +156,6 @@ export class AppController {
     this.wakePresentation = "terminal";
     this.native = backend.isNative;
     this.fileViewUrl = null;
-    this.folderFilePreviewUrl = null;
     this.nativeWebviewUrls = new Map();
     this.clipboardPollTimer = null;
     this.clipboardPolling = false;
@@ -150,6 +163,8 @@ export class AppController {
     this.systemMonitorRefreshing = false;
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
+    this.folderPreviewPath = null;
+    this.folderPreviewReturnSubtabId = null;
     this.configurationReady = false;
     this.terminalCompletions = [];
     this.terminalCompletionIndex = -1;
@@ -199,7 +214,6 @@ export class AppController {
         openWebDialog: (dialog) => this.openWebDialog(dialog),
         openExternal: (path) => this.openExternal(path),
         openFileInWebview: (path, metadata, options) => this.openFileInWebview(path, metadata, options),
-        prepareFilePreview: (path, metadata) => this.prepareFolderFilePreview(path, metadata),
         copyText: (text) => this.backend.writeClipboardText
           ? this.backend.writeClipboardText(text)
           : navigator.clipboard.writeText(text),
@@ -1005,7 +1019,6 @@ export class AppController {
     const insideSystemKillPrompt = event.target?.closest?.(".system-kill-prompt");
     const insideTunnelUrlMenu = event.target?.closest?.(".process-detail-port-url-menu, .process-detail-port-url");
     const insideCommandMenu = event.target?.closest?.(".command-menu-wrap");
-    const insideFolderFilePreview = event.target?.closest?.(".folder-file-preview");
     const target = event.target?.closest?.("[data-action]");
     if (hasAssistantActionPopup(this.state) && !insideAssistantPopup) {
       await this.runInternal("transcript dismiss");
@@ -1015,11 +1028,6 @@ export class AppController {
     }
     if (this.state.ui.commandMenuOpen && !insideCommandMenu) {
       this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
-    }
-    const filePreview = activeWorkspace(this.state).viewer;
-    if (filePreview.mode === "inspect" && !filePreview.pinned && !insideFolderFilePreview) {
-      this.releaseFolderFilePreview();
-      this.dispatch({ type: "FILE_PREVIEW_DISMISS", payload: {} }, { preserveInput: true });
     }
     const insideClipboardInfo = event.target?.closest?.(".clipboard-info-popup");
     const clipboardInfoTrigger = event.target?.closest?.('[data-action="clipboard-info"], [data-action="clipboard-menu"]');
@@ -1234,21 +1242,16 @@ export class AppController {
           break;
         case "file-entry":
           this.cancelFolderPathNavigation();
-          await this.openFolderEntry(target.dataset.path, target.dataset.kind);
-          break;
-        case "file-preview-pin": {
-          const pinned = Boolean(activeWorkspace(this.state).viewer.pinned);
-          await this.runInternal(`file preview-pin ${pinned ? "off" : "on"}`);
-          break;
-        }
-        case "file-preview-open-tab": {
-          const path = target.dataset.path || activeWorkspace(this.state).viewer.path;
-          if (path) {
-            await this.runInternal(`file open ${quoteArg(path)}`, { fileOpenMode: "new" });
-            this.releaseFolderFilePreview();
+          {
+            const rowAnchor = target.getBoundingClientRect?.();
+            const folderPaneRect = this.view.root.querySelector?.(".folder-pane")?.getBoundingClientRect?.();
+            await this.openFolderEntry(target.dataset.path, target.dataset.kind, {
+              previewAnchor: folderPanePreviewAnchor(rowAnchor, folderPaneRect),
+              previewDocument: target.ownerDocument || (typeof document !== "undefined" ? document : null),
+              previewText: target.querySelector?.(".file-name")?.textContent?.trim()
+            });
           }
           break;
-        }
         case "terminal-completion-select":
           this.flushTerminalCompletions();
           this.acceptTerminalCompletion(Number(target.dataset.index));
@@ -2409,12 +2412,6 @@ export class AppController {
       : terminalId;
     const entries = await this.backend.listDirectory(path);
     const focusTerminal = workspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal";
-    const preservePinnedPreview = workspace?.folder?.path === path
-      && workspace?.viewer?.mode === "inspect"
-      && workspace?.viewer?.pinned;
-    if (workspaceId === this.state.activeTabId && workspace?.viewer?.mode === "inspect" && !preservePinnedPreview) {
-      this.releaseFolderFilePreview();
-    }
     // Apply both events in one pass so a directory change costs one render
     // (and one workspace persist) instead of two full DOM rebuilds.
     this.dispatch({ type: "FOLDER_PATH_SET", payload: { workspaceId, path } }, { preserveInput: true, focusTerminal, render: false });
@@ -2474,22 +2471,61 @@ export class AppController {
     this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } }, { preserveInput: true, focusTerminal });
   }
 
-  async openFolderEntry(path, kind, { forceOpen = false } = {}) {
+  showFolderEntryPreview(path, { previewAnchor, previewDocument, previewText } = {}) {
+    const session = this.activeTerminalSession();
+    this.folderPreviewPath = path;
+    this.folderPreviewReturnSubtabId = activeWorkspace(this.state).activeSubtabId;
+    session.showPreview?.({
+      kind: "file",
+      value: path,
+      text: previewText || path.split(/[\\/]/u).filter(Boolean).at(-1) || path,
+      source: "folder-pane"
+    }, previewAnchor || { left: 0, right: 1, top: 0, bottom: 1 }, previewDocument || (typeof document !== "undefined" ? document : null));
+  }
+
+  async inspectFolderEntryInFloatingPreview(path, previewOptions) {
+    await this.runInternal(`file inspect ${quoteArg(path)}`, { fileInspectMode: "floating" });
+    this.showFolderEntryPreview(path, previewOptions);
+  }
+
+  async openFolderEntry(path, kind, { forceOpen = false, ...previewOptions } = {}) {
+    const workspace = activeWorkspace(this.state);
+    const repeat = workspace.folder.selectedPath === path;
+    const previewSession = this.activeTerminalSession();
+    // The preview's capture-phase outside-click listener removes its DOM node
+    // before a repeated folder-row click reaches this handler. Keep the
+    // controller-owned path as the interaction stage so that click still opens.
+    const previewActive = repeat && this.folderPreviewPath === path;
     if (kind === "directory") {
-      const workspace = activeWorkspace(this.state);
-      if (workspace.viewer?.mode === "inspect") this.releaseFolderFilePreview();
-      if (!forceOpen && workspace.folder.selectedPath !== path) {
-        this.dispatch({ type: "FOLDER_ENTRY_SELECT", payload: { path } }, { preserveInput: true });
+      if (!forceOpen && !previewActive) {
+        await this.inspectFolderEntryInFloatingPreview(path, previewOptions);
         return;
       }
+      previewSession.dismissPreview?.();
+      this.folderPreviewPath = null;
       await this.changeDirectory(path, { echoInTerminal: true });
       return;
     }
-    const workspace = activeWorkspace(this.state);
-    const repeat = workspace.folder.selectedPath === path;
-    const action = forceOpen || repeat ? "open" : "inspect";
-    await this.runInternal(`file ${action} ${quoteArg(path)}`);
-    if (action === "open") this.releaseFolderFilePreview();
+    const openTab = workspace.subtabs.find((item) => item.type === "webview" && item.filePath === path);
+    if (!forceOpen && repeat && openTab) {
+      const returnSubtabId = this.folderPreviewReturnSubtabId;
+      await this.runInternal(`subtab close ${openTab.id}`);
+      if (returnSubtabId && activeWorkspace(this.state).subtabs.some((item) => item.id === returnSubtabId)) {
+        await this.runInternal(`subtab select ${returnSubtabId}`);
+      }
+      await this.inspectFolderEntryInFloatingPreview(path, previewOptions);
+      return;
+    }
+    if (forceOpen && openTab) {
+      await this.runInternal(`subtab select ${openTab.id}`);
+      return;
+    }
+    if (!forceOpen && !previewActive) {
+      await this.inspectFolderEntryInFloatingPreview(path, previewOptions);
+      return;
+    }
+    previewSession.dismissPreview?.();
+    await this.runInternal(`file open ${quoteArg(path)}`, { fileOpenMode: "new" });
   }
 
   openSingletonSubtab(type) {
@@ -2915,8 +2951,7 @@ export class AppController {
     if (!this.native) return;
     const subtab = activeSubtab(this.state);
     const host = this.view.root.querySelector?.("#native-webview-host");
-    const folderPreviewOpen = activeWorkspace(this.state).viewer?.mode === "inspect";
-    if (folderPreviewOpen || subtab.type !== "webview" || subtab.filePath || !host) {
+    if (subtab.type !== "webview" || subtab.filePath || !host) {
       await this.backend.hideBrowserOverlay?.();
       await this.backend.hideWebviews?.();
       return;
@@ -2982,7 +3017,7 @@ export class AppController {
     }
     if (target?.kind !== "file" || !target.value) throw new Error("Choose a file path or web URL.");
     const metadata = await this.backend.inspectFile(target.value);
-    const fileView = await this.backend.createFileView(target.value, metadata, { autoplay: false });
+    const fileView = await this.backend.createFileView(target.value, metadata, { autoplay: true });
     return { ...target, ...fileView, title: fileView.title || metadata.name || target.text, viewerKind: fileView.viewerKind || metadata.kind || "file" };
   }
 
@@ -3002,34 +3037,6 @@ export class AppController {
       return;
     }
     throw new Error("Choose a file path or web URL.");
-  }
-
-  async prepareFolderFilePreview(path, metadata) {
-    const previousUrl = this.folderFilePreviewUrl;
-    if (!this.backend.createFileView) {
-      if (previousUrl) this.backend.releaseFileView?.(previousUrl);
-      this.folderFilePreviewUrl = null;
-      return {
-        title: metadata?.name || String(path || "").split("/").pop() || "File",
-        viewerKind: metadata?.kind || "file",
-        resourceUrl: metadata?.assetUrl || null,
-        url: null
-      };
-    }
-    const mediaPreview = metadata?.kind === "audio" || metadata?.kind === "video";
-    const preview = await this.backend.createFileView(path, metadata, {
-      autoplay: mediaPreview,
-      compact: mediaPreview
-    });
-    if (previousUrl && previousUrl !== preview?.url) this.backend.releaseFileView?.(previousUrl);
-    this.folderFilePreviewUrl = preview?.url || null;
-    return preview;
-  }
-
-  releaseFolderFilePreview() {
-    if (!this.folderFilePreviewUrl) return;
-    this.backend.releaseFileView?.(this.folderFilePreviewUrl);
-    this.folderFilePreviewUrl = null;
   }
 
   async openFileInWebview(path, metadata, options = {}) {

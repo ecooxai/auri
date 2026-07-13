@@ -36,10 +36,14 @@ test("terminal sessions receive command-backed Insert and Copy callbacks", async
 test("terminal sessions receive file and URL mini-preview actions", async () => {
   let actions;
   const calls = [];
+  const previewOptions = [];
   const backend = {
     isNative: true,
     inspectFile: async (path) => ({ path, name: "test.png", kind: "image", mime: "image/png" }),
-    createFileView: async (path) => ({ url: `http://localhost:8890${path}?view=1`, resourceUrl: `http://localhost:8890${path}`, title: "test.png", filePath: path, mime: "text/html", viewerKind: "image" }),
+    createFileView: async (path, metadata, options) => {
+      previewOptions.push(options);
+      return { url: `http://localhost:8890${path}?view=1&autoplay=1`, resourceUrl: `http://localhost:8890${path}`, title: "test.png", filePath: path, mime: "text/html", viewerKind: "image" };
+    },
     releaseFileView: (url) => calls.push(["release", url])
   };
   const view = {
@@ -66,7 +70,8 @@ test("terminal sessions receive file and URL mini-preview actions", async () => 
   await actions.openPreview({ kind: "url", value: "https://example.com/page" });
   actions.releasePreview(filePreview);
 
-  assert.equal(filePreview.url, "http://localhost:8890/tmp/test.png?view=1");
+  assert.equal(filePreview.url, "http://localhost:8890/tmp/test.png?view=1&autoplay=1");
+  assert.deepEqual(previewOptions, [{ autoplay: true }]);
   assert.equal(filePreview.viewerKind, "image");
   assert.equal(filePreview.resourceUrl, "http://localhost:8890/tmp/test.png");
   assert.equal(webPreview.url, "https://example.com/page");
@@ -76,7 +81,7 @@ test("terminal sessions receive file and URL mini-preview actions", async () => 
     ["subtab new webview", undefined],
     ['web open "https://example.com/page"', undefined]
   ]);
-  assert.deepEqual(calls, [["release", "http://localhost:8890/tmp/test.png?view=1"]]);
+  assert.deepEqual(calls, [["release", "http://localhost:8890/tmp/test.png?view=1&autoplay=1"]]);
 });
 test("terminal directory previews show folder contents and open through the folder command", async () => {
   let actions;

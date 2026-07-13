@@ -294,10 +294,37 @@ pub fn folder_info(path: &str) -> Result<FolderInfo, String> {
 pub fn inspect_file(path: &str) -> Result<FileInfo, String> {
     let resolved = expand_path(path)?;
     let metadata = fs::metadata(&resolved).map_err(|error| error.to_string())?;
+    let path_string = display_path(&resolved);
+    let name = resolved
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(if metadata.is_dir() { "/" } else { "file" })
+        .to_string();
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64);
+
+    if metadata.is_dir() {
+        let info = FileInfo {
+            path: path_string,
+            name,
+            kind: "directory".to_string(),
+            file_type: "FOLDER".to_string(),
+            size: 0,
+            width: None,
+            height: None,
+            codec: None,
+            bitrate: None,
+            sample_rate: None,
+            modified,
+        };
+        return Ok(info);
+    }
     if !metadata.is_file() {
         return Err("The selected path is not a file.".to_string());
     }
-    let path_string = display_path(&resolved);
     let kind = file_kind(&path_string).to_string();
     let (mut width, mut height) = image_dimensions(&resolved).unwrap_or((0, 0));
     let mut codec = None;
@@ -318,19 +345,9 @@ pub fn inspect_file(path: &str) -> Result<FileInfo, String> {
         }
     }
 
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis() as u64);
-
     Ok(FileInfo {
         path: path_string.clone(),
-        name: resolved
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("file")
-            .to_string(),
+        name,
         kind,
         file_type: resolved
             .extension()
@@ -862,6 +879,20 @@ mod folder_tests {
         assert_eq!(info.total_size, 4);
         assert!(info.permissions.read);
         assert!(!info.owner.is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn inspect_file_returns_directory_metadata_for_folder_preview_selection() {
+        let directory = test_directory();
+
+        let info = inspect_file(&directory.to_string_lossy()).unwrap();
+
+        assert_eq!(info.path, display_path(&directory));
+        assert_eq!(info.name, directory.file_name().unwrap().to_string_lossy());
+        assert_eq!(info.kind, "directory");
+        assert_eq!(info.file_type, "FOLDER");
+        assert_eq!(info.size, 0);
         fs::remove_dir_all(directory).unwrap();
     }
 }

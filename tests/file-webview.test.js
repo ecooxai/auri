@@ -183,6 +183,17 @@ test("native large video preview streams through the active local HTTP viewer", 
   }
 });
 
+test("native mini media preview URLs request autoplay without changing normal viewer URLs", () => {
+  assert.equal(
+    localFileViewerUrl("/tmp/clip.mp4", 8895, "view", { autoplay: true }),
+    "http://localhost:8895/tmp/clip.mp4?view=1&autoplay=1"
+  );
+  assert.equal(
+    localFileViewerUrl("/tmp/clip.mp4", 8895, "view"),
+    "http://localhost:8895/tmp/clip.mp4?view=1"
+  );
+});
+
 test("native directory previews use the query-free folder browser URL", async () => {
   const backend = new Backend();
   const calls = [];
@@ -443,4 +454,24 @@ test("the embedded web viewer serves ranges, saves, and covers common file types
   assert.match(viewer, /Convert to MP4/);
   assert.match(viewer, /auri-convert-bitrate/);
   assert.match(viewer, /4000/);
+  assert.match(viewer, /query\.has\('autoplay'\)/);
+  assert.match(viewer, /media\.play\(\)/);
+  assert.doesNotMatch(viewer, /<div class="media-title"/);
+  assert.match(viewer, /\.app\{[^}]*grid-template-rows:1fr auto/s);
+  assert.match(viewer, /<main class="main"[^>]*>[\s\S]*<header class="topbar">/);
+  assert.match(viewer, /\.media-stage\{[^}]*align-items:start/s);
+  assert.match(viewer, /\.media-facts\{[^}]*top:8px[^}]*background:rgba\(0,0,0,\.5\)[^}]*color:#fff[^}]*font:600 9px/s);
+  assert.match(viewer, /facts\.push\(formatSizeCompact\(size\)\)/);
+  assert.match(viewer, /Math\.round\(details\.width\)\+'x'\+Math\.round\(details\.height\)/);
+  assert.match(viewer, /details\.kind==='video'.*formatVideoBitrate/s);
+  assert.match(viewer, /details\.kind==='audio'.*kbps/s);
+  assert.match(viewer, /facts\.join\('\\u00a0\\u00a0'\)/);
+  assert.match(viewer, /@media\(max-height:360px\)[\s\S]*?\.brand\{display:none\}/);
+  assert.doesNotMatch(viewer, /facts\.push\('Size /);
+  assert.doesNotMatch(viewer, /facts\.push\('Resolution /);
+  assert.doesNotMatch(viewer, /facts\.push\('Bitrate /);
+  assert.match(viewer, /function showMediaFacts\(/);
+  assert.match(viewer, /naturalWidth/);
+  assert.match(viewer, /videoWidth/);
+  assert.match(viewer, /function estimatedBitrate\(/);
 });

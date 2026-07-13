@@ -62,7 +62,7 @@ test("clipboard panel renders captured image thumbnails as pasteable cards", asy
   assert.match(html, /data-action="clipboard-insert"/);
 });
 
-test("native paste-back keeps Auri visible and switches apps before pasting", () => {
+test("native paste-back keeps Auri visible, preserves Linux clipboard ownership, and reports paste failures", () => {
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
   const clipboard = readFileSync(new URL("../src-tauri/src/core/clipboard.rs", import.meta.url), "utf8");
   const commandStart = lib.indexOf("fn paste_clipboard_entry");
@@ -70,7 +70,12 @@ test("native paste-back keeps Auri visible and switches apps before pasting", ()
   const command = lib.slice(commandStart, commandEnd);
   assert.doesNotMatch(command, /\.hide\(/);
   assert.doesNotMatch(command, /\.minimize\(/);
+  assert.match(command, /spawn_blocking/);
   assert.match(command, /focus_previous_and_paste/);
+  assert.doesNotMatch(command, /std::thread::spawn/);
+  assert.doesNotMatch(command, /let _ = clipboard::focus_previous_and_paste/);
+  assert.match(clipboard, /OnceLock<Mutex<Clipboard>>/);
+  assert.match(clipboard, /persistent_clipboard/);
   assert.match(clipboard, /key code 48 using command down/);
   assert.match(clipboard, /delay 0\.5/);
   assert.match(clipboard, /keystroke \\"v\\" using command down/);

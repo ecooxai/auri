@@ -288,45 +288,24 @@ function metadataRows(meta) {
   return values.map(([label, value]) => `<div><span>${label}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
 }
 
-export function renderFolderFilePreview(state) {
-  const workspace = activeWorkspace(state);
-  const viewer = workspace.viewer || {};
-  if (viewer.mode !== "inspect" || !viewer.path || workspace.folder.selectedPath !== viewer.path) return "";
-  const meta = viewer.metadata || {};
-  const preview = viewer.preview || {};
-  const title = meta.name || preview.title || viewer.path.split("/").pop() || "File";
-  const kind = preview.viewerKind || meta.kind || "file";
-  const imageUrl = preview.resourceUrl || meta.assetUrl || "";
-  let body = `<div class="folder-file-preview-fallback"><span>${iconForEntry(meta)}</span><p>Preview is unavailable. Open the file in a full tab.</p></div>`;
-  if (kind === "image" && imageUrl) {
-    body = `<img class="folder-file-preview-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}">`;
-  } else if (preview.url) {
-    body = `<iframe class="folder-file-preview-frame" src="${escapeHtml(preview.url)}" title="Preview of ${escapeHtml(title)}" allow="${FILE_WEBVIEW_FEATURE_POLICY}" allowfullscreen></iframe>`;
-  } else if (meta.kind === "text" && meta.preview) {
-    body = `<pre class="folder-file-preview-text">${escapeHtml(meta.preview)}</pre>`;
-  }
-  return `<aside class="folder-file-preview" role="dialog" aria-label="Preview ${escapeHtml(title)}">
-    <header><div class="folder-file-preview-title"><strong title="${escapeHtml(viewer.path)}">${escapeHtml(title)}</strong><small>${escapeHtml(kind)} preview</small></div>
-      <div class="folder-file-preview-actions">
-        <button type="button" class="icon-button folder-file-preview-pin${viewer.pinned ? " is-active" : ""}" data-action="file-preview-pin" aria-label="${viewer.pinned ? "Unpin" : "Pin"} ${escapeHtml(title)} preview" aria-pressed="${viewer.pinned ? "true" : "false"}" title="${viewer.pinned ? "Unpin preview" : "Pin preview"}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 5 3 3v2h-4v7l-1 1-1-1v-7H7v-2l3-3-1-5Z"/></svg></button>
-        <button type="button" class="icon-button folder-file-preview-open" data-action="file-preview-open-tab" data-path="${escapeHtml(viewer.path)}" aria-label="Open ${escapeHtml(title)} in a new tab" title="Open in new tab">↗</button>
-      </div>
-    </header>
-    <div class="folder-file-preview-body">${body}</div>
-  </aside>`;
-}
-
 export function renderViewer(state) {
   const viewer = activeWorkspace(state).viewer;
-  if (!viewer.path) return renderEmptyPanel("◈", "Choose a file", "Click a file once for details and again to open it.");
+  if (!viewer.path) return renderEmptyPanel("◈", "Choose a file or folder", "Click once for a preview and again to open it.");
   const meta = viewer.metadata || {};
   let preview = `<div class="generic-preview"><span>${iconForEntry(meta)}</span><p>Open this file in its native application.</p></div>`;
+  if (meta.kind === "directory") {
+    const entries = Array.isArray(meta.entries) ? meta.entries : [];
+    const rows = entries.length
+      ? entries.map((entry) => `<div class="folder-preview-row"><span class="file-icon ${entry.kind === "directory" ? "is-directory" : ""}">${entry.kind === "directory" ? "◇" : iconForEntry(entry)}</span><strong>${escapeHtml(entry.name || entry.path || "")}</strong>${entry.kind === "directory" ? "" : `<small>${formatBytes(entry.size || 0)}</small>`}</div>`).join("")
+      : `<div class="folder-preview-empty">This folder is empty.</div>`;
+    preview = `<div class="folder-preview"><header><span>◇</span><div><strong>${escapeHtml(meta.name || viewer.path.split("/").pop())}</strong><small>${entries.length} ${entries.length === 1 ? "item" : "items"}</small></div></header><div class="folder-preview-list">${rows}</div><p>Click the folder again to open it.</p></div>`;
+  }
   if (meta.kind === "image") preview = meta.assetUrl ? `<div class="image-preview"><img src="${escapeHtml(meta.assetUrl)}" alt="${escapeHtml(meta.name || "Image preview")}"></div>` : `<div class="image-preview"><div class="image-placeholder"><span>◈</span><strong>${escapeHtml(meta.name || viewer.path)}</strong><small>${meta.width || "—"} × ${meta.height || "—"}</small></div></div>`;
   if (meta.kind === "audio") preview = `<div class="media-preview"><span class="media-art">♪</span><audio controls src="${escapeHtml(meta.assetUrl || "")}"></audio></div>`;
   if (meta.kind === "video") preview = `<div class="media-preview"><video controls src="${escapeHtml(meta.assetUrl || "")}"></video></div>`;
   if (meta.kind === "text") preview = `<pre class="text-preview">${escapeHtml(meta.preview || "Select Open to load the native file contents.")}</pre>`;
   return `<section class="viewer-panel">
-    <header class="panel-title"><div><span>${iconForEntry(meta)}</span><div><small>FILE</small><h2>${escapeHtml(meta.name || viewer.path.split("/").pop())}</h2></div></div><div class="viewer-actions">
+    <header class="panel-title"><div><span>${iconForEntry(meta)}</span><div><small>${meta.kind === "directory" ? "FOLDER" : "FILE"}</small><h2>${escapeHtml(meta.name || viewer.path.split("/").pop())}</h2></div></div><div class="viewer-actions">
       <button class="action-button secondary" type="button" data-action="file-attach-ai" data-path="${escapeHtml(viewer.path)}" title="Attach this file to the next AI prompt"><span>✦</span>Add to AI chat</button>
       ${button("⧉", "Open in web viewer", "file-serve")}
       ${button("↗", "Open externally", "file-external")}

@@ -508,46 +508,6 @@ test("app exit command delegates to the platform action", async () => {
 });
 
 
-test("file inspect prepares a floating preview without switching the active subtab", async () => {
-  const h = harness();
-  h.backend.inspectFile = async (path) => ({ path, name: "notes.txt", kind: "text" });
-  h.actions = {
-    prepareFilePreview: async (path) => ({
-      url: `http://localhost:8895${path}?view=1`,
-      resourceUrl: `http://localhost:8895${path}`,
-      title: "notes.txt",
-      viewerKind: "text"
-    })
-  };
-  const before = activeSubtab(h.state()).id;
-
-  await executeCommand('file inspect "/tmp/notes.txt"', h);
-
-  assert.equal(activeSubtab(h.state()).id, before);
-  assert.equal(h.state().tabs[0].viewer.mode, "inspect");
-  assert.equal(h.state().tabs[0].viewer.preview.url, "http://localhost:8895/tmp/notes.txt?view=1");
-});
-
-test("media inspection prepares an autoplaying compact mini preview", async () => {
-  const { AppController } = await import("../src/controllers/app-controller.js");
-  let options = null;
-  const controller = new AppController({
-    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
-    backend: {
-      isNative: true,
-      createFileView: async (path, metadata, received) => {
-        options = received;
-        return { url: "http://localhost:8895/tmp/song.mp3?view=1&autoplay=1&compact=1", viewerKind: metadata.kind };
-      }
-    },
-    terminalSessionFactory: () => ({ initialize: async () => {} })
-  });
-
-  await controller.prepareFolderFilePreview("/tmp/song.mp3", { name: "song.mp3", kind: "audio" });
-
-  assert.deepEqual(options, { autoplay: true, compact: true });
-});
-
 test("file preview pin command updates the active preview state", async () => {
   const h = harness();
   h.dispatch({
@@ -612,92 +572,145 @@ test("macOS Finder open requests create one current webview tab per file", async
   assert.equal(controller.state.tabs[0].activeSubtabId, fileTabs[1].id);
 });
 
-test("folder file clicks inspect first and open the same file on the repeat click", async () => {
+test("native folder file clicks reuse the floating terminal preview, open, then close back to floating preview", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
-  const commands = [];
-  const controller = new AppController({
-    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
-    backend: { isNative: true },
-    terminalSessionFactory: () => ({ initialize: async () => {} })
-  });
-  controller.runInternal = async (command) => {
-    commands.push(command);
-    if (command.startsWith("file inspect")) {
-      controller.state = reduceState(controller.state, {
-        type: "FILE_SELECT",
-        payload: { path: "/tmp/notes.txt", metadata: { name: "notes.txt", kind: "text" }, open: false }
-      });
+  const previews = [];
+  let dismissals = 0;
+  const previewSession = {
+    initialize: async () => {},
+    run: async () => {},
+    previewElement: null,
+    showPreview(target, anchor, document) {
+      previews.push({ target, anchor, document });
+      this.previewElement = { isConnected: true };
+    },
+    dismissPreview() {
+      dismissals += 1;
+      this.previewElement = null;
     }
   };
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: true,
+      inspectFile: async (path) => ({ path, name: "notes.txt", kind: "text", preview: "hello" }),
+      createFileView: async (path) => ({
+        url: `http://localhost:8895${path}?view=1`,
+        title: "notes.txt",
+        filePath: path,
+        mime: "text/html"
+      })
+    },
+    terminalSessionFactory: () => previewSession
+  });
+  const anchor = { left: 12, right: 220, top: 80, bottom: 108 };
+  const ownerDocument = { body: {} };
 
-  await controller.openFolderEntry("/tmp/notes.txt", "text");
-  await controller.openFolderEntry("/tmp/notes.txt", "text");
+  await controller.openFolderEntry("/tmp/notes.txt", "text", { previewAnchor: anchor, previewDocument: ownerDocument, previewText: "notes.txt" });
+  let tab = controller.state.tabs[0];
+  let active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+  assert.equal(active.type, "terminal");
+  assert.equal(tab.viewer.path, "/tmp/notes.txt");
+  assert.equal(tab.viewer.mode, "inspect");
+  assert.equal(tab.subtabs.some((item) => item.type === "viewer"), false);
+  assert.equal(tab.subtabs.some((item) => item.filePath === "/tmp/notes.txt"), false);
+  assert.deepEqual(previews[0], {
+    target: { kind: "file", value: "/tmp/notes.txt", text: "notes.txt", source: "folder-pane" },
+    anchor,
+    document: ownerDocument
+  });
 
-  assert.deepEqual(commands, ['file inspect "/tmp/notes.txt"', 'file open "/tmp/notes.txt"']);
+  // The preview's capture-phase outside-click handler removes the card before
+  // the folder row receives its second click. The controller must still advance
+  // the interaction cycle instead of recreating the mini preview.
+  previewSession.previewElement = null;
+  await controller.openFolderEntry("/tmp/notes.txt", "text", { previewAnchor: anchor, previewDocument: ownerDocument, previewText: "notes.txt" });
+  tab = controller.state.tabs[0];
+  active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+  assert.equal(active.type, "webview");
+  assert.equal(active.filePath, "/tmp/notes.txt");
+  assert.equal(dismissals, 1);
+
+  await controller.openFolderEntry("/tmp/notes.txt", "text", { previewAnchor: anchor, previewDocument: ownerDocument, previewText: "notes.txt" });
+  tab = controller.state.tabs[0];
+  active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+  assert.equal(active.type, "terminal");
+  assert.equal(tab.viewer.path, "/tmp/notes.txt");
+  assert.equal(tab.viewer.mode, "inspect");
+  assert.equal(tab.subtabs.some((item) => item.type === "viewer"), false);
+  assert.equal(tab.subtabs.some((item) => item.filePath === "/tmp/notes.txt"), false);
+  assert.equal(previews.length, 2);
 });
 
-test("clicking outside an unpinned folder preview dismisses it, while a pinned preview stays open", async () => {
+test("folder previews anchor immediately to the right of the folder pane", async () => {
+  const { folderPanePreviewAnchor } = await import("../src/controllers/app-controller.js");
+
+  assert.deepEqual(
+    folderPanePreviewAnchor(
+      { left: 118, right: 362, top: 281, bottom: 319 },
+      { left: 105, right: 382, top: 145, bottom: 690 }
+    ),
+    { left: 390, right: 391, top: 281, bottom: 319 }
+  );
+});
+
+test("folder first click reuses the floating directory preview and second click enters it", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
-  const makeController = () => new AppController({
-    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
-    backend: { isNative: true, releaseFileView() {} },
-    terminalSessionFactory: () => ({ initialize: async () => {} })
-  });
-  const seed = (controller, pinned) => {
-    controller.state = reduceState(controller.state, {
-      type: "FILE_SELECT",
-      payload: { path: "/tmp/song.mp3", metadata: { name: "song.mp3", kind: "audio" }, preview: { url: "blob:preview" }, open: false }
-    });
-    controller.state = reduceState(controller.state, { type: "FILE_PREVIEW_PIN_SET", payload: { pinned } });
-    controller.folderFilePreviewUrl = "blob:preview";
+  const commandCalls = [];
+  const previews = [];
+  const previewSession = {
+    initialize: async () => {},
+    run: async () => {},
+    previewElement: null,
+    showPreview(target, anchor, document) {
+      previews.push({ target, anchor, document });
+      this.previewElement = { isConnected: true };
+    },
+    dismissPreview() { this.previewElement = null; }
   };
-  const outsideEvent = { target: { closest: () => null }, preventDefault() {} };
-
-  const unpinned = makeController();
-  seed(unpinned, false);
-  await unpinned.handleClick(outsideEvent);
-  assert.equal(unpinned.state.tabs[0].viewer.mode, "empty");
-
-  const pinned = makeController();
-  seed(pinned, true);
-  await pinned.handleClick(outsideEvent);
-  assert.equal(pinned.state.tabs[0].viewer.mode, "inspect");
-});
-
-test("folder mini-preview pin button toggles through the shared file command", async () => {
-  const { AppController } = await import("../src/controllers/app-controller.js");
-  const calls = [];
   const controller = new AppController({
     view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
-    backend: { isNative: true },
-    terminalSessionFactory: () => ({ initialize: async () => {} })
+    backend: {
+      isNative: true,
+      inspectFile: async (path) => ({ path, name: "src", kind: "directory", mime: "inode/directory" }),
+      listDirectory: async (path) => path === "/tmp/src"
+        ? [
+            { path: "/tmp/src/index.js", name: "index.js", kind: "text" },
+            { path: "/tmp/src/components", name: "components", kind: "directory" }
+          ]
+        : [],
+      runCommand: async (command, cwd) => {
+        commandCalls.push({ command, cwd });
+        return { code: 0, cwd: "/tmp/src", stdout: "", stderr: "" };
+      }
+    },
+    terminalSessionFactory: () => previewSession
   });
-  controller.runInternal = async (command) => { calls.push(command); };
+  controller.state.tabs[0].folder.path = "/tmp";
+  // A path remembered from an older, dismissed preview must not make a newly
+  // selected folder skip its content preview and navigate immediately.
+  controller.folderPreviewPath = "/tmp/src";
+  controller.state.tabs[0].folder.selectedPath = null;
+  const anchor = { left: 10, right: 210, top: 40, bottom: 68 };
+  const ownerDocument = { body: {} };
 
-  await controller.handleClick({
-    target: { closest: (selector) => selector === ".folder-file-preview" ? {} : selector === "[data-action]" ? { dataset: { action: "file-preview-pin" } } : null },
-    preventDefault() {}
+  await controller.openFolderEntry("/tmp/src", "directory", { previewAnchor: anchor, previewDocument: ownerDocument, previewText: "src" });
+  let tab = controller.state.tabs[0];
+  let active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+  assert.equal(active.type, "terminal");
+  assert.equal(tab.viewer.path, "/tmp/src");
+  assert.deepEqual(tab.viewer.metadata.entries.map((entry) => entry.name), ["index.js", "components"]);
+  assert.deepEqual(commandCalls, []);
+  assert.deepEqual(previews[0], {
+    target: { kind: "file", value: "/tmp/src", text: "src", source: "folder-pane" },
+    anchor,
+    document: ownerDocument
   });
 
-  assert.deepEqual(calls, ["file preview-pin on"]);
-});
-
-test("folder mini-preview new-tab button opens the selected file in a fresh full viewer tab", async () => {
-  const { AppController } = await import("../src/controllers/app-controller.js");
-  const calls = [];
-  const controller = new AppController({
-    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
-    backend: { isNative: true },
-    terminalSessionFactory: () => ({ initialize: async () => {} })
-  });
-  controller.runInternal = async (command, options) => { calls.push([command, options]); };
-
-  await controller.handleClick({
-    target: { closest: () => ({ dataset: { action: "file-preview-open-tab", path: "/tmp/read me.txt" } }) },
-    preventDefault() {}
-  });
-
-  assert.deepEqual(calls, [['file open "/tmp/read me.txt"', { fileOpenMode: "new" }]]);
+  await controller.openFolderEntry("/tmp/src", "directory", { previewAnchor: anchor, previewDocument: ownerDocument, previewText: "src" });
+  tab = controller.state.tabs[0];
+  assert.deepEqual(commandCalls, [{ command: "cd '/tmp/src'", cwd: "/tmp" }]);
+  assert.equal(tab.folder.path, "/tmp/src");
 });
 
 test("folder file double-click opens the file directly in the webview app", async () => {
@@ -738,6 +751,7 @@ test("folder directory rows select first and open on the second click", async ()
     view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
     backend: {
       isNative: false,
+      inspectFile: async (path) => ({ path, name: "src", kind: "directory", mime: "inode/directory" }),
       runCommand: async (command, cwd) => {
         commandCalls.push({ command, cwd });
         return { code: 0, cwd: "/tmp/src", stdout: "", stderr: "" };
@@ -2524,41 +2538,6 @@ test("the dedicated open button opens the tunnel URL directly without requiring 
     preventDefault() {}
   });
   assert.deepEqual(opened, ["https://miniswetagentmcpmacneo.22222233.xyz"]);
-});
-
-test("same-directory sync keeps a pinned preview resource but closes an unpinned one", async () => {
-  const { AppController } = await import("../src/controllers/app-controller.js");
-  const released = [];
-  const makeController = (pinned) => {
-    const controller = new AppController({
-      view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
-      backend: {
-        isNative: true,
-        listDirectory: async () => [],
-        releaseFileView: (url) => released.push(url)
-      },
-      terminalSessionFactory: () => ({ initialize: async () => {} })
-    });
-    controller.state = reduceState(controller.state, { type: "FOLDER_PATH_SET", payload: { path: "/tmp/project" } });
-    controller.state = reduceState(controller.state, {
-      type: "FILE_SELECT",
-      payload: { path: "/tmp/project/song.mp3", metadata: { name: "song.mp3", kind: "audio" }, preview: { url: "blob:preview" }, open: false }
-    });
-    controller.state = reduceState(controller.state, { type: "FILE_PREVIEW_PIN_SET", payload: { pinned } });
-    controller.folderFilePreviewUrl = "blob:preview";
-    return controller;
-  };
-
-  const pinned = makeController(true);
-  await pinned.syncDirectory("/tmp/project");
-  assert.equal(pinned.state.tabs[0].viewer.mode, "inspect");
-  assert.equal(pinned.folderFilePreviewUrl, "blob:preview");
-
-  const unpinned = makeController(false);
-  await unpinned.syncDirectory("/tmp/project");
-  assert.equal(unpinned.state.tabs[0].viewer.mode, "empty");
-  assert.equal(unpinned.folderFilePreviewUrl, null);
-  assert.deepEqual(released, ["blob:preview"]);
 });
 
 test("syncDirectory applies the working directory and folder entries with a single render", async () => {

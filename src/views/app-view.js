@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { buildDiskMountRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderFolderFilePreview, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
+import { buildDiskMountRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -136,7 +136,7 @@ export class AppView {
           ${renderSubtabs(state, { native: nativeWebview })}
           <div class="workspace-grid" style="--folder-pane-width:${state.settings.folderPaneWidth}px">
             ${renderFolder(state)}
-            <div class="content-pane">${renderActivePanel(state, { native: nativeWebview })}${renderFolderFilePreview(state)}${renderAssistantTranscriptPopup(state)}</div>
+            <div class="content-pane">${renderActivePanel(state, { native: nativeWebview })}${renderAssistantTranscriptPopup(state)}</div>
           </div>
         </main>
       </div>

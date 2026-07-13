@@ -50,6 +50,12 @@ test("native folder bridge exposes creation, metadata, modification dates, and r
   assert.match(lib, /convert_media_file,/);
 });
 
+test("native file inspection accepts directories so folder preview clicks can select their row", async () => {
+  const files = await readFile("src-tauri/src/core/files.rs", "utf8");
+
+  assert.match(files, /if metadata\.is_dir\(\) \{[\s\S]*kind: "directory"\.to_string\(\)[\s\S]*file_type: "FOLDER"\.to_string\(\)[\s\S]*return Ok\(info\)/);
+});
+
 
 test("audio-to-video ffmpeg uses the shared four-megabit default and explicitly binds showwaves to the source audio", async () => {
   const [files, util] = await Promise.all([

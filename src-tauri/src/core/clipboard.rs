@@ -8,9 +8,11 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_HISTORY_ITEMS: usize = 1000;
+static PERSISTENT_CLIPBOARD: OnceLock<Mutex<Clipboard>> = OnceLock::new();
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +152,17 @@ fn current_clipboard() -> Option<CurrentClipboard> {
             let fingerprint = text_fingerprint(&text);
             CurrentClipboard::Text { text, fingerprint }
         })
+}
+
+fn persistent_clipboard() -> Result<&'static Mutex<Clipboard>, String> {
+    if let Some(clipboard) = PERSISTENT_CLIPBOARD.get() {
+        return Ok(clipboard);
+    }
+    let clipboard = Clipboard::new().map_err(|error| error.to_string())?;
+    let _ = PERSISTENT_CLIPBOARD.set(Mutex::new(clipboard));
+    PERSISTENT_CLIPBOARD
+        .get()
+        .ok_or_else(|| "System clipboard is unavailable.".to_string())
 }
 
 fn save_image(path: &Path, width: usize, height: usize, bytes: Vec<u8>) -> Result<(), String> {
@@ -347,7 +360,9 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
 }
 
 pub fn set_text(text: &str) -> Result<(), String> {
-    let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
+    let mut clipboard = persistent_clipboard()?
+        .lock()
+        .map_err(|_| "System clipboard is unavailable.".to_string())?;
     clipboard
         .set_text(text.to_string())
         .map_err(|error| error.to_string())
@@ -401,7 +416,9 @@ pub fn remove_entry(id: &str) -> Result<Vec<ClipboardEntry>, String> {
 }
 
 fn set_entry_on_clipboard(entry: &ClipboardEntry) -> Result<(), String> {
-    let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
+    let mut clipboard = persistent_clipboard()?
+        .lock()
+        .map_err(|_| "System clipboard is unavailable.".to_string())?;
     match entry.kind.as_str() {
         "text" => clipboard
             .set_text(entry.text.clone().unwrap_or_default())

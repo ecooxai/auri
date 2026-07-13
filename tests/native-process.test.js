@@ -40,14 +40,19 @@ test("native watch launch override uses the development product name", () => {
 
 test("native watch starts an isolated process without replacing another watcher or app", async () => {
   const script = await readFile("scripts/native-watch.sh", "utf8");
+  const watcher = await readFile("scripts/native-watch.mjs", "utf8");
 
   assert.doesNotMatch(script, /PID_FILE|OLD_PID|SOCKET_PATH|lsof -t/);
-  assert.match(script, /npm run dev:web/);
+  assert.match(script, /node scripts\/native-watch\.mjs/);
   assert.doesNotMatch(script, /npm run dev[^:]/);
-  assert.match(script, /AURI_DIST_DIR/);
-  assert.match(script, /TAURI_CONFIG/);
-  assert.match(script, /launch-config\.mjs.*auri-dev/);
-  assert.match(script, /cargo run --bin auri-dev/);
+  assert.doesNotMatch(script, /cargo watch/);
+  assert.match(watcher, /spawnOwned\(npmCommand, \["run", "dev:web"\]/);
+  assert.match(watcher, /AURI_DIST_DIR/);
+  assert.match(watcher, /TAURI_CONFIG/);
+  assert.match(watcher, /createTauriLaunchOverride/);
+  assert.match(watcher, /spawnOwned\("cargo", \[[\s\S]*"run"[\s\S]*"auri-dev"/);
+  assert.match(watcher, /detached:\s*true/);
+  assert.match(watcher, /killOwnedProcessGroup/);
 
   const manifest = await readFile("src-tauri/Cargo.toml", "utf8");
   assert.match(manifest, /name = "auri-dev"/);

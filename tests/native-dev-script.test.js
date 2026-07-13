@@ -5,6 +5,10 @@ import {
   findExistingAuriDevelopmentProcess,
   parseProcessTable
 } from "../scripts/native-dev-utils.mjs";
+import {
+  isNativeWatchPath,
+  normalizeWatchDelay
+} from "../scripts/native-watch-utils.mjs";
 
 test("default development commands use the guarded native watcher", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
@@ -20,12 +24,25 @@ test("default development commands use the guarded native watcher", async () => 
   assert.equal(tauriConfig.build.beforeDevCommand, "npm run dev:web");
   assert.notEqual(tauriConfig.build.beforeDevCommand, packageJson.scripts.dev);
   assert.match(nativeDev, /native-watch\.sh/);
-  assert.match(nativeWatch, /--delay\s+"\$WATCH_DELAY"/);
-  assert.match(nativeWatch, /AURI_WATCH_DELAY:-10/);
-  assert.match(nativeWatch, /trap cleanup EXIT INT TERM HUP/);
+  assert.match(nativeWatch, /node scripts\/native-watch\.mjs/);
+  assert.doesNotMatch(nativeWatch, /cargo watch/);
   assert.match(webDev, /watchFileSystem\(root/);
   assert.match(webDev, /STATIC_FILES/);
   assert.match(webDev, /scheduleStaticCopy/);
+});
+
+test("native watcher validates debounce and ignores generated build output", () => {
+  assert.equal(normalizeWatchDelay(undefined), 10_000);
+  assert.equal(normalizeWatchDelay("0.25"), 250);
+  assert.throws(() => normalizeWatchDelay("soon"), /non-negative number/);
+
+  assert.equal(isNativeWatchPath("src/controllers/app-controller.js"), true);
+  assert.equal(isNativeWatchPath("src-tauri/src/lib.rs"), true);
+  assert.equal(isNativeWatchPath("src-tauri/Cargo.toml"), true);
+  assert.equal(isNativeWatchPath("styles.css"), true);
+  assert.equal(isNativeWatchPath("src-tauri/target/debug/auri-dev"), false);
+  assert.equal(isNativeWatchPath("dist/app.js"), false);
+  assert.equal(isNativeWatchPath("node_modules/esbuild/lib/main.js"), false);
 });
 
 test("development process detection finds debug apps and ignores release apps", () => {

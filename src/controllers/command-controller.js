@@ -256,13 +256,14 @@ export async function executeCommand(input, context) {
         return { url, port: served.port, root: served.root };
       }
       if (action !== "inspect" && action !== "open") throw new Error(`Unknown file action: ${action}`);
-      const metadata = await backend.inspectFile(path);
+      const inspected = await backend.inspectFile(path);
+      const metadata = inspected.kind === "directory" && backend.listDirectory
+        ? { ...inspected, entries: await backend.listDirectory(path) }
+        : inspected;
       if (action === "inspect") {
-        const preview = actions.prepareFilePreview
-          ? await actions.prepareFilePreview(path, metadata)
-          : null;
-        dispatch({ type: "FILE_SELECT", payload: { path, metadata, preview, open: false } });
-        return { ...metadata, preview };
+        dispatch({ type: "FILE_SELECT", payload: { path, metadata, open: false } });
+        if (context.fileInspectMode !== "floating") openSubtab("viewer", context);
+        return metadata;
       }
       dispatch({ type: "FILE_SELECT", payload: { path, metadata, open: true } });
       if (!actions.openFileInWebview) throw new Error("File WebView opening is unavailable.");

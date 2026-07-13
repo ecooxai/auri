@@ -212,12 +212,13 @@ async fn set_clipboard_text(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn paste_clipboard_entry(id: String) -> Result<(), String> {
-    clipboard::prepare_paste(&id)?;
-    std::thread::spawn(|| {
-        let _ = clipboard::focus_previous_and_paste();
-    });
-    Ok(())
+async fn paste_clipboard_entry(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        clipboard::prepare_paste(&id)?;
+        clipboard::focus_previous_and_paste()
+    })
+    .await
+    .map_err(|error| format!("Clipboard paste task failed: {error}"))?
 }
 
 #[tauri::command]

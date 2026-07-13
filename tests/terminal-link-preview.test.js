@@ -283,18 +283,23 @@ test("terminal mini preview stays below normal text and flips above near the bot
   );
 });
 
-test("terminal image previews are chrome-free, 1.5x larger, and remain click-to-open", async () => {
+test("terminal previews are chrome-free, compact, and remain click-to-open", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const css = await readFile("styles.css", "utf8");
   assert.match(terminal, /terminal-link-preview/);
   assert.match(terminal, /createElement\("iframe"\)/);
+  assert.match(terminal, /frame\.setAttribute\("allow",\s*"autoplay"\)/);
   assert.match(terminal, /createElement\("img"\)/);
   assert.match(terminal, /prepared\.viewerKind === "image" && prepared\.resourceUrl/);
   assert.match(terminal, /preview\.classList\.add\("is-image"\)/);
+  assert.doesNotMatch(terminal, /preview\.append\(header, body\)/);
+  assert.doesNotMatch(terminal, /terminal-link-preview-close/);
   assert.match(terminal, /event\.button !== 0/);
   assert.match(terminal, /contextmenu[\s\S]*copySelection/);
-  assert.match(css, /\.terminal-link-preview\s*\{[^}]*width:\s*min\(450px/s);
-  assert.match(css, /\.terminal-link-preview\s*\{[^}]*height:\s*min\(330px/s);
+  assert.match(css, /\.terminal-link-preview\s*\{[^}]*width:\s*min\(max\(225px,\s*45vw\),\s*calc\(100vw - 16px\)\)/s);
+  assert.match(css, /\.terminal-link-preview\s*\{[^}]*height:\s*min\(220px,\s*calc\(100vh - 16px\)\)/s);
+  assert.match(css, /\.terminal-link-preview\s*\{[^}]*grid-template-rows:\s*1fr/s);
+  assert.doesNotMatch(css, /\.terminal-link-preview\s*>\s*header/);
   assert.match(css, /\.terminal-link-preview\.is-image[^}]*grid-template-rows:\s*1fr/s);
   assert.match(css, /\.terminal-link-preview-image[^}]*object-fit:\s*contain/s);
   assert.match(css, /\.terminal-link-preview-frame/);
