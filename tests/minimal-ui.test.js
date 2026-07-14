@@ -142,6 +142,14 @@ test("the focused workspace and subtab are marked with a light-blue background",
   assert.match(activeSubtab, /rgba\(184, 212, 254/);
 });
 
+test("top tabs stay readable between sixty and one hundred pixels", async () => {
+  const css = await readFile("styles.css", "utf8");
+  const tab = rule(css, ".subtab");
+
+  assert.match(tab, /min-width:\s*60px/);
+  assert.match(tab, /max-width:\s*100px/);
+});
+
 test("empty topbar pointer down delegates to native window dragging", async () => {
   const controller = await readFile("src/controllers/app-controller.js", "utf8");
   const backend = await readFile("src/services/backend.js", "utf8");

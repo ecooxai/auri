@@ -33,6 +33,9 @@ test("help is generated from one command registry", () => {
   assert.match(help, /auri attachment add/);
   assert.match(help, /auri input insert/);
   assert.match(help, /auri transcript dismiss/);
+  assert.match(help, /auri subtab reload/);
+  assert.match(help, /auri subtab move-window/);
+  assert.match(help, /auri subtab move-main/);
 });
 
 

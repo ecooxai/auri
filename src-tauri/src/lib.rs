@@ -569,6 +569,21 @@ fn webview_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
     webview::close(&app, &id)
 }
 
+#[tauri::command]
+fn tab_window_show(app: tauri::AppHandle, id: String, url: String, title: String) -> Result<(), String> {
+    webview::show_standalone(&app, &id, &url, &title)
+}
+
+#[tauri::command]
+fn tab_window_reload(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    webview::reload_standalone(&app, &id)
+}
+
+#[tauri::command]
+fn tab_window_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    webview::close_standalone(&app, &id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -637,6 +652,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { .. } => {
+                if let Some(id) = window.label().strip_prefix("auri-tab-window-") {
+                    let _ = window.app_handle().emit("auri-tab-window-return", serde_json::json!({ "id": id }));
+                }
                 if lifecycle::should_exit_on_close(window.label()) {
                     window.app_handle().exit(0);
                 }
@@ -705,7 +723,10 @@ pub fn run() {
             webview_overlay_hide,
             webview_overlay_update_zoom,
             webview_action,
-            webview_close
+            webview_close,
+            tab_window_show,
+            tab_window_reload,
+            tab_window_close
         ])
         .build(tauri::generate_context!())
         .expect("error while building Auri");

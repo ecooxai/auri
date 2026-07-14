@@ -159,6 +159,18 @@ export async function executeCommand(input, context) {
         else dispatch({ type: "SUBTAB_SELECT", payload: { id: args[0] } });
       }
       else if (action === "close") dispatch({ type: "SUBTAB_CLOSE", payload: { id: args[0] } });
+      else if (action === "reload") {
+        if (!actions.reloadSubtab) throw new Error("Tab reload is unavailable in this runtime.");
+        await actions.reloadSubtab(args[0] || activeWorkspace(getState()).activeSubtabId);
+      }
+      else if (action === "move-window") {
+        if (!actions.moveSubtabToWindow) throw new Error("Standalone tab windows are unavailable in this runtime.");
+        await actions.moveSubtabToWindow(args[0] || activeWorkspace(getState()).activeSubtabId);
+      }
+      else if (action === "move-main") {
+        if (!actions.moveSubtabToMain) throw new Error("Returning tabs to the main window is unavailable in this runtime.");
+        await actions.moveSubtabToMain(args[0] || activeWorkspace(getState()).activeSubtabId);
+      }
       else throw new Error(`Unknown subtab action: ${action}`);
       return { ok: true };
     }
@@ -270,7 +282,10 @@ export async function executeCommand(input, context) {
       const fileView = await actions.openFileInWebview(path, metadata, {
         autoplay: metadata.kind === "audio" || metadata.kind === "video"
       });
-      openSubtab("webview", context, { forceNew: context.fileOpenMode === "new" });
+      const workspace = activeWorkspace(getState());
+      const currentViewer = workspace.subtabs.find((item) => item.type === "webview" && item.filePath);
+      if (currentViewer) dispatch({ type: "SUBTAB_SELECT", payload: { id: currentViewer.id } });
+      else openSubtab("webview", context);
       const current = activeSubtab(getState());
       dispatch({
         type: "SUBTAB_UPDATE",
@@ -284,6 +299,9 @@ export async function executeCommand(input, context) {
           }
         }
       });
+      if (currentViewer?.standalone && actions.moveSubtabToWindow) {
+        await actions.moveSubtabToWindow(current.id);
+      }
       return { ...metadata, ...fileView };
     }
 

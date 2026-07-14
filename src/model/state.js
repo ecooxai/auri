@@ -89,7 +89,7 @@ export function createInitialState() {
       audioDeviceId: null, videoDeviceId: null, grid: false, mirror: true,
       autoZoom: true, cameraBubble: true, includeMicrophone: true, audioSource: "microphone"
     },
-    ui: { addSubtabMenuOpen: false, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardInfoId: null, clipboardEditId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, webAiReply: null, webMagicMenuOpen: false, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, systemKillPrompt: null, tunnelUrlMenuPort: null, systemSearchOpen: false }
+    ui: { addSubtabMenuOpen: false, subtabActionMenuId: null, subtabActionMenuX: 148, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardInfoId: null, clipboardEditId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, webAiReply: null, webMagicMenuOpen: false, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, systemKillPrompt: null, tunnelUrlMenuPort: null, systemSearchOpen: false }
   };
 }
 

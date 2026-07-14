@@ -358,6 +358,21 @@ export class Backend {
     return this.call("webview_close", { id });
   }
 
+  async showStandaloneTab(id, url, title) {
+    if (!this.invoke) throw new Error("Standalone tab windows need the native Auri build.");
+    return this.call("tab_window_show", { id, url, title });
+  }
+
+  async reloadStandaloneTab(id) {
+    if (!this.invoke) return;
+    return this.call("tab_window_reload", { id });
+  }
+
+  async closeStandaloneTab(id) {
+    if (!this.invoke) return;
+    return this.call("tab_window_close", { id });
+  }
+
   async initialize() {
     if (!this.invoke) return { root: "~", mode: "browser-preview" };
     return this.call("initialize_workspace");

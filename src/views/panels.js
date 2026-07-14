@@ -22,6 +22,13 @@ const subtabIcons = {
   info: "ⓘ"
 };
 
+const compactSubtabLabels = {
+  terminal: "Term",
+  clipboard: "Copym",
+  system: "Sys",
+  info: "Info"
+};
+
 const button = (icon, label, action, extra = "") =>
   `<button class="icon-button" type="button" data-action="${action}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}" ${extra}>${icon}</button>`;
 
@@ -74,18 +81,22 @@ export function renderMainTabs(state) {
 export function renderSubtabs(state, { native = false } = {}) {
   const tab = activeWorkspace(state);
   const nativeWebviewActive = native && activeSubtab(state).type === "webview";
+  const actionTab = tab.subtabs.find((item) => item.id === state.ui.subtabActionMenuId);
   return `
     <div class="subtab-bar chrome-tabbar" data-tauri-drag-region>
       <div class="subtab-scroll" role="tablist" aria-label="Workspace tabs" data-tauri-drag-region>
         ${tab.subtabs.map((item) => `
-          <button type="button" role="tab" aria-selected="${item.id === tab.activeSubtabId}" class="subtab ${item.id === tab.activeSubtabId ? "is-active" : ""}"
-            data-action="subtab-select" data-id="${item.id}" title="${escapeHtml(item.title)}">
-            <span class="subtab-icon" aria-hidden="true">${subtabIcons[item.type] || "·"}</span>
-            <span class="subtab-title">${escapeHtml(item.title)}</span>
-            ${tab.subtabs.length > 1 ? `<i data-action="subtab-close" data-id="${item.id}" aria-label="Close tab">×</i>` : ""}
-          </button>
+          <div role="tab" aria-selected="${item.id === tab.activeSubtabId}" class="subtab ${item.id === tab.activeSubtabId ? "is-active" : ""} ${compactSubtabLabels[item.type] ? "is-utility" : ""}"
+            data-tab-id="${item.id}" title="${escapeHtml(item.title)}">
+            <button type="button" class="subtab-select-target" data-action="subtab-select" data-id="${item.id}" aria-label="Open ${escapeHtml(item.title)}">
+              <span class="subtab-title">${escapeHtml(compactSubtabLabels[item.type] || item.title)}</span>
+            </button>
+            <button type="button" class="subtab-icon subtab-icon-menu" data-action="subtab-action-menu" data-id="${item.id}"
+              aria-label="${escapeHtml(item.title)} tab menu" aria-haspopup="menu" aria-expanded="${state.ui.subtabActionMenuId === item.id}">${subtabIcons[item.type] || "·"}</button>
+          </div>
         `).join("")}
       </div>
+      ${actionTab ? renderSubtabActionMenu(actionTab, state.ui.subtabActionMenuX) : ""}
       <div class="chrome-actions" aria-label="Tab controls">
         <div class="subtab-add-wrap">
           ${button("＋", "New tab", "subtab-menu", 'data-chrome-control="true"')}
@@ -97,6 +108,16 @@ export function renderSubtabs(state, { native = false } = {}) {
         </div>
       </div>
     </div>`;
+}
+
+function renderSubtabActionMenu(item, x = 148) {
+  const placement = Number.isFinite(Number(x)) ? Number(x) : 148;
+  return `<div class="subtab-action-menu pop-menu" role="menu" aria-label="${escapeHtml(item.title)} tab actions" style="--subtab-menu-x:${placement}px">
+    <button type="button" role="menuitem" data-action="subtab-action-reload" data-id="${escapeHtml(item.id)}"><span>↻</span>Reload tab</button>
+    <button type="button" role="menuitem" data-action="${item.standalone ? "subtab-action-main" : "subtab-action-window"}" data-id="${escapeHtml(item.id)}"><span>${item.standalone ? "↙" : "↗"}</span>${item.standalone ? "Go back to main window" : "Move to standalone window"}</button>
+    <span class="pop-menu-separator" role="separator"></span>
+    <button type="button" role="menuitem" class="danger" data-action="subtab-action-close" data-id="${escapeHtml(item.id)}"><span>×</span>Close tab</button>
+  </div>`;
 }
 
 function renderSubtabMenu() {
@@ -1409,6 +1430,7 @@ function renderEmptyPanel(icon, title, copy) {
 
 export function renderActivePanel(state, options = {}) {
   const subtab = activeSubtab(state);
+  if (subtab.standalone) return `<div class="empty-state standalone-tab-state"><span>↗</span><h2>Open in a standalone window</h2><p>${escapeHtml(subtab.title)} is detached from the main Auri window.</p><button type="button" data-action="subtab-action-main" data-id="${escapeHtml(subtab.id)}">Go back to main window</button></div>`;
   if (subtab.type === "terminal") return renderTerminal(state);
   if (subtab.type === "viewer") return renderViewer(state);
   if (subtab.type === "webview") return renderWebview(state, options);

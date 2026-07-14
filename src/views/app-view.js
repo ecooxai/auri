@@ -28,11 +28,19 @@ export function captureProcessScroll(root) {
   return table ? table.scrollTop : 0;
 }
 
+export function centeredSubtabScrollLeft(scroller, tab) {
+  const scrollWidth = Math.max(0, Number(scroller?.scrollWidth) || 0);
+  const clientWidth = Math.max(0, Number(scroller?.clientWidth) || 0);
+  const center = (Number(tab?.offsetLeft) || 0) + (Number(tab?.offsetWidth) || 0) / 2;
+  return Math.max(0, Math.min(Math.max(0, scrollWidth - clientWidth), center - clientWidth / 2));
+}
+
 export class AppView {
   constructor(root) {
     this.root = root;
     this.terminalHosts = new Map();
     this.lastProcessSortBy = null;
+    this.lastActiveSubtabId = null;
   }
 
   terminalHostKey(host) {
@@ -171,6 +179,12 @@ export class AppView {
     if (processTable) processTable.scrollTop = processScrollTop;
     this.lastProcessSortBy = processSortBy;
     requestAnimationFrame(() => {
+      if (tab.activeSubtabId !== this.lastActiveSubtabId) {
+        const scroller = this.root.querySelector?.(".subtab-scroll");
+        const selected = this.root.querySelector?.(`[data-tab-id="${tab.activeSubtabId}"]`);
+        if (scroller && selected) scroller.scrollTo?.({ left: centeredSubtabScrollLeft(scroller, selected), behavior: "smooth" });
+        this.lastActiveSubtabId = tab.activeSubtabId;
+      }
       const history = this.root.querySelector("#terminal-history");
       if (history) history.scrollTop = history.scrollHeight;
       if (state.ui.folderCreateKind) {

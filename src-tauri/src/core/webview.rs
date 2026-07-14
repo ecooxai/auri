@@ -1,4 +1,4 @@
-use super::util;
+use super::{lifecycle, util};
 use serde::Serialize;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect,
@@ -6,6 +6,7 @@ use tauri::{
 };
 
 const PREFIX: &str = "auri-web-";
+const STANDALONE_PREFIX: &str = "auri-tab-window-";
 const POPUP_PREFIX: &str = "auri-popup-";
 const OVERLAY_LABEL: &str = "auri-browser-overlay";
 /// Internal host intercepted by `on_navigation`; the injected page script
@@ -133,6 +134,34 @@ fn page_script(ai_prompts: Option<&str>) -> String {
     PAGE_SCRIPT_TEMPLATE.replace("__PROMPTS__", prompts)
 }
 
+const STANDALONE_TAB_SCRIPT: &str = r##"(() => {
+  if (window.__AURI_STANDALONE_TAB__) return; window.__AURI_STANDALONE_TAB__ = 1;
+  const INTERNAL = "https://auri.internal/";
+  const go = (action) => { try { window.location.assign(INTERNAL + action); } catch (error) {} };
+  const install = () => {
+    if (!document.body || document.getElementById("auri-standalone-tabbar")) return;
+    const bar = document.createElement("div");
+    bar.id = "auri-standalone-tabbar";
+    bar.setAttribute("style", "position:fixed;z-index:2147483647;left:0;right:0;top:0;height:38px;display:flex;align-items:center;padding:4px 8px;background:rgba(238,241,245,.96);border-bottom:1px solid rgba(78,94,119,.14);font:12px -apple-system,system-ui,sans-serif;");
+    const icon = document.createElement("button");
+    icon.type = "button"; icon.textContent = "◈"; icon.title = "Tab menu";
+    icon.setAttribute("style", "width:30px;height:30px;border:0;border-radius:9px;background:rgba(184,212,254,.55);color:#274168;cursor:pointer;");
+    const menu = document.createElement("div");
+    menu.hidden = true;
+    menu.setAttribute("style", "position:absolute;left:8px;top:35px;width:205px;padding:7px;border:1px solid rgba(78,94,119,.14);border-radius:12px;background:#fff;box-shadow:0 16px 45px rgba(24,32,51,.18);");
+    const action = (label, handler, danger) => { const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.setAttribute("style", "display:block;width:100%;height:34px;padding:0 10px;border:0;border-radius:8px;background:transparent;color:" + (danger ? "#a84e5b" : "#536178") + ";text-align:left;cursor:pointer;"); button.onclick = handler; menu.appendChild(button); };
+    action("Reload tab", () => location.reload(), false);
+    action("Go back to main window", () => go("tab-return"), false);
+    action("Close tab", () => go("tab-close"), true);
+    icon.onclick = () => { menu.hidden = !menu.hidden; };
+    bar.append(icon, menu); document.body.appendChild(bar);
+    const currentPadding = parseFloat(getComputedStyle(document.documentElement).paddingTop) || 0;
+    document.documentElement.style.paddingTop = (currentPadding + 38) + "px";
+    document.addEventListener("pointerdown", (event) => { if (!bar.contains(event.target)) menu.hidden = true; }, true);
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true }); else install();
+})();"##;
+
 fn open_popup(app: &AppHandle, url: &str) {
     let Ok(parsed) = url.parse::<tauri::Url>() else {
         return;
@@ -173,6 +202,17 @@ fn handle_internal_navigation(app: &AppHandle, id: &str, url: &tauri::Url) -> bo
         }
         return true;
     }
+    if url.path() == "/tab-return" || url.path() == "/tab-close" {
+        let event = if url.path() == "/tab-return" { "auri-tab-window-return" } else { "auri-tab-window-close" };
+        let _ = app.emit(event, serde_json::json!({ "id": id }));
+        if let Some(window) = app.get_webview_window(&standalone_label_for(id)) {
+            let _ = window.close();
+        }
+        if url.path() == "/tab-return" {
+            let _ = lifecycle::reveal_main_window(app);
+        }
+        return true;
+    }
     let mut payload = serde_json::Map::new();
     payload.insert("id".to_string(), serde_json::Value::String(id.to_string()));
     for (key, value) in url.query_pairs() {
@@ -208,6 +248,56 @@ fn parse_url(url: &str) -> Result<tauri::Url, String> {
 
 fn label_for(id: &str) -> String {
     format!("{PREFIX}{id}")
+}
+
+fn standalone_label_for(id: &str) -> String {
+    format!("{STANDALONE_PREFIX}{id}")
+}
+
+pub fn show_standalone(app: &AppHandle, id: &str, url: &str, title: &str) -> Result<(), String> {
+    let label = standalone_label_for(id);
+    let parsed = parse_url(url)?;
+    if let Some(window) = app.get_webview_window(&label) {
+        if let Some(webview) = app.get_webview(&label) {
+            webview.navigate(parsed).map_err(|error| error.to_string())?;
+        }
+        window.show().map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let event_app = app.clone();
+    let event_id = id.to_string();
+    let navigation_app = app.clone();
+    let navigation_id = id.to_string();
+    tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
+        .title(title)
+        .inner_size(920.0, 720.0)
+        .initialization_script(format!("{}\n{}", page_script(None), STANDALONE_TAB_SCRIPT))
+        .on_navigation(move |target| {
+            if handle_internal_navigation(&navigation_app, &navigation_id, target) {
+                return false;
+            }
+            let _ = event_app.emit("auri-web-navigation", WebNavigation { id: event_id.clone(), url: target.to_string() });
+            true
+        })
+        .focused(true)
+        .build()
+        .map_err(|error| format!("Could not create the standalone tab window: {error}"))?;
+    Ok(())
+}
+
+pub fn reload_standalone(app: &AppHandle, id: &str) -> Result<(), String> {
+    app.get_webview(&standalone_label_for(id))
+        .ok_or_else(|| "The standalone tab window is not open.".to_string())?
+        .reload()
+        .map_err(|error| error.to_string())
+}
+
+pub fn close_standalone(app: &AppHandle, id: &str) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&standalone_label_for(id)) {
+        window.close().map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 /// Resize the main webview so it matches the window's inner size.

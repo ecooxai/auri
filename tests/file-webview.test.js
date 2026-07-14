@@ -429,6 +429,20 @@ test("HTML previews delegate browser capabilities and macOS declares camera and 
   assert.match(plist, /NSLocationWhenInUseUsageDescription/);
 });
 
+test("file viewer footer truncates and copies long names with compact icon actions", () => {
+  const viewer = readFileSync(new URL("../src-tauri/src/core/viewer.html", import.meta.url), "utf8");
+
+  assert.match(viewer, /function compactFileName\(name/);
+  assert.match(viewer, /slice\(0,40\).*slice\(-10\)/s);
+  assert.match(viewer, /\.title\{[^}]*max-width:200px/s);
+  assert.match(viewer, /copyFileName/);
+  assert.match(viewer, /label:'⌑'.*title:'Open folder'/s);
+  assert.match(viewer, /label:'✎'.*title:'Edit file'/s);
+  assert.match(viewer, /toggleFileMenu/);
+  assert.match(viewer, /download="'\+esc\(baseName\(\)\)/);
+  assert.doesNotMatch(viewer, /items\.push\(\{label:'Download'/);
+});
+
 test("the embedded web viewer serves ranges, saves, and covers common file types", () => {
   const server = readFileSync(new URL("../src-tauri/src/core/fileserver.rs", import.meta.url), "utf8");
   const viewer = readFileSync(new URL("../src-tauri/src/core/viewer.html", import.meta.url), "utf8");

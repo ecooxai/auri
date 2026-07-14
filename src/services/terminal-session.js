@@ -164,6 +164,32 @@ export function terminalPreviewPlacement(anchor, viewport, size = { width: 450, 
   return { left, top, above };
 }
 
+export function mediaPreviewSize(intrinsicWidth, intrinsicHeight, {
+  preferredWidth = 450,
+  maxHeight = 500,
+  viewportWidth = 1024,
+  viewportHeight = 768
+} = {}) {
+  const sourceWidth = Math.max(1, Number(intrinsicWidth) || 1);
+  const sourceHeight = Math.max(1, Number(intrinsicHeight) || 1);
+  const ratio = sourceWidth / sourceHeight;
+  const availableWidth = Math.max(1, Math.min(
+    Math.max(1, Number(preferredWidth) || 450),
+    Math.max(1, (Number(viewportWidth) || 1024) - 16)
+  ));
+  const heightLimit = Math.max(1, Math.min(
+    Math.max(1, Number(maxHeight) || 500),
+    Math.max(1, (Number(viewportHeight) || 768) - 16)
+  ));
+  let width = availableWidth;
+  let height = width / ratio;
+  if (height > heightLimit) {
+    height = heightLimit;
+    width = height * ratio;
+  }
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
 async function loadTerminalModules() {
   if (!terminalModulesPromise) {
     terminalModulesPromise = Promise.all([
@@ -607,6 +633,21 @@ export class TerminalSession {
     document.body.append(preview);
     this.previewElement = preview;
     this.positionPreview(preview, anchor);
+    const previewView = document.defaultView || globalThis;
+    const preferredMediaWidth = preview.offsetWidth || Math.min(
+      Math.max(225, (Number(previewView.innerWidth) || 1024) * .45),
+      Math.max(1, (Number(previewView.innerWidth) || 1024) - 16)
+    );
+    const resizeMediaPreview = (width, height) => {
+      const size = mediaPreviewSize(width, height, {
+        preferredWidth: preferredMediaWidth,
+        viewportWidth: Number(previewView.innerWidth) || 1024,
+        viewportHeight: Number(previewView.innerHeight) || 768
+      });
+      preview.style.width = `${size.width}px`;
+      preview.style.height = `${size.height}px`;
+      this.positionPreview(preview, anchor);
+    };
 
     const showFeedback = (message) => {
       loading.textContent = message;
@@ -642,13 +683,35 @@ export class TerminalSession {
           const image = document.createElement("img");
           image.className = "terminal-link-preview-image";
           image.alt = prepared.title || target.text || "Image preview";
-          image.addEventListener("load", () => loading.remove());
+          image.addEventListener("load", () => {
+            resizeMediaPreview(image.naturalWidth, image.naturalHeight);
+            loading.remove();
+          });
           image.addEventListener("error", () => {
             loading.textContent = "Image preview is unavailable. Click to open it.";
           });
           preview.classList.add("is-image");
           frame.replaceWith(image);
           image.src = prepared.resourceUrl;
+          return;
+        }
+        if (prepared.viewerKind === "video" && prepared.resourceUrl) {
+          const video = document.createElement("video");
+          video.className = "terminal-link-preview-video";
+          video.autoplay = true;
+          video.preload = "metadata";
+          video.setAttribute("playsinline", "");
+          video.addEventListener("loadedmetadata", () => {
+            resizeMediaPreview(video.videoWidth, video.videoHeight);
+            loading.remove();
+            video.play?.().catch?.(() => {});
+          });
+          video.addEventListener("error", () => {
+            loading.textContent = "Video preview is unavailable. Click to open it.";
+          });
+          preview.classList.add("is-video");
+          frame.replaceWith(video);
+          video.src = prepared.resourceUrl;
           return;
         }
         if (!prepared.url) throw new Error("Preview URL is unavailable.");

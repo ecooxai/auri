@@ -163,6 +163,63 @@ test("topbar command menu lists opened tabs and exits through a command action",
   assert.match(html, /Exit Auri/);
 });
 
+test("each top tab icon opens an action menu without a separate close button", () => {
+  let state = createInitialState();
+  const activeId = state.tabs[0].activeSubtabId;
+  state = reduceState(state, { type: "UI_SET", payload: { subtabActionMenuId: activeId } });
+  const html = renderSubtabs(state);
+
+  assert.match(html, new RegExp(`data-action="subtab-action-menu" data-id="${activeId}"`));
+  assert.match(html, /data-action="subtab-action-reload"/);
+  assert.match(html, /data-action="subtab-action-window"/);
+  assert.match(html, /data-action="subtab-action-close"/);
+  assert.doesNotMatch(html, /data-action="subtab-close"/);
+});
+
+test("compact utility tabs render short readable labels", () => {
+  let state = createInitialState();
+  for (const type of ["clipboard", "system", "info"]) {
+    if (!state.tabs[0].subtabs.some((subtab) => subtab.type === type)) {
+      state = reduceState(state, { type: "SUBTAB_NEW", payload: { type } });
+    }
+  }
+  const html = renderSubtabs(state);
+
+  assert.match(html, /<span class="subtab-title">Term<\/span>/);
+  assert.match(html, /<span class="subtab-title">Copym<\/span>/);
+  assert.match(html, /<span class="subtab-title">Sys<\/span>/);
+  assert.match(html, /<span class="subtab-title">Info<\/span>/);
+});
+
+test("clicking a tab icon selects that tab before opening its action menu", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInputValue: () => "",
+    showToast() {}
+  };
+  const controller = new AppController({ view, backend: { isNative: false }, terminalSessionFactory: () => ({ initialize: async () => {} }) });
+  controller.state = reduceState(controller.state, { type: "SUBTAB_NEW", payload: { type: "info" } });
+  const terminal = controller.state.tabs[0].subtabs.find((item) => item.type === "terminal");
+  const calls = [];
+  controller.runInternal = async (command) => calls.push(command);
+
+  const icon = {
+    dataset: { action: "subtab-action-menu", id: terminal.id },
+    getBoundingClientRect: () => ({ left: 84 })
+  };
+  icon.closest = (selector) => selector.includes("[data-action]") || selector.includes(".subtab-icon-menu") ? icon : null;
+  await controller.handleClick({
+    preventDefault() {},
+    stopPropagation() {},
+    target: icon
+  });
+
+  assert.equal(calls[0], `subtab select ${terminal.id}`);
+  assert.equal(controller.state.ui.subtabActionMenuId, terminal.id);
+});
+
 test("native New Tab menu uses the topmost overlay without hiding the website", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const calls = [];

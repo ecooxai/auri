@@ -212,6 +212,7 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .window-actions button:hover { background: rgba(112, 137, 248, .1); color: var(--ink); }
 
 .subtab-bar {
+  position: relative;
   min-width: 0;
   height: 46px;
   padding: 6px 8px 6px 148px;
@@ -253,16 +254,16 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .subtab-scroll::-webkit-scrollbar { display: none; }
 .subtab {
   position: relative;
-  min-width: 126px;
-  max-width: 220px;
+  min-width: 60px;
+  max-width: 100px;
+  flex: 1 1 100px;
   height: 34px;
-  padding: 0 9px 0 11px;
+  padding: 0;
   border: 0;
   border-radius: 10px 10px 0 0;
   display: flex;
   align-items: center;
   gap: 7px;
-  cursor: pointer;
   color: #69768a;
   background: transparent;
   font-size: .74rem;
@@ -270,6 +271,21 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
   text-align: left;
   -webkit-app-region: no-drag;
 }
+.subtab-select-target {
+  width: 100%;
+  height: 100%;
+  padding: 0 5px 0 28px;
+  border: 0;
+  border-radius: inherit;
+  display: flex;
+  align-items: center;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.subtab.is-utility { flex-basis: 78px; max-width: 78px; }
 .subtab::after {
   content: "";
   position: absolute;
@@ -287,21 +303,31 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 }
 .subtab.is-active .subtab-icon { color: var(--blue-dark); }
 .subtab.is-active::after, .subtab:last-child::after { display: none; }
-.subtab-icon { flex: 0 0 auto; color: #7787a0; font-size: .78rem; }
-.subtab-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.subtab i {
-  width: 17px;
-  height: 17px;
-  flex: 0 0 17px;
+.subtab-icon {
+  position: absolute;
+  z-index: 2;
+  left: 4px;
+  top: 5px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  color: #99a3b2;
-  font-style: normal;
-  opacity: 0;
+  color: #7787a0;
+  background: transparent;
+  font-size: .78rem;
+  cursor: pointer;
 }
-.subtab:hover i, .subtab.is-active i { opacity: 1; }
-.subtab i:hover { color: #a84e5b; background: rgba(216, 107, 120, .12); }
+.subtab-icon:hover, .subtab-icon[aria-expanded="true"] { color: var(--blue-dark); background: rgba(255, 255, 255, .72); }
+.subtab-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subtab-action-menu {
+  top: 42px;
+  right: auto;
+  left: clamp(8px, var(--subtab-menu-x), calc(100% - 218px));
+  width: 210px;
+}
 .subtab-add-wrap, .command-menu-wrap { position: relative; }
 .native-pill {
   height: 23px;
@@ -2023,6 +2049,9 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .terminal-link-preview-body:focus-visible { box-shadow: inset 0 0 0 2px #7089f8; }
 .terminal-link-preview-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; pointer-events: none; }
 .terminal-link-preview.is-image { grid-template-rows: 1fr; background: #eef3f8; }
-.terminal-link-preview.is-image .terminal-link-preview-body { width: 100%; height: 100%; display: grid; place-items: center; background: #eef3f8; }
+.terminal-link-preview.is-video { grid-template-rows: 1fr; background: #111827; }
+.terminal-link-preview.is-image .terminal-link-preview-body, .terminal-link-preview.is-video .terminal-link-preview-body { width: 100%; height: 100%; display: grid; place-items: center; background: #eef3f8; }
+.terminal-link-preview.is-video .terminal-link-preview-body { background: #111827; }
 .terminal-link-preview-image { display: block; width: 100%; height: 100%; object-fit: contain; background: #eef3f8; pointer-events: none; }
+.terminal-link-preview-video { display: block; width: 100%; height: 100%; object-fit: contain; background: #111827; pointer-events: none; }
 .terminal-link-preview-loading { position: absolute; inset: 0; display: grid; place-items: center; padding: 18px; color: #748198; background: linear-gradient(145deg, #f8fbff, #edf2f7); font: 600 .68rem/1.4 Inter, ui-sans-serif, sans-serif; text-align: center; }

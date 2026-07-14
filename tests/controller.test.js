@@ -540,7 +540,52 @@ test("file open routes the selected file into a webview subtab", async () => {
   assert.deepEqual(openOptions, { autoplay: true });
 });
 
-test("macOS Finder open requests create one current webview tab per file", async () => {
+test("file open reuses the current file viewer tab for a different file", async () => {
+  const h = harness();
+  h.backend.inspectFile = async (path) => ({ path, name: path.split("/").pop(), kind: "text" });
+  h.actions = {
+    openFileInWebview: async (path, metadata) => ({
+      url: `http://localhost:8895${path}?view=1`,
+      title: metadata.name,
+      filePath: path,
+      mime: "text/html"
+    })
+  };
+
+  await executeCommand('file open "/tmp/first.txt"', h);
+  const firstViewerId = h.state().tabs[0].activeSubtabId;
+  await executeCommand('file open "/tmp/second.txt"', h, { fileOpenMode: "new" });
+
+  const workspace = h.state().tabs[0];
+  const fileViewers = workspace.subtabs.filter((item) => item.type === "webview" && item.filePath);
+  assert.equal(fileViewers.length, 1);
+  assert.equal(fileViewers[0].id, firstViewerId);
+  assert.equal(fileViewers[0].filePath, "/tmp/second.txt");
+  assert.equal(workspace.activeSubtabId, firstViewerId);
+});
+
+test("subtab menu commands reload, detach, and return the requested tab", async () => {
+  const h = harness();
+  const calls = [];
+  const terminalId = h.state().tabs[0].activeSubtabId;
+  h.actions = {
+    reloadSubtab: async (id) => calls.push(["reload", id]),
+    moveSubtabToWindow: async (id) => calls.push(["window", id]),
+    moveSubtabToMain: async (id) => calls.push(["main", id])
+  };
+
+  await executeCommand(`subtab reload ${terminalId}`, h);
+  await executeCommand(`subtab move-window ${terminalId}`, h);
+  await executeCommand(`subtab move-main ${terminalId}`, h);
+
+  assert.deepEqual(calls, [
+    ["reload", terminalId],
+    ["window", terminalId],
+    ["main", terminalId]
+  ]);
+});
+
+test("macOS Finder open requests reuse the current file viewer for the latest file", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const controller = new AppController({
     view: {
@@ -566,10 +611,9 @@ test("macOS Finder open requests create one current webview tab per file", async
   await controller.openPendingFiles(["/tmp/read me.txt", "/tmp/movie.mp4"]);
 
   const fileTabs = controller.state.tabs[0].subtabs.filter((item) => item.type === "webview" && item.filePath);
-  assert.deepEqual(fileTabs.map((item) => item.filePath), ["/tmp/read me.txt", "/tmp/movie.mp4"]);
-  assert.equal(fileTabs[0].url, "http://localhost:8895/tmp/read me.txt?view=1");
-  assert.equal(fileTabs[1].url, "http://localhost:8895/tmp/movie.mp4?view=1");
-  assert.equal(controller.state.tabs[0].activeSubtabId, fileTabs[1].id);
+  assert.deepEqual(fileTabs.map((item) => item.filePath), ["/tmp/movie.mp4"]);
+  assert.equal(fileTabs[0].url, "http://localhost:8895/tmp/movie.mp4?view=1");
+  assert.equal(controller.state.tabs[0].activeSubtabId, fileTabs[0].id);
 });
 
 test("native folder file clicks reuse the floating terminal preview, open, then close back to floating preview", async () => {

@@ -220,6 +220,9 @@ export class AppController {
         pasteClipboardItem: (id) => this.backend.pasteClipboardItem(id),
         insertText: (text) => this.insertIntoTerminal(text),
         selectSubtab: (id) => this.selectSubtab(id),
+        reloadSubtab: (id) => this.reloadSubtab(id),
+        moveSubtabToWindow: (id) => this.moveSubtabToWindow(id),
+        moveSubtabToMain: (id) => this.moveSubtabToMain(id),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
         showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
         refreshSystemMonitor: () => this.refreshSystemMonitor(),
@@ -418,6 +421,7 @@ export class AppController {
       const stillExists = this.state.tabs.some((tab) => tab.subtabs.some((item) => item.id === id));
       if (!stillExists) {
         this.backend.closeWebview?.(id).catch?.(() => {});
+        this.backend.closeStandaloneTab?.(id).catch?.(() => {});
         this.nativeWebviewUrls.delete(id);
       }
     }
@@ -642,6 +646,13 @@ export class AppController {
         this.handleWebAiAction(payload).catch((error) => this.reportError("Web AI", error));
       });
       this.browserOverlayUnlisten = await this.backend.listen?.("auri-browser-overlay-action", (payload) => this.handleBrowserOverlayAction(payload));
+      this.standaloneReturnUnlisten = await this.backend.listen?.("auri-tab-window-return", (payload) => {
+        this.moveSubtabToMain(payload?.id, { closeWindow: false }).catch((error) => this.reportError("Tab window", error));
+      });
+      this.standaloneCloseUnlisten = await this.backend.listen?.("auri-tab-window-close", (payload) => {
+        const id = String(payload?.id || "");
+        if (id) this.runInternal(`subtab close ${id}`).catch((error) => this.reportError("Close tab", error));
+      });
       const initialized = await this.backend.initialize();
       await this.refreshMediaPermissions({ render: false });
       try {
@@ -1012,6 +1023,13 @@ export class AppController {
     this.scrollProcessTableToEdge("top");
   }
 
+  async selectSubtabFromClick(id) {
+    await this.runInternal(`subtab select ${id}`);
+    if (activeSubtab(this.state).type === "info") this.dispatch({ type: "INFO_READ", payload: {} });
+    if (activeSubtab(this.state).type === "settings") await this.runInternal("permission status");
+    if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
+  }
+
   async handleClick(event) {
     const insideAssistantPopup = event.target?.closest?.(".assistant-action-popup");
     const insideProcessDetail = event.target?.closest?.(".system-process-detail");
@@ -1019,6 +1037,7 @@ export class AppController {
     const insideSystemKillPrompt = event.target?.closest?.(".system-kill-prompt");
     const insideTunnelUrlMenu = event.target?.closest?.(".process-detail-port-url-menu, .process-detail-port-url");
     const insideCommandMenu = event.target?.closest?.(".command-menu-wrap");
+    const insideSubtabActionMenu = event.target?.closest?.(".subtab-action-menu, .subtab-icon-menu");
     const target = event.target?.closest?.("[data-action]");
     if (hasAssistantActionPopup(this.state) && !insideAssistantPopup) {
       await this.runInternal("transcript dismiss");
@@ -1028,6 +1047,9 @@ export class AppController {
     }
     if (this.state.ui.commandMenuOpen && !insideCommandMenu) {
       this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
+    }
+    if (this.state.ui.subtabActionMenuId && !insideSubtabActionMenu) {
+      this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } }, { preserveInput: true });
     }
     const insideClipboardInfo = event.target?.closest?.(".clipboard-info-popup");
     const clipboardInfoTrigger = event.target?.closest?.('[data-action="clipboard-info"], [data-action="clipboard-menu"]');
@@ -1067,14 +1089,45 @@ export class AppController {
           await this.runInternal(`tab close ${target.dataset.id || ""}`.trim());
           break;
         case "subtab-select":
-          await this.runInternal(`subtab select ${target.dataset.id}`);
-          if (activeSubtab(this.state).type === "info") this.dispatch({ type: "INFO_READ", payload: {} });
-          if (activeSubtab(this.state).type === "settings") await this.runInternal("permission status");
-          if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
+          await this.selectSubtabFromClick(target.dataset.id);
           break;
         case "subtab-close":
           event.stopPropagation();
           await this.runInternal(`subtab close ${target.dataset.id}`);
+          break;
+        case "subtab-action-menu": {
+          event.stopPropagation();
+          const rect = target.getBoundingClientRect?.();
+          const wasOpen = this.state.ui.subtabActionMenuId === target.dataset.id;
+          await this.selectSubtabFromClick(target.dataset.id);
+          this.dispatch({
+            type: "UI_SET",
+            payload: {
+              subtabActionMenuId: wasOpen ? null : target.dataset.id,
+              subtabActionMenuX: rect ? rect.left : 148,
+              addSubtabMenuOpen: false,
+              commandMenuOpen: false,
+              webMenuOpen: false,
+              webDialog: null
+            }
+          });
+          break;
+        }
+        case "subtab-action-close":
+          this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } });
+          await this.runInternal(`subtab close ${target.dataset.id}`);
+          break;
+        case "subtab-action-reload":
+          this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } });
+          await this.runInternal(`subtab reload ${target.dataset.id}`);
+          break;
+        case "subtab-action-window":
+          this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } });
+          await this.runInternal(`subtab move-window ${target.dataset.id}`);
+          break;
+        case "subtab-action-main":
+          this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } });
+          await this.runInternal(`subtab move-main ${target.dataset.id}`);
           break;
         case "subtab-menu":
           this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, commandMenuOpen: false, webMenuOpen: false, webDialog: null } });
@@ -2951,7 +3004,7 @@ export class AppController {
     if (!this.native) return;
     const subtab = activeSubtab(this.state);
     const host = this.view.root.querySelector?.("#native-webview-host");
-    if (subtab.type !== "webview" || subtab.filePath || !host) {
+    if (subtab.type !== "webview" || subtab.filePath || subtab.standalone || !host) {
       await this.backend.hideBrowserOverlay?.();
       await this.backend.hideWebviews?.();
       return;
@@ -2984,6 +3037,48 @@ export class AppController {
     const subtab = activeSubtab(this.state);
     if (subtab.type !== "webview" || subtab.filePath) throw new Error("Open a website tab first.");
     await this.backend.webviewAction(subtab.id, action, value);
+  }
+
+  subtabById(id) {
+    return activeWorkspace(this.state).subtabs.find((item) => item.id === id) || null;
+  }
+
+  async reloadSubtab(id) {
+    const subtab = this.subtabById(id);
+    if (!subtab) throw new Error("Tab not found.");
+    if (subtab.standalone) {
+      await this.backend.reloadStandaloneTab?.(subtab.id);
+      return;
+    }
+    if (subtab.type === "webview" && !subtab.filePath && this.native) {
+      if (activeWorkspace(this.state).activeSubtabId !== subtab.id) await this.selectSubtab(subtab.id);
+      await this.backend.webviewAction(subtab.id, "reload");
+      return;
+    }
+    if (["system", "disk", "net"].includes(subtab.type)) {
+      if (activeWorkspace(this.state).activeSubtabId !== subtab.id) await this.selectSubtab(subtab.id);
+      await this.runInternal("system refresh");
+      return;
+    }
+    this.dispatch({ type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { reloadToken: Date.now() } } }, { preserveInput: true });
+  }
+
+  async moveSubtabToWindow(id) {
+    const subtab = this.subtabById(id);
+    if (!subtab) throw new Error("Tab not found.");
+    if (subtab.type !== "webview" || !subtab.url) throw new Error("Standalone windows currently support web and file-viewer tabs.");
+    if (!this.backend.showStandaloneTab) throw new Error("Standalone tab windows need the native Auri build.");
+    await this.backend.showStandaloneTab(subtab.id, subtab.url, subtab.title || "Auri");
+    this.dispatch({ type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { standalone: true } } }, { preserveInput: true });
+  }
+
+  async moveSubtabToMain(id, { closeWindow = true } = {}) {
+    const subtab = this.subtabById(id);
+    if (!subtab) return false;
+    if (closeWindow) await this.backend.closeStandaloneTab?.(subtab.id);
+    this.dispatch({ type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { standalone: false } } }, { preserveInput: true });
+    await this.selectSubtab(subtab.id);
+    return true;
   }
 
   async runWebviewZoom(direction) {

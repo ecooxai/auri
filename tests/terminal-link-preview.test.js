@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import {
   extractTerminalPreviewTarget,
   extractTerminalSelectionPreviewTarget,
+  mediaPreviewSize,
   terminalPreviewPlacement
 } from "../src/services/terminal-session.js";
 
@@ -283,6 +284,21 @@ test("terminal mini preview stays below normal text and flips above near the bot
   );
 });
 
+test("media mini previews preserve aspect ratio and cap tall content at 500 pixels", () => {
+  assert.deepEqual(
+    mediaPreviewSize(1920, 1080, { preferredWidth: 600, viewportWidth: 1360, viewportHeight: 768 }),
+    { width: 600, height: 338 }
+  );
+  assert.deepEqual(
+    mediaPreviewSize(1080, 1920, { preferredWidth: 600, viewportWidth: 1360, viewportHeight: 768 }),
+    { width: 281, height: 500 }
+  );
+  assert.deepEqual(
+    mediaPreviewSize(900, 1600, { preferredWidth: 600, viewportWidth: 1360, viewportHeight: 420 }),
+    { width: 227, height: 404 }
+  );
+});
+
 test("terminal previews are chrome-free, compact, and remain click-to-open", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const css = await readFile("styles.css", "utf8");
@@ -290,7 +306,11 @@ test("terminal previews are chrome-free, compact, and remain click-to-open", asy
   assert.match(terminal, /createElement\("iframe"\)/);
   assert.match(terminal, /frame\.setAttribute\("allow",\s*"autoplay"\)/);
   assert.match(terminal, /createElement\("img"\)/);
+  assert.match(terminal, /createElement\("video"\)/);
   assert.match(terminal, /prepared\.viewerKind === "image" && prepared\.resourceUrl/);
+  assert.match(terminal, /prepared\.viewerKind === "video" && prepared\.resourceUrl/);
+  assert.match(terminal, /image\.naturalWidth/);
+  assert.match(terminal, /video\.videoWidth/);
   assert.match(terminal, /preview\.classList\.add\("is-image"\)/);
   assert.doesNotMatch(terminal, /preview\.append\(header, body\)/);
   assert.doesNotMatch(terminal, /terminal-link-preview-close/);
@@ -302,5 +322,6 @@ test("terminal previews are chrome-free, compact, and remain click-to-open", asy
   assert.doesNotMatch(css, /\.terminal-link-preview\s*>\s*header/);
   assert.match(css, /\.terminal-link-preview\.is-image[^}]*grid-template-rows:\s*1fr/s);
   assert.match(css, /\.terminal-link-preview-image[^}]*object-fit:\s*contain/s);
+  assert.match(css, /\.terminal-link-preview-video[^}]*object-fit:\s*contain/s);
   assert.match(css, /\.terminal-link-preview-frame/);
 });

@@ -30,6 +30,9 @@ auri app exit                                                                 Cl
 auri subtab new <terminal|webview|viewer|clipboard|audio|video|settings|system|info>  Create and focus a horizontal subtab.
 auri subtab close [id]                                                         Close a horizontal subtab.
 auri subtab select <id>                                                        Focus a horizontal subtab.
+auri subtab reload [id]                                                        Reload a horizontal subtab.
+auri subtab move-window [id]                                                   Move a web or file-viewer subtab into a standalone window.
+auri subtab move-main [id]                                                     Return a standalone subtab to the main window.
 auri folder cd <path>                                                          Change both folder and terminal working directory.
 auri folder list [path]                                                        List a directory.
 auri folder toggle <path>                                                     Expand or collapse a folder row.
