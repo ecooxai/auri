@@ -1,4 +1,4 @@
-import { attachProcessNetworkRates, clampSystemProcessPage } from "./system.js";
+import { attachProcessNetworkRates, clampSystemProcessPage, gpuProcessesForSnapshot } from "./system.js";
 
 let idSequence = 0;
 const id = (prefix) => `${prefix}-${++idSequence}`;
@@ -57,10 +57,10 @@ export function createInitialState() {
     tabs: [workspace],
     info: { unread: 0, items: [] },
     clipboard: { items: [] },
-    system: { status: "idle", error: null, sortBy: "cpu", filter: "", processPage: 1, selectedProcessPid: null, snapshot: null, tunnels: {}, tunnelStatus: {} },
+    system: { status: "idle", error: null, sortBy: "cpu", sortDirection: "desc", filter: "", processPage: 1, gpuMode: false, selectedProcessPid: null, snapshot: null, processPriorities: {}, tunnels: {}, tunnelStatus: {} },
     browser: { bookmarks: [], history: [] },
     completion: { shellHistory: [] },
-    permissions: { microphone: "unknown", screenRecording: "unknown" },
+    permissions: { platform: "unknown", microphone: "unknown", screenRecording: "unknown", systemAudio: "unknown" },
     models: [
       { id: "gemini-live-default", name: "Gemini Live", type: "gemini-live", model: "gemini-2.5-flash-native-audio", url: "", apiKey: "", enabled: true }
     ],
@@ -89,7 +89,7 @@ export function createInitialState() {
       audioDeviceId: null, videoDeviceId: null, grid: false, mirror: true,
       autoZoom: true, cameraBubble: true, includeMicrophone: true, audioSource: "microphone"
     },
-    ui: { addSubtabMenuOpen: false, subtabActionMenuId: null, subtabActionMenuX: 148, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardInfoId: null, clipboardEditId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, webAiReply: null, webMagicMenuOpen: false, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, systemKillPrompt: null, tunnelUrlMenuPort: null, systemSearchOpen: false }
+    ui: { addSubtabMenuOpen: false, subtabActionMenuId: null, subtabActionMenuX: 148, folderMenuOpen: false, folderCreateKind: null, modelMenuId: null, editingModelId: null, clipboardMenuId: null, clipboardInfoId: null, clipboardEditId: null, clipboardPinnedOnly: false, clipboardPage: 0, webMenuOpen: false, webDialog: null, bookmarkDraft: null, webAiReply: null, webMagicMenuOpen: false, commandPaletteOpen: false, commandMenuOpen: false, focusedInput: "terminal", liveConnected: false, liveRecording: false, liveStatus: "idle", infoMediaPreview: null, assistantActions: [], assistantTranscripts: [], systemTunnelPrompt: null, systemKillPrompt: null, systemPriorityPrompt: null, tunnelUrlMenuPort: null, systemSearchOpen: false, processPrioritySettingsOpen: false, processPriorityFilterOpen: false, processPriorityFilter: "", processPriorityDraft: "", processPrioritySuggestions: [] }
   };
 }
 
@@ -99,6 +99,10 @@ const updateTab = (state, workspaceId, updater) => ({
 });
 
 const updateActiveTab = (state, updater) => updateTab(state, state.activeTabId, updater);
+
+const systemProcessesForPage = (state, snapshot = state.system.snapshot) => state.system.gpuMode
+  ? gpuProcessesForSnapshot(snapshot)
+  : snapshot?.processes;
 
 export function serializeWorkspaceSession(state) {
   const tabs = Array.isArray(state?.tabs) ? state.tabs : [];
@@ -430,19 +434,33 @@ export function reduceState(state, event) {
       return { ...state, system: { ...state.system, status: event.payload.status, error: event.payload.error || null } };
     case "SYSTEM_SNAPSHOT_SET": {
       const snapshot = attachProcessNetworkRates(event.payload.snapshot, state.system.snapshot);
-      const processPage = clampSystemProcessPage(state.system.processPage, snapshot?.processes, state.system.filter);
+      const processPage = clampSystemProcessPage(state.system.processPage, systemProcessesForPage(state, snapshot), state.system.filter);
       return { ...state, system: { ...state.system, status: "ready", error: null, snapshot, processPage } };
     }
-    case "SYSTEM_SORT_SET":
-      return { ...state, system: { ...state.system, sortBy: event.payload.sortBy || "cpu", processPage: 1 } };
+    case "SYSTEM_SORT_SET": {
+      const sortBy = event.payload.sortBy || "cpu";
+      const repeatedPriority = sortBy === "priority" && state.system.sortBy === "priority";
+      return { ...state, system: { ...state.system, sortBy, sortDirection: repeatedPriority && state.system.sortDirection === "desc" ? "asc" : "desc", processPage: 1 } };
+    }
     case "SYSTEM_FILTER_SET":
       return { ...state, system: { ...state.system, filter: String(event.payload?.filter ?? "").trim(), processPage: 1 } };
+    case "SYSTEM_GPU_MODE_TOGGLE":
+      return {
+        ...state,
+        system: {
+          ...state.system,
+          gpuMode: !state.system.gpuMode,
+          processPage: 1,
+          selectedProcessPid: null
+        },
+        ui: { ...state.ui, systemKillPrompt: null }
+      };
     case "SYSTEM_PROCESS_PAGE_NEXT":
       return {
         ...state,
         system: {
           ...state.system,
-          processPage: clampSystemProcessPage((Number(state.system.processPage) || 1) + 1, state.system.snapshot?.processes, state.system.filter)
+          processPage: clampSystemProcessPage((Number(state.system.processPage) || 1) + 1, systemProcessesForPage(state), state.system.filter)
         }
       };
     case "SYSTEM_PROCESS_PAGE_PREVIOUS":
@@ -450,7 +468,7 @@ export function reduceState(state, event) {
         ...state,
         system: {
           ...state.system,
-          processPage: clampSystemProcessPage((Number(state.system.processPage) || 1) - 1, state.system.snapshot?.processes, state.system.filter)
+          processPage: clampSystemProcessPage((Number(state.system.processPage) || 1) - 1, systemProcessesForPage(state), state.system.filter)
         }
       };
     case "SYSTEM_PROCESS_SELECT": {
@@ -458,6 +476,48 @@ export function reduceState(state, event) {
       // Closing or switching the detail card must not leave a kill prompt for the old process.
       const systemKillPrompt = selectedProcessPid === state.system.selectedProcessPid ? state.ui.systemKillPrompt : null;
       return { ...state, system: { ...state.system, selectedProcessPid }, ui: { ...state.ui, systemKillPrompt } };
+    }
+    case "SYSTEM_PROCESS_PRIORITY_RULE_SET":
+    case "SYSTEM_PROCESS_PRIORITY_SET": {
+      const identity = String(event.payload?.identity || "").trim();
+      const level = String(event.payload?.level || "");
+      const niceByLevel = { low: 10, lower: 15, lowest: 19, normal: 1, high: -10 };
+      const requestedNice = Number(event.payload?.nice);
+      const nice = niceByLevel[level] ?? requestedNice;
+      const normalizedLevel = level in niceByLevel ? level : "custom";
+      if (!identity || !Number.isInteger(nice) || nice < -20 || nice > 19) return state;
+      return {
+        ...state,
+        system: {
+          ...state.system,
+          processPriorities: {
+            ...(state.system.processPriorities || {}),
+            [identity]: { identity, level: normalizedLevel, nice }
+          }
+        }
+      };
+    }
+    case "SYSTEM_PROCESS_PRIORITY_REMOVE": {
+      const identity = String(event.payload?.identity || "").trim();
+      if (!identity || !state.system.processPriorities?.[identity]) return state;
+      const processPriorities = { ...state.system.processPriorities };
+      delete processPriorities[identity];
+      return { ...state, system: { ...state.system, processPriorities } };
+    }
+    case "SYSTEM_PROCESS_PRIORITY_APPLIED": {
+      const pid = Number(event.payload?.pid);
+      const nice = Number(event.payload?.nice);
+      if (!Number.isInteger(pid) || !Number.isInteger(nice) || !state.system.snapshot) return state;
+      return {
+        ...state,
+        system: {
+          ...state.system,
+          snapshot: {
+            ...state.system.snapshot,
+            processes: (state.system.snapshot.processes || []).map((process) => Number(process.pid) === pid ? { ...process, priority: nice } : process)
+          }
+        }
+      };
     }
     case "SYSTEM_TUNNEL_PENDING_SET": {
       const port = Number(event.payload?.port);

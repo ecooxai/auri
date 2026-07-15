@@ -36,6 +36,13 @@ test("help is generated from one command registry", () => {
   assert.match(help, /auri subtab reload/);
   assert.match(help, /auri subtab move-window/);
   assert.match(help, /auri subtab move-main/);
+  assert.match(help, /auri system gpus/);
+  assert.match(help, /auri system priority/);
+  assert.match(help, /auri system priority-auth/);
+  assert.match(help, /auri system priority-rule set/);
+  assert.match(help, /auri system priority-rule suggest/);
+  assert.match(help, /auri settings priority-rules/);
+  assert.match(help, /low\|lower\|lowest\|normal\|high\|unset/);
 });
 
 

@@ -15,6 +15,7 @@ This file is the implementation contract for contributors and coding agents work
 ## Startup and system monitor contract
 
 - Startup must select the first restored workspace and its first terminal subtab, mirror that terminal working directory into the folder pane, and ensure the first workspace contains a pre-opened System monitor subtab.
+- System GPU mode is toggled only through `system gpus`. It keeps CPU/Memory/Net, replaces Disk/Swap/Uptime with one card per GPU, and pages only GPU-owning processes. Collect Linux NVIDIA data with `nvidia-smi`, Intel/AMD data with DRM/sysfs, and best-effort process ownership through `/proc`; never invent unavailable utilization or VRAM counters, and collect GPU data only while GPU mode is active.
 - Process monitor views must sort and search the full snapshot before pagination. Render 15 process rows initially, append 15 near the scroll boundary, reset paging when search or sort changes, and keep CPU, RAM, network, disk, and port sorts independent of the visible slice.
 - Keep keyboard search available on System, Disk, and Net with Command/Ctrl+F and `/`; Escape closes the focused search field.
 
@@ -93,13 +94,19 @@ auri record mode <photo|video|screen>                                          S
 auri media attach <audio|video>                                                Attach the latest recording to the prompt.
 auri settings open                                                             Open Settings.
 auri settings set <key> <value>                                                Update an application setting.
-auri permission status                                                         Refresh macOS media permission status.
-auri permission request <microphone|screen-recording>                       Request or open macOS settings for a media permission.
+auri settings priority-rules <open|close|toggle|search-toggle|filter> [query]  Control and filter the saved process-priority settings list.
+auri permission status                                                         Refresh OS media permission and Linux capture-service status.
+auri permission request <microphone|screen-recording>                       Request OS media access or report a missing Linux capture service.
 auri system open                                                              Open the System monitor.
-auri system sort <cpu|port|name|pid|ram|net|disk>                                      Sort System monitor processes.
+auri system gpus                                                              Toggle GPU cards and GPU process monitoring.
+auri system sort <cpu|port|name|pid|priority|ram|net|disk>                             Sort System monitor processes.
 auri system search [keyword...]                                                   Filter the process list by keyword (space separates OR terms); empty clears.
 auri system refresh                                                           Refresh System monitor statistics.
 auri system select <pid>                                                    Select a System monitor process.
+auri system priority <pid> <low|lower|lowest|normal|high|unset>             Set or unset a remembered process priority.
+auri system priority-auth <pid> <low|lower|lowest|normal|high> <sudo|root>  Authorize a pending priority change; the password is read outside command text.
+auri system priority-rule set <process> <nice>|remove <process>              Add, edit, or remove a saved executable priority rule (-20 through 19).
+auri system priority-rule suggest <query>|choose <path>                      Search PATH executables or select one for a new priority rule.
 auri system kill <pid>                                                      Kill the selected System monitor process.
 auri system open-path <pid>                                                 Open the selected process path externally.
 auri system tunnel start <port> [--install]                              Start a Cloudflare HTTPS tunnel for a process port.

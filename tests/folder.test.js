@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { sortFolderEntries } from "../src/model/folder.js";
+import { mergePolledFolderEntries, sortFolderEntries } from "../src/model/folder.js";
 
 const entries = [
   { name: "zeta.txt", kind: "text", size: 2, modified: 100 },
@@ -27,6 +27,12 @@ test("hidden entries sort after normal entries within folders and files", () => 
   ], "name");
 
   assert.deepEqual(sorted.map((item) => item.name), ["assets", "src", ".git", "README.md", ".env"]);
+});
+
+test("folder polling promotes newly discovered entries while refreshing existing metadata", () => {
+  const previous = [{ path: "/tmp/a", name: "a", size: 1 }, { path: "/tmp/b", name: "b", size: 2 }];
+  const fresh = [{ path: "/tmp/a", name: "a", size: 9 }, { path: "/tmp/c", name: "c", size: 3 }];
+  assert.deepEqual(mergePolledFolderEntries(previous, fresh).map((entry) => [entry.name, entry.size]), [["c", 3], ["a", 9]]);
 });
 
 test("native folder bridge exposes creation, metadata, modification dates, and registered commands", async () => {

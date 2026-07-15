@@ -1,7 +1,7 @@
 import { commandHelp, parseCommand, extractCommandTail, extractActionTail } from "../model/commands.js";
 import { shellQuote } from "../model/path.js";
 import { activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
-import { normalizeSystemSnapshot, normalizeSystemSort } from "../model/system.js";
+import { normalizeSystemSnapshot, normalizeSystemSort, processPriorityIdentity } from "../model/system.js";
 import { defaultBookmarkName, normalizeWebUrl, titleForWebUrl } from "../model/browser.js";
 import { normalizeShortcut } from "../model/shortcut.js";
 
@@ -107,7 +107,8 @@ async function persistConfiguration(backend, state) {
     models: state.models,
     selectedModelId: state.selectedModelId,
     browser: state.browser,
-    workspaceSession: serializeWorkspaceSession(state)
+    workspaceSession: serializeWorkspaceSession(state),
+    processPriorities: state.system?.processPriorities || {}
   });
 }
 
@@ -688,6 +689,28 @@ export async function executeCommand(input, context) {
       return { ok: true };
     }
 
+    if (domain === "settings" && action === "priority-rules") {
+      const mode = String(args.shift() || "toggle").toLowerCase();
+      const ui = getState().ui || {};
+      if (mode === "filter") {
+        const filter = args.join(" ").trim();
+        dispatch({ type: "UI_SET", payload: { processPriorityFilter: filter } });
+        return { filter };
+      }
+      if (mode === "search-toggle") {
+        const open = !Boolean(ui.processPriorityFilterOpen);
+        dispatch({ type: "UI_SET", payload: { processPriorityFilterOpen: open, ...(open ? {} : { processPriorityFilter: "" }) } });
+        return { searchOpen: open };
+      }
+      if (!["open", "close", "toggle"].includes(mode)) throw new Error("Choose open, close, toggle, search-toggle, or filter.");
+      const open = mode === "open" ? true : mode === "close" ? false : !Boolean(ui.processPrioritySettingsOpen);
+      dispatch({ type: "UI_SET", payload: {
+        processPrioritySettingsOpen: open,
+        ...(!open ? { processPriorityFilterOpen: false, processPriorityFilter: "", processPrioritySuggestions: [] } : {})
+      } });
+      return { open };
+    }
+
     if (domain === "settings" && action === "set") {
       const key = args.shift();
       if (!key) throw new Error("Choose a setting key.");
@@ -732,10 +755,21 @@ export async function executeCommand(input, context) {
         if (actions.refreshSystemMonitor) {
           await actions.refreshSystemMonitor();
         } else if (backend.systemSnapshot) {
-          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
+          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot({ includeGpus: false }));
           dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
         }
         return { ok: true };
+      }
+      if (action === "gpus") {
+        const includeGpus = !Boolean(getState().system.gpuMode);
+        dispatch({ type: "SYSTEM_GPU_MODE_TOGGLE" });
+        if (actions.refreshSystemMonitor) {
+          await actions.refreshSystemMonitor();
+        } else if (backend.systemSnapshot) {
+          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot({ includeGpus }));
+          dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
+        }
+        return { includeGpus };
       }
       if (action === "sort") {
         const sortBy = normalizeSystemSort(args[0]);
@@ -749,7 +783,7 @@ export async function executeCommand(input, context) {
       }
       if (action === "refresh") {
         if (!backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
-        const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
+        const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot({ includeGpus: Boolean(getState().system.gpuMode) }));
         dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
         if (backend.cloudflaredActiveTunnels) {
           try {
@@ -793,6 +827,110 @@ export async function executeCommand(input, context) {
         }
         return { pid };
       }
+      if (action === "priority-rule") {
+        const ruleAction = String(args.shift() || "").toLowerCase();
+        if (ruleAction === "suggest") {
+          const query = args.join(" ").trim();
+          dispatch({ type: "UI_SET", payload: { processPriorityDraft: query } });
+          if (query.length <= 3) {
+            dispatch({ type: "UI_SET", payload: { processPrioritySuggestions: [] } });
+            return { query, suggestions: [] };
+          }
+          if (!backend.searchPathCommands) throw new Error("PATH command search is unavailable in this runtime.");
+          const suggestions = await backend.searchPathCommands(query);
+          if (String(getState().ui?.processPriorityDraft || "") === query) {
+            dispatch({ type: "UI_SET", payload: { processPrioritySuggestions: Array.isArray(suggestions) ? suggestions : [] } });
+          }
+          return { query, suggestions };
+        }
+        if (ruleAction === "choose") {
+          const path = args.join(" ").trim();
+          if (!path) throw new Error("Choose a PATH command.");
+          dispatch({ type: "UI_SET", payload: { processPriorityDraft: path, processPrioritySuggestions: [] } });
+          return { path };
+        }
+        if (ruleAction !== "set" && ruleAction !== "remove") throw new Error("Choose set, remove, suggest, or choose for the priority rule.");
+        const identity = String(args.shift() || "").trim();
+        if (!identity) throw new Error("Enter a process name or executable path.");
+        if (ruleAction === "remove") {
+          dispatch({ type: "SYSTEM_PROCESS_PRIORITY_REMOVE", payload: { identity } });
+          await persistConfiguration(backend, getState());
+          return { identity, removed: true };
+        }
+        const nice = Number(args.shift());
+        if (!Number.isInteger(nice) || nice < -20 || nice > 19) throw new Error("Priority nice value must be an integer from -20 through 19.");
+        dispatch({ type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity, level: "custom", nice } });
+        dispatch({ type: "UI_SET", payload: { processPriorityDraft: "", processPrioritySuggestions: [] } });
+        await persistConfiguration(backend, getState());
+        return { identity, nice };
+      }
+      if (action === "priority") {
+        const pid = Number(args[0] || getState().system.selectedProcessPid);
+        const level = String(args[1] || "").toLowerCase();
+        const niceByLevel = { low: 10, lower: 15, lowest: 19, normal: 1, high: -10 };
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("Choose a process PID.");
+        if (!(level in niceByLevel) && level !== "unset") throw new Error("Choose low, lower, lowest, normal, high, or unset priority.");
+        const process = getState().system.snapshot?.processes?.find((item) => Number(item.pid) === pid);
+        if (!process) throw new Error(`Process ${pid} is no longer running.`);
+        const identity = processPriorityIdentity(process);
+        if (!identity) throw new Error("This process has no stable executable identity.");
+        if (level === "unset") {
+          dispatch({ type: "SYSTEM_PROCESS_PRIORITY_REMOVE", payload: { identity } });
+          await persistConfiguration(backend, getState());
+          return { pid, identity, level };
+        }
+        if (!backend.setProcessPriority) throw new Error("Changing process priority is unavailable in this runtime.");
+        const nice = niceByLevel[level];
+        try {
+          await backend.setProcessPriority(pid, nice);
+        } catch (error) {
+          const message = error?.message || String(error);
+          if ((message.includes("AURI_PRIORITY_ADMIN_REQUIRED") || message.includes("AURI_PRIORITY_ROOT_REQUIRED")) && actions.requestProcessPriorityPermission) {
+            const method = message.includes("AURI_PRIORITY_ROOT_REQUIRED") ? "root" : "sudo";
+            actions.requestProcessPriorityPermission({ pid, name: process.name || "process", method, level, nice, error: "" });
+            return { pid, identity, level, nice, pendingPermission: true };
+          }
+          throw error;
+        }
+        dispatch({ type: "SYSTEM_PROCESS_PRIORITY_APPLIED", payload: { pid, nice } });
+        dispatch({ type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity, level, nice } });
+        await persistConfiguration(backend, getState());
+        return { pid, identity, level, nice };
+      }
+      if (action === "priority-auth") {
+        const pid = Number(args[0]);
+        const level = String(args[1] || "").toLowerCase();
+        const method = String(args[2] || "").toLowerCase();
+        const niceByLevel = { low: 10, lower: 15, lowest: 19, normal: 1, high: -10 };
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("Choose a process PID.");
+        if (!(level in niceByLevel)) throw new Error("Choose low, lower, lowest, normal, or high priority.");
+        if (method !== "sudo" && method !== "root") throw new Error("Choose sudo or root authorization.");
+        const process = getState().system.snapshot?.processes?.find((item) => Number(item.pid) === pid);
+        if (!process) throw new Error(`Process ${pid} is no longer running.`);
+        const identity = processPriorityIdentity(process);
+        if (!identity) throw new Error("This process has no stable executable identity.");
+        if (!backend.setProcessPriorityPrivileged || !actions.consumeProcessPriorityPassword) {
+          throw new Error("Administrator priority authorization is unavailable in this runtime.");
+        }
+        const password = actions.consumeProcessPriorityPassword();
+        if (!password) throw new Error(`Enter the ${method === "root" ? "root" : "administrator"} password.`);
+        const nice = niceByLevel[level];
+        const result = await backend.setProcessPriorityPrivileged(pid, nice, password, method);
+        if (result?.applied) {
+          dispatch({ type: "SYSTEM_PROCESS_PRIORITY_APPLIED", payload: { pid, nice } });
+          dispatch({ type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity, level, nice } });
+          await persistConfiguration(backend, getState());
+          actions.closeProcessPriorityPermission?.();
+          return { pid, identity, level, nice };
+        }
+        const nextMethod = result?.requiresRoot ? "root" : method;
+        const message = String(result?.message || (nextMethod === "root" ? "Root authorization failed." : "Administrator authorization failed."));
+        actions.requestProcessPriorityPermission?.({ pid, name: process.name || "process", method: nextMethod, level, nice, error: message });
+        if (!result?.requiresRoot) {
+          dispatch({ type: "INFO_ADD", payload: { level: "error", title: "Process priority", message } });
+        }
+        return { pid, identity, level, nice, pendingPermission: true };
+      }
       if (action === "deselect") {
         dispatch({ type: "SYSTEM_PROCESS_SELECT", payload: { pid: null } });
         return { pid: null };
@@ -803,7 +941,7 @@ export async function executeCommand(input, context) {
         if (!backend.killProcess) throw new Error("Killing processes is unavailable in this runtime.");
         await backend.killProcess(pid);
         if (backend.systemSnapshot) {
-          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot());
+          const snapshot = normalizeSystemSnapshot(await backend.systemSnapshot({ includeGpus: Boolean(getState().system.gpuMode) }));
           dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } });
         }
         return { pid };

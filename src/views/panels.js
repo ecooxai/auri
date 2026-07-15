@@ -4,7 +4,7 @@ import { previewClipboardText, formatImageMeta, describeClipboardText } from "..
 import { activeSubtab, activeWorkspace } from "../model/state.js";
 import { sortFolderEntries } from "../model/folder.js";
 import { defaultBookmarkName, normalizeWebUrl, webZoomPercent, webAiMenuItems } from "../model/browser.js";
-import { SYSTEM_PROCESS_PAGE_SIZE, emptySystemSnapshot, filterSystemProcesses, sortSystemProcesses } from "../model/system.js";
+import { SYSTEM_PROCESS_PAGE_SIZE, emptySystemSnapshot, filterSystemProcesses, gpuProcessesForSnapshot, processPriorityIdentity, sortSystemProcesses } from "../model/system.js";
 
 const FILE_WEBVIEW_FEATURE_POLICY = "camera; microphone; geolocation; display-capture; clipboard-read; clipboard-write; fullscreen; autoplay; accelerometer; encrypted-media; gyroscope; hid; magnetometer; midi; payment; picture-in-picture; publickey-credentials-get; screen-wake-lock; serial; usb; web-share; xr-spatial-tracking";
 
@@ -142,7 +142,6 @@ function renderCommandMenu(tab) {
 export function renderFolder(state) {
   const tab = activeWorkspace(state);
   const currentSubtab = activeSubtab(state);
-  const folderName = workspaceLabel(tab);
   const terminalSynced = currentSubtab?.type === "terminal" && (currentSubtab.cwd || tab.terminal.cwd) === tab.folder.path;
   // renderFolderRows sorts each level itself; the top-level list only needs
   // the raw entries here for the count and empty check.
@@ -150,16 +149,13 @@ export function renderFolder(state) {
   return `
     <aside class="folder-pane">
       <div class="pane-heading">
-        <div class="folder-heading-row">
-          <div class="folder-heading-copy"><span class="eyebrow">FILES</span><strong title="${escapeHtml(tab.folder.path)}">${escapeHtml(folderName)}</strong></div>
-          <div class="compact-actions folder-toolbar" aria-label="Folder navigation">
+        <div class="compact-actions folder-toolbar" aria-label="Folder navigation">
           ${button("⌂", "Home", "folder-home")}
           ${button("↑", "Parent folder", "folder-up")}
           ${button("↻", "Refresh", "folder-refresh")}
           <div class="folder-more-wrap">
             ${button("⋯", "More folder actions", "folder-more", `aria-haspopup="menu" aria-expanded="${state.ui.folderMenuOpen}"`)}
             ${state.ui.folderMenuOpen ? renderFolderMenu(tab.folder.sortBy) : ""}
-          </div>
           </div>
         </div>
         <label class="folder-path-field" for="folder-path-input">
@@ -184,13 +180,12 @@ function renderFolderRows(entries, tab, depth = 0) {
     const isDirectory = entry.kind === "directory";
     const expanded = Boolean(expandedMap[entry.path]);
     const childEntries = expandedMap[entry.path]?.entries || [];
-    const row = `<div class="file-row-wrap ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}" role="listitem" style="--depth:${depth}">
+    const row = `<div class="file-row-wrap ${isDirectory ? "is-directory" : "is-file"} ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}" role="listitem" style="--depth:${depth}">
       ${isDirectory
         ? `<button type="button" class="folder-toggle" data-action="folder-toggle" data-path="${escapeHtml(entry.path)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(entry.name)}" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "▾" : "▸"}</button>`
-        : `<span class="folder-toggle-placeholder" aria-hidden="true"></span>`}
+        : ""}
       <button type="button" class="file-row ${isDirectory ? "is-directory" : ""}" data-action="file-entry"
         data-path="${escapeHtml(entry.path)}" data-kind="${escapeHtml(entry.kind)}">
-        <span class="file-icon ${isDirectory ? "is-directory" : ""}">${isDirectory ? "◇" : iconForEntry(entry)}</span>
         <span class="file-name">${escapeHtml(entry.name)}</span>
       </button>
       ${selected && !isDirectory ? `<button type="button" class="file-ai-button" data-action="file-attach-ai" data-path="${escapeHtml(entry.path)}" aria-label="Attach ${escapeHtml(entry.name)} to the AI prompt" title="Add to AI chat">✦</button>` : ""}
@@ -424,6 +419,29 @@ export function renderSystemKillPrompt(state) {
       <footer>
         <button type="button" class="action-button secondary" data-action="system-kill-prompt-cancel">Cancel</button>
         <button type="button" class="action-button danger" data-action="system-kill-prompt-confirm">Kill process</button>
+      </footer>
+    </section>
+  </div>`;
+}
+
+export function renderSystemPriorityPrompt(state) {
+  const prompt = state.ui?.systemPriorityPrompt;
+  if (!prompt) return "";
+  const root = prompt.method === "root";
+  const title = root ? "Root password" : "Administrator permission required";
+  const level = String(prompt.level || "process");
+  const message = root
+    ? `sudo was unavailable or could not authorize this change. Enter the root user password to set ${level} priority.`
+    : `This protected process needs administrator permission to set ${level} priority. Enter your sudo password to continue.`;
+  return `<div class="system-tunnel-prompt-backdrop system-priority-prompt-backdrop" data-action="system-priority-prompt-cancel">
+    <section class="system-tunnel-prompt system-priority-prompt" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+      <header><span>↑</span><div><small>Process priority</small><h2>${escapeHtml(title)}</h2></div></header>
+      <p>${escapeHtml(message)}</p>
+      ${prompt.error ? `<p class="system-priority-prompt-error" role="alert">${escapeHtml(prompt.error)}</p>` : ""}
+      <label>${root ? "Root password" : "sudo password"}<input id="system-priority-password" type="password" autocomplete="current-password" required autofocus></label>
+      <footer>
+        <button type="button" class="action-button secondary" data-action="system-priority-prompt-cancel">Cancel</button>
+        <button type="button" class="action-button primary" data-action="system-priority-prompt-confirm">${root ? "Continue as root" : "Continue with sudo"}</button>
       </footer>
     </section>
   </div>`;
@@ -715,7 +733,7 @@ function customCompletionCountLabel(value = "") {
   return `${count} ${count === 1 ? "line" : "lines"}`;
 }
 
-function renderPermissionRow(permission, label, status) {
+function renderPermissionRow(permission, label, status, detail = "") {
   const value = String(status || "unknown");
   const allowed = value === "authorized";
   const unavailable = value === "unavailable";
@@ -730,7 +748,7 @@ function renderPermissionRow(permission, label, status) {
           : "Not allowed";
   const actionLabel = value === "notDetermined" || value === "unknown" ? "Request" : "Open Settings";
   return `<div class="permission-row" data-permission="${permission}">
-    <span class="permission-copy"><strong>${label}</strong><small>${statusLabel}</small></span>
+    <span class="permission-copy"><strong>${label}</strong><small>${detail || statusLabel}</small></span>
     ${allowed
       ? '<span class="permission-check" aria-label="Allowed" title="Allowed">✓</span>'
       : unavailable
@@ -741,12 +759,68 @@ function renderPermissionRow(permission, label, status) {
 
 function renderMediaPermissions(state) {
   const permissions = state.permissions || {};
+  if (permissions.platform === "linux") {
+    return `<section class="setting-section permission-section">
+      <div class="section-copy"><h3>Capture services</h3><p>Linux audio and desktop capture services are detected from the current session.</p></div>
+      <div class="permission-card">
+        ${renderPermissionRow("microphone", "Microphone", permissions.microphone, permissions.microphone === "authorized" ? "PulseAudio / PipeWire input ready" : "No PulseAudio / PipeWire input detected")}
+        ${renderPermissionRow("screenRecording", "Screen recording", permissions.screenRecording, permissions.screenRecording === "authorized" ? "X11 or desktop portal ready" : "No accessible X11 display or desktop portal")}
+        ${renderPermissionRow("systemAudio", "System audio", permissions.systemAudio, permissions.systemAudio === "authorized" ? "PulseAudio / PipeWire monitor ready" : "No monitor source detected")}
+      </div>
+    </section>`;
+  }
   return `<section class="setting-section permission-section">
     <div class="section-copy"><h3>Privacy permissions</h3><p>Auri needs these macOS permissions for voice, screenshots, and system-audio capture.</p></div>
     <div class="permission-card">
       ${renderPermissionRow("microphone", "Microphone", permissions.microphone)}
       ${renderPermissionRow("screenRecording", "Screen &amp; System Audio Recording", permissions.screenRecording)}
     </div>
+  </section>`;
+}
+
+function renderProcessPrioritySettings(state) {
+  const open = Boolean(state.ui?.processPrioritySettingsOpen);
+  const filter = String(state.ui?.processPriorityFilter || "").trim().toLowerCase();
+  const draft = String(state.ui?.processPriorityDraft || "");
+  const suggestions = draft.trim().length > 3 && Array.isArray(state.ui?.processPrioritySuggestions)
+    ? state.ui.processPrioritySuggestions
+    : [];
+  const rules = Object.values(state.system?.processPriorities || {})
+    .filter((rule) => rule?.identity)
+    .filter((rule) => !filter || String(rule.identity).toLowerCase().includes(filter))
+    .sort((left, right) => String(left.identity).localeCompare(String(right.identity)));
+  const rows = rules.map((rule) => `<form class="process-priority-rule-form" data-original-identity="${escapeHtml(rule.identity)}">
+    <input name="identity" required aria-label="Process name or executable path" value="${escapeHtml(rule.identity)}">
+    <input name="nice" required type="number" min="-20" max="19" step="1" aria-label="Nice value" value="${escapeHtml(rule.nice)}">
+    <button class="action-button secondary" type="submit">Save</button>
+    <button class="priority-rule-remove" type="button" data-action="process-priority-rule-remove" data-identity="${escapeHtml(rule.identity)}" aria-label="Remove priority rule for ${escapeHtml(rule.identity)}" title="Remove rule">×</button>
+  </form>`).join("");
+  const suggestionRows = suggestions.map((suggestion) => `<button type="button" data-action="process-priority-suggestion" data-value="${escapeHtml(suggestion.path)}">
+    <strong>${escapeHtml(suggestion.name)}</strong><small>${escapeHtml(suggestion.path)}</small>
+  </button>`).join("");
+  return `<section class="setting-section process-priority-settings">
+    <div class="section-copy"><h3>Process priorities</h3><p>Match an executable path or command name and reapply its Linux/macOS nice value every minute.</p></div>
+    <button class="process-priority-settings-toggle" type="button" data-action="process-priority-settings-toggle" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} process priority rules">
+      <span>${open ? "Hide rules" : "Show rules"}</span><i aria-hidden="true"></i>
+    </button>
+    ${open ? `<div class="priority-rule-card">
+      <form id="process-priority-rule-add" class="process-priority-rule-form is-add">
+        <div class="priority-add-identity">
+          <input id="process-priority-rule-identity" name="identity" required autocomplete="off" aria-label="New process name or executable path" placeholder="Type a command or executable path" value="${escapeHtml(draft)}">
+          ${suggestionRows ? `<div class="priority-command-suggestions" role="listbox" aria-label="Matching PATH commands">${suggestionRows}</div>` : ""}
+        </div>
+        <input name="nice" required type="number" min="-20" max="19" step="1" aria-label="New nice value" value="10">
+        <button class="action-button primary" type="submit">Add rule</button>
+      </form>
+      <div class="priority-rule-tools">
+        <strong>Saved rules</strong>
+        <button class="action-button secondary" type="button" data-action="process-priority-filter-toggle" aria-expanded="${Boolean(state.ui?.processPriorityFilterOpen)}">Search</button>
+      </div>
+      ${state.ui?.processPriorityFilterOpen ? `<div class="priority-rule-filter"><input id="process-priority-filter" type="search" autocomplete="off" aria-label="Filter saved process priority rules" placeholder="Filter saved rules" value="${escapeHtml(state.ui?.processPriorityFilter || "")}"></div>` : ""}
+      <div class="priority-rule-heading"><span>Process / executable</span><span>Nice</span><span></span></div>
+      <div class="priority-rule-list">${rows || `<p class="priority-rule-empty">${filter ? "No matching process priority rules." : "No saved process priority rules."}</p>`}</div>
+      <small class="priority-rule-help">19 is the lowest CPU priority; -20 is the highest and can require administrator permission.</small>
+    </div>` : ""}
   </section>`;
 }
 
@@ -788,11 +862,13 @@ export function renderSettings(state) {
       <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Press the shortcut you want to use</small></span><input id="wake-shortcut-input" class="shortcut-capture" data-setting="wakeShortcut" type="text" readonly autocomplete="off" spellcheck="false" aria-label="Wake shortcut. Focus this field and press a key combination." value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>No-reply disconnect<small>Seconds after audio input stops or reply activity</small></span><input data-setting="liveDisconnectSeconds" type="number" min="1" max="3600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests and how recordings look.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Circle around cursor<small>Marks the pointer in screen recordings — light blue inside light green</small></span><input data-setting="cursorHighlight" type="checkbox" ${state.settings.cursorHighlight ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Browser AI prompts</h3><p>Extra actions shown in the web tab when you select text or click an image. Built-ins: Ask, Translate, Speak.</p></div><div class="settings-card terminal-completion-card"><div class="settings-textarea-row"><label class="settings-field-heading" for="web-ai-prompts"><span>Custom prompts<small>One per line · Label | prompt template with {text}</small></span></label><textarea id="web-ai-prompts" rows="5" spellcheck="false" placeholder="Summarize | Summarize this in three bullet points: {text}&#10;Explain | Explain this like I am five: {text}">${escapeHtml(state.settings.webAiPrompts || "")}</textarea><div class="custom-completions-footer"><small>Applied to newly opened web tabs</small><button class="action-button secondary settings-save-button" type="button" data-action="web-ai-prompts-save">Save prompts</button></div></div></div></section>
+      ${renderProcessPrioritySettings(state)}
     </div>
   </section>`;
 }
 
 function formatPercent(value) {
+  if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   return Number.isFinite(number) ? `${number.toFixed(number >= 10 ? 0 : 1)}%` : "—";
 }
@@ -861,8 +937,8 @@ function formatUptime(seconds) {
   return `${minutes}m`;
 }
 
-function processSortButton(label, sort, activeSort) {
-  return `<button type="button" class="system-sort ${activeSort === sort ? "is-active" : ""}" data-action="system-sort" data-sort="${sort}" aria-pressed="${activeSort === sort}">${label}${activeSort === sort ? " ↓" : ""}</button>`;
+function processSortButton(label, sort, activeSort, sortDirection = "desc") {
+  return `<button type="button" class="system-sort ${activeSort === sort ? "is-active" : ""}" data-action="system-sort" data-sort="${sort}" aria-pressed="${activeSort === sort}">${label}${activeSort === sort ? (sortDirection === "asc" ? " ↑" : " ↓") : ""}</button>`;
 }
 
 function renderSystemMetric(label, value, detail = "", key = "", unit = "") {
@@ -924,7 +1000,7 @@ export function buildSystemMetrics(state, kind) {
     const swapUnit = swapTotal > 0 ? swap.unit : "";
     const swapValue = swapTotal > 0 ? formatPercent(snapshot.memory?.swapUsagePercent) : "Off";
     const cpuDetail = `${snapshot.cpu?.cores || 0} cores · ${snapshot.cpu?.brand || "Unknown CPU"}`;
-    return [
+    const metrics = [
       { key: "cpu", label: "CPU", unit: "", value: formatPercent(snapshot.cpu?.usagePercent), detail: cpuDetail },
       { key: "memory", label: "Memory", unit: memory.unit, value: formatPercent(snapshot.memory?.usagePercent), detail: memory.value },
       { key: "network", label: "Net", unit: net.unit, value: net.value, detail: "download · upload" },
@@ -932,6 +1008,7 @@ export function buildSystemMetrics(state, kind) {
       { key: "swap", label: "Swap", unit: swapUnit, value: swapValue, detail: swapDetail },
       { key: "uptime", label: "Uptime", unit: "", value: formatUptime(snapshot.host?.uptimeSeconds), detail: `${(snapshot.network?.interfaces || []).filter((iface) => iface.status === "up" || iface.ip).length} interfaces` }
     ];
+    return state.system.gpuMode ? metrics.slice(0, 3) : metrics;
   }
   if (kind === "disk") {
     return [
@@ -950,6 +1027,43 @@ export function buildSystemMetrics(state, kind) {
     ];
   }
   return [];
+}
+
+export function buildGpuCardRows(state) {
+  const gpus = state.system.snapshot?.gpus || [];
+  return gpus.map((gpu) => {
+    const vram = bytesPairWithUnit(gpu.vramUsedBytes || 0, gpu.vramTotalBytes || 0);
+    const processes = gpu.processes || [];
+    return {
+      key: gpu.id,
+      vendor: String(gpu.vendor || "unknown").toUpperCase(),
+      name: gpu.name || gpu.id,
+      usage: formatPercent(gpu.usagePercent),
+      vram: gpu.vramTotalBytes > 0 ? `${vram.value} ${vram.unit}` : "VRAM unavailable",
+      temperature: gpu.temperatureCelsius !== null && gpu.temperatureCelsius !== undefined && gpu.temperatureCelsius !== "" && Number.isFinite(Number(gpu.temperatureCelsius))
+        ? `${Number(gpu.temperatureCelsius).toFixed(0)}°C`
+        : "Temperature unavailable",
+      processes,
+      summary: processes.length
+        ? processes.map((process) => `${process.name} · PID ${process.pid} · ${formatPercent(process.usagePercent)} · ${formatMegabytes(process.vramBytes || 0)}`).join("\n")
+        : "No GPU processes reported."
+    };
+  });
+}
+
+function renderGpuCards(state) {
+  const rows = buildGpuCardRows(state);
+  if (!rows.length) {
+    return `<article class="system-metric gpu-metric gpu-empty" data-gpu-empty><small>GPU</small><strong>No supported GPU detected</strong><span>Linux reports Intel and AMD through DRM/sysfs and NVIDIA through nvidia-smi when available.</span></article>`;
+  }
+  return rows.map((gpu) => `<article class="system-metric gpu-metric" data-gpu-card="${escapeHtml(gpu.key)}" data-gpu-row="${escapeHtml(gpu.key)}" tabindex="0">
+    <small>GPU · ${escapeHtml(gpu.vendor)}</small>
+    <strong data-gpu-usage>${escapeHtml(gpu.usage)}</strong>
+    <span class="gpu-card-name" data-gpu-name title="${escapeHtml(gpu.name)}">${escapeHtml(gpu.name)}</span>
+    <span data-gpu-vram>${escapeHtml(gpu.vram)}</span>
+    <span data-gpu-temperature>${escapeHtml(gpu.temperature)}</span>
+    <div class="gpu-process-popover" role="tooltip"><b>GPU processes</b><div data-gpu-summary>${escapeHtml(gpu.summary).replaceAll("\n", "<br>")}</div></div>
+  </article>`).join("");
 }
 
 export function buildSystemStatusText(state) {
@@ -1004,6 +1118,19 @@ function formatDetailMegabyteValue(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
   return (number / 1_000_000).toFixed(2);
+}
+
+function renderProcessGpuDetails(process) {
+  const details = Array.isArray(process?.gpuDetails) ? process.gpuDetails : [];
+  if (!details.length) return "";
+  const ram = formatCompactMegabytes(process.memoryBytes || 0);
+  return `<div class="process-detail-gpus" aria-label="Per-GPU process usage">
+    ${details.map((gpu) => `<article class="process-detail-gpu" data-process-gpu-detail="${escapeHtml(gpu.id)}" title="${escapeHtml(gpu.fullName || gpu.name)}">
+      <div><small>${escapeHtml(gpu.name)}</small><strong>${escapeHtml(formatPercent(gpu.usagePercent))}</strong></div>
+      <span><b>VRAM</b><em>${escapeHtml(formatCompactMegabytes(gpu.vramBytes || 0))}</em></span>
+      <span><b>RAM</b><em>${escapeHtml(ram)}</em></span>
+    </article>`).join("")}
+  </div>`;
 }
 
 
@@ -1069,8 +1196,10 @@ function renderProcessDetailDialog(state, processes) {
   const appName = String(selected.name || "Process");
   const commandOrPath = String(selected.commandLine || selected.path || selected.name || "Command line unavailable");
   const openTarget = processOpenTarget(selected);
+  const priorityIdentity = processPriorityIdentity(selected);
+  const savedPriority = state.system?.processPriorities?.[priorityIdentity]?.level || "";
   const backdropStyle = "position:absolute;inset:0;z-index:780;display:flex;align-items:center;justify-content:center;padding:14px;pointer-events:none;background:transparent;";
-  const dialogStyle = "position:relative;width:min(680px,calc(100% - 28px));max-height:min(430px,calc(100% - 28px));padding:12px;border:1px solid #dce4ee;border-radius:16px;display:grid;gap:8px;overflow:hidden;background:#fff;color:#17243a;box-shadow:0 22px 60px rgba(28,39,61,.24);pointer-events:auto;";
+  const dialogStyle = "position:relative;width:min(680px,calc(100% - 28px));height:min(520px,calc(100% - 28px));max-height:calc(100% - 28px);padding:12px;border:1px solid #dce4ee;border-radius:16px;display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:8px;overflow:hidden;background:#fff;color:#17243a;box-shadow:0 22px 60px rgba(28,39,61,.24);pointer-events:auto;";
   const headerStyle = "min-width:0;height:38px;padding:0 10px;border-radius:11px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f2f5f9;";
   const titleStyle = "min-width:0;display:flex;align-items:center;gap:8px;";
   const nameStyle = "min-width:0;overflow:hidden;color:#17243a;font-size:14px;font-weight:850;line-height:1;text-overflow:ellipsis;white-space:nowrap;";
@@ -1088,6 +1217,7 @@ function renderProcessDetailDialog(state, processes) {
   const pathHeadStyle = "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px;";
   const pathLabelStyle = "display:block;color:#7f8ba0;font-size:9px;font-weight:850;letter-spacing:.12em;text-transform:uppercase;";
   const pathFieldStyle = "width:100%;height:74px;min-height:74px;max-height:74px;padding:7px 8px;border:1px solid #d7e0eb;border-radius:9px;display:block;resize:none;overflow:auto;color:#17243a;background:#fff;font:500 11px/14px ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;";
+  const priorityButton = (level, label, nice = null) => `<button type="button" class="process-priority-button ${(savedPriority || "unset") === level ? "is-active" : ""}" data-action="system-process-priority" data-level="${level}" aria-pressed="${(savedPriority || "unset") === level}" title="${nice === null ? "Stop managing this process priority" : `Set nice value ${nice}`}">${label}</button>`;
   return `<div class="system-process-detail-backdrop" role="presentation" style="${backdropStyle}">
     <section class="system-process-detail" role="dialog" style="${dialogStyle}" aria-modal="true" aria-label="Process detail">
       <header class="process-detail-header" style="${headerStyle}">
@@ -1102,12 +1232,14 @@ function renderProcessDetailDialog(state, processes) {
           <button type="button" class="icon-copy-button process-detail-close" data-action="system-process-detail-close" aria-label="Close process detail" title="Close">✕</button>
         </div>
       </header>
+      <div class="process-detail-scroll" style="min-height:0;display:grid;align-content:start;gap:8px;overflow:auto;padding-right:2px;">
       <div class="process-detail-stat-row" style="${statRowStyle}">
         <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>CPU</small></div><strong style="${singleValueStyle}">${escapeHtml(formatPercent(selected.cpuPercent))}</strong></article>
         <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>RAM</small><span style="${statUnitStyle}">MB</span></div><strong style="${singleValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.memoryBytes || 0))}</strong></article>
         <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>Net</small><span style="${statUnitStyle}">MB</span></div><div style="${rowListStyle}"><span style="${rowStyle}"><b>↓</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.downloadBytes || 0))}</strong></span><span style="${rowStyle}"><b>↑</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.uploadBytes || 0))}</strong></span></div></article>
         <article class="process-detail-stat" style="${statStyle}"><div class="process-detail-stat-head" style="${statHeadStyle}"><small>Disk</small><span style="${statUnitStyle}">MB</span></div><div style="${rowListStyle}"><span style="${rowStyle}"><b>Read</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.diskReadBytes || 0))}</strong></span><span style="${rowStyle}"><b>Write</b><strong style="${rowValueStyle}">${escapeHtml(formatDetailMegabyteValue(selected.diskWriteBytes || 0))}</strong></span></div></article>
       </div>
+      ${renderProcessGpuDetails(selected)}
       <div class="process-detail-path" style="${pathWrapStyle}">
         <div class="process-detail-path-head" style="${pathHeadStyle}">
           <small style="${pathLabelStyle}">Path</small>
@@ -1116,6 +1248,8 @@ function renderProcessDetailDialog(state, processes) {
         <textarea class="process-detail-path-field" readonly rows="5" spellcheck="false" style="${pathFieldStyle}">${escapeHtml(commandOrPath)}</textarea>
         ${renderProcessDetailPorts(state, selected)}
       </div>
+      </div>
+      <footer class="process-detail-priority"><span><strong>Priority</strong><code>${escapeHtml(selected.priority)}</code></span><div>${priorityButton("lowest", "Lowest", 19)}${priorityButton("lower", "Lower", 15)}${priorityButton("low", "Low", 10)}${priorityButton("normal", "Normal", 1)}${priorityButton("high", "High", -10)}${priorityButton("unset", "Unset")}</div></footer>
     </section>
   </div>`;
 }
@@ -1137,8 +1271,9 @@ export function formatProcessPortCell(ports) {
   }).join(" ");
 }
 
-function renderProcessTable(state, processes, { showDisk = false, showNet = true, totalCount = processes.length, currentPage = 1, pageCount = 1, hasPrevious = false, hasNext = false } = {}) {
+function renderProcessTable(state, processes, { showDisk = false, showNet = true, gpuMode = false, totalCount = processes.length, currentPage = 1, pageCount = 1, hasPrevious = false, hasNext = false } = {}) {
   const sortBy = state.system.sortBy || "cpu";
+  const sortDirection = state.system.sortDirection || "desc";
   const selectedPid = Number(state.system.selectedProcessPid);
   const pageProcessLabel = `${processes.length} process${processes.length === 1 ? "" : "es"} on page ${currentPage} of ${pageCount}`;
   const scrollHint = hasPrevious && hasNext
@@ -1149,15 +1284,27 @@ function renderProcessTable(state, processes, { showDisk = false, showNet = true
         ? "scroll down for next page"
         : "";
   const loadStatus = scrollHint ? `${pageProcessLabel} · ${scrollHint}` : pageProcessLabel;
+  if (gpuMode) {
+    return `<div class="process-table gpu-process-table" role="table" aria-label="GPU processes" data-has-previous="${hasPrevious}" data-has-next="${hasNext}" data-process-page="${escapeHtml(currentPage)}" data-process-pages="${escapeHtml(pageCount)}" data-process-total="${escapeHtml(totalCount)}">
+      <div class="process-row gpu-process-row process-heading" role="row"><span role="columnheader">Name</span><span role="columnheader">GPU usage</span><span role="columnheader">VRAM</span><span role="columnheader">${processSortButton("Priority", "priority", sortBy, sortDirection)}</span></div>
+      ${processes.length ? processes.map((process) => `<div class="process-row gpu-process-row ${Number(process.pid) === selectedPid ? "is-selected" : ""}" role="row" data-action="system-process-select" data-pid="${escapeHtml(process.pid)}" data-process-row="${escapeHtml(process.pid)}" data-gpu-process-row="${escapeHtml(process.pid)}">
+        <span role="cell" data-process-name title="${escapeHtml(process.commandLine || process.path || process.name)}">${escapeHtml(process.name)}</span>
+        <span role="cell" data-process-gpu title="${escapeHtml((process.gpuNames || []).join(", "))}">${escapeHtml(process.gpuLabel || "—")}</span>
+        <span role="cell" data-process-gpu-vram>${escapeHtml(formatMegabytes(process.vramBytes || 0))}</span>
+        <span role="cell" data-process-priority><code>${escapeHtml(process.priority)}</code></span>
+      </div>`).join("") : `<div class="empty-state"><span>◇</span><h2>No GPU process data</h2><p>No process is currently reported by the detected GPU drivers.</p></div>`}
+      <div class="process-load-status" role="status" data-process-load-status>${escapeHtml(loadStatus)}</div>
+    </div>`;
+  }
   return `<div class="process-table" role="table" aria-label="System processes" data-has-previous="${hasPrevious}" data-has-next="${hasNext}" data-process-page="${escapeHtml(currentPage)}" data-process-pages="${escapeHtml(pageCount)}" data-process-total="${escapeHtml(totalCount)}">
     <div class="process-row process-heading ${showDisk ? "is-disk" : ""}" role="row">
-      <span role="columnheader">${processSortButton("Name", "name", sortBy)}</span>
-      <span role="columnheader">${processSortButton("Port", "port", sortBy)}</span>
-      <span role="columnheader">${processSortButton("RAM", "ram", sortBy)}</span>
-      <span role="columnheader">${processSortButton("CPU", "cpu", sortBy)}</span>
-      ${showDisk ? `<span role="columnheader">${processSortButton("Disk read | write", "disk", sortBy)}</span>` : ""}
-      ${showNet ? `<span role="columnheader">${processSortButton("Net", "net", sortBy)}</span>` : ""}
-      <span role="columnheader">PID</span>
+      <span role="columnheader">${processSortButton("Name", "name", sortBy, sortDirection)}</span>
+      <span role="columnheader">${processSortButton("Port", "port", sortBy, sortDirection)}</span>
+      <span role="columnheader">${processSortButton("RAM", "ram", sortBy, sortDirection)}</span>
+      <span role="columnheader">${processSortButton("CPU", "cpu", sortBy, sortDirection)}</span>
+      ${showDisk ? `<span role="columnheader">${processSortButton("Disk read | write", "disk", sortBy, sortDirection)}</span>` : ""}
+      ${showNet ? `<span role="columnheader">${processSortButton("Net", "net", sortBy, sortDirection)}</span>` : ""}
+      <span role="columnheader">${processSortButton("Priority", "priority", sortBy, sortDirection)}</span>
     </div>
     ${processes.length ? processes.map((process) => `<div class="process-row ${showDisk ? "is-disk" : ""} ${Number(process.pid) === selectedPid ? "is-selected" : ""}" role="row" data-action="system-process-select" data-pid="${escapeHtml(process.pid)}" data-process-row="${escapeHtml(process.pid)}">
       <span role="cell" data-process-name title="${escapeHtml(process.commandLine || process.path || process.name)}">${escapeHtml(process.name)}</span>
@@ -1166,7 +1313,7 @@ function renderProcessTable(state, processes, { showDisk = false, showNet = true
       <span role="cell" data-process-cpu>${formatPercent(process.cpuPercent)}</span>
       ${showDisk ? `<span role="cell" data-process-disk>${formatNetPair(process.diskReadBytes || 0, process.diskWriteBytes || 0)}</span>` : ""}
       ${showNet ? `<span role="cell" data-process-net>${formatArrowRateCompact(process.downloadBytesPerSecond, process.uploadBytesPerSecond)}</span>` : ""}
-      <span role="cell" data-process-pid><code>${escapeHtml(process.pid)}</code></span>
+      <span role="cell" data-process-priority><code>${escapeHtml(process.priority)}</code></span>
     </div>`).join("") : `<div class="empty-state"><span>◬</span><h2>No process data</h2><p>Native process monitoring is available in the Tauri build.</p></div>`}
     <div class="process-load-status" role="status" data-process-load-status>${escapeHtml(loadStatus)}</div>
   </div>`;
@@ -1177,7 +1324,10 @@ function renderProcessTable(state, processes, { showDisk = false, showNet = true
 // refreshes can preserve the current page without growing the DOM over time.
 function systemPanelProcessPage(state) {
   const snapshot = state.system.snapshot || emptySystemSnapshot;
-  const sorted = sortSystemProcesses(snapshot.processes || [], state.system.sortBy || "cpu");
+  const gpuProcesses = state.system.gpuMode ? gpuProcessesForSnapshot(snapshot) : null;
+  const sorted = state.system.gpuMode
+    ? (state.system.sortBy === "priority" ? sortSystemProcesses(gpuProcesses, "priority", state.system.sortDirection) : gpuProcesses)
+    : sortSystemProcesses(snapshot.processes || [], state.system.sortBy || "cpu", state.system.sortDirection);
   const all = filterSystemProcesses(sorted, state.system.filter || "");
   const pageCount = Math.max(1, Math.ceil(all.length / SYSTEM_PROCESS_PAGE_SIZE));
   const requestedPage = Number.isFinite(Number(state.system.processPage)) ? Math.trunc(Number(state.system.processPage)) : 1;
@@ -1208,9 +1358,14 @@ function processRowData(state, kind, process) {
     disk: formatNetPair(process.diskReadBytes || 0, process.diskWriteBytes || 0),
     net: formatArrowRateCompact(process.downloadBytesPerSecond, process.uploadBytesPerSecond),
     pid: String(process.pid),
+    priority: String(process.priority),
     selected: Number(process.pid) === selectedPid,
     showDisk,
-    showNet
+    showNet,
+    gpuMode: Boolean(state.system.gpuMode),
+    gpu: process.gpuLabel || "—",
+    gpuUsage: formatPercent(process.usagePercent),
+    gpuVram: formatMegabytes(process.vramBytes || 0)
   };
 }
 
@@ -1232,7 +1387,7 @@ export function buildProcessMonitorRows(state, kind) {
 
 export function renderProcessMonitorContent(state, kind) {
   const page = systemPanelProcessPage(state);
-  const options = { totalCount: page.total, currentPage: page.currentPage, pageCount: page.pageCount, hasPrevious: page.hasPrevious, hasNext: page.hasNext };
+  const options = { totalCount: page.total, currentPage: page.currentPage, pageCount: page.pageCount, hasPrevious: page.hasPrevious, hasNext: page.hasNext, gpuMode: Boolean(state.system.gpuMode && kind === "system") };
   if (kind === "disk") {
     return `<div class="process-monitor-head"><div><h3>Process disk read | write</h3><p>Per-process disk counters are reported when the OS exposes them.</p></div><span>${page.visible.length} on page</span></div>${renderProcessTable(state, page.visible, { ...options, showDisk: true, showNet: false })}`;
   }
@@ -1277,11 +1432,17 @@ function renderSystem(state) {
     <button type="button" class="system-page-button" data-action="system-process-page-next" data-system-page-next aria-label="Next process page" title="Next process page" ${processPage.hasNext ? "" : "disabled"}>&gt;</button>
   </span>`;
 
-  return `<section class="system-panel"><header class="panel-title system-title"><div><span>◬</span><div><h2>System ${pageControls}<em data-system-host>${escapeHtml(hostName)}</em></h2></div></div>${systemHeaderActions(state)}</header>
+  const gpuMode = Boolean(state.system.gpuMode);
+  const gpuButton = `<button type="button" class="system-gpu-toggle" data-action="system-gpus" aria-pressed="${gpuMode}">GPUs</button>`;
+  const status = !gpuMode || state.system.status === "loading" || state.system.status === "error"
+    ? `<div class="system-status ${state.system.status === "error" ? "is-error" : ""}" role="status" data-system-status>${escapeHtml(statusCopy)}</div>`
+    : "";
+  return `<section class="system-panel ${gpuMode ? "is-gpu-mode" : ""} ${status ? "has-system-status" : ""}"><header class="panel-title system-title"><div><span>◬</span><div><h2>System ${pageControls}<em data-system-host>${escapeHtml(hostName)}</em></h2></div>${gpuButton}</div>${systemHeaderActions(state)}</header>
     ${renderSystemSearchBar(state)}
-    <div class="system-status ${state.system.status === "error" ? "is-error" : ""}" role="status" data-system-status>${escapeHtml(statusCopy)}</div>
-    <div class="system-grid">
+    ${status}
+    <div class="system-grid ${gpuMode ? "gpu-grid" : ""}">
       ${metrics.map((metric) => renderSystemMetric(metric.label, metric.value, metric.detail, metric.key, metric.unit)).join("")}
+      ${gpuMode ? renderGpuCards(state) : ""}
     </div>
     <section class="process-monitor">
       ${renderProcessMonitorContent(state, "system")}

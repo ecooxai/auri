@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { buildDiskMountRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
+import { buildDiskMountRows, buildGpuCardRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemPriorityPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -134,7 +134,8 @@ export class AppView {
     const clipboardScrollTop = captureClipboardScroll(this.root);
     const settingsScrollTop = captureSettingsScroll(this.root);
     const processSortBy = state.system?.sortBy || "";
-    const resetProcessScroll = this.lastProcessSortBy !== null && this.lastProcessSortBy !== processSortBy;
+    const processSortKey = `${processSortBy}:${state.system?.sortDirection || "desc"}`;
+    const resetProcessScroll = this.lastProcessSortBy !== null && this.lastProcessSortBy !== processSortKey;
     const processScrollTop = resetProcessScroll ? 0 : captureProcessScroll(this.root);
     const nativeWebview = options.nativeWebview !== undefined ? Boolean(options.nativeWebview) : Boolean(options.native);
     this.root.innerHTML = `
@@ -151,6 +152,7 @@ export class AppView {
       ${renderWebOverlay(state, { native: nativeWebview })}
       ${renderSystemTunnelPrompt(state)}
       ${renderSystemKillPrompt(state)}
+      ${renderSystemPriorityPrompt(state)}
       ${state.ui.commandPaletteOpen ? this.renderCommandPalette() : ""}`;
     const active = activeSubtab(state);
     this.restoreTerminalHost(active?.type === "terminal" ? active.id : null);
@@ -177,7 +179,7 @@ export class AppView {
     if (settings) settings.scrollTop = settingsScrollTop;
     const processTable = this.root.querySelector(".process-table");
     if (processTable) processTable.scrollTop = processScrollTop;
-    this.lastProcessSortBy = processSortBy;
+    this.lastProcessSortBy = processSortKey;
     requestAnimationFrame(() => {
       if (tab.activeSubtabId !== this.lastActiveSubtabId) {
         const scroller = this.root.querySelector?.(".subtab-scroll");
@@ -246,6 +248,7 @@ export class AppView {
 
     if (kind === "disk" && !this.patchKeyedRows(panel, buildDiskMountRows(state), "mount", ["title", "percent", "usage", "free"])) return false;
     if (kind === "net" && !this.patchKeyedRows(panel, buildNetInterfaceRows(state), "interface", ["title", "status", "ip", "traffic"])) return false;
+    if (kind === "system" && state.system.gpuMode && !this.patchKeyedRows(panel, buildGpuCardRows(state), "gpu", ["name", "usage", "vram", "temperature", "summary"])) return false;
 
     const monitor = panel.querySelector(".process-monitor");
     if (monitor) {
@@ -259,7 +262,12 @@ export class AppView {
 
     const detailHtml = renderSystemProcessDetail(state, kind);
     const backdrop = panel.querySelector(".system-process-detail-backdrop");
-    if (backdrop && detailHtml) backdrop.outerHTML = detailHtml;
+    if (backdrop && detailHtml) {
+      const detailScrollTop = backdrop.querySelector?.(".process-detail-scroll")?.scrollTop || 0;
+      backdrop.outerHTML = detailHtml;
+      const nextDetailScroll = panel.querySelector?.(".process-detail-scroll");
+      if (nextDetailScroll) nextDetailScroll.scrollTop = detailScrollTop;
+    }
     else if (backdrop) backdrop.remove();
     else if (detailHtml) panel.insertAdjacentHTML?.("beforeend", detailHtml);
     return true;
@@ -302,6 +310,17 @@ export class AppView {
       if (diskCell) diskCell.textContent = row.disk;
       const netCell = element.querySelector("[data-process-net]");
       if (netCell) netCell.textContent = row.net;
+      const gpuCell = element.querySelector("[data-process-gpu]");
+      if (gpuCell) {
+        gpuCell.textContent = row.gpu;
+        gpuCell.title = row.gpu;
+      }
+      const gpuUsageCell = element.querySelector("[data-process-gpu-usage]");
+      if (gpuUsageCell) gpuUsageCell.textContent = row.gpuUsage;
+      const gpuVramCell = element.querySelector("[data-process-gpu-vram]");
+      if (gpuVramCell) gpuVramCell.textContent = row.gpuVram;
+      const priorityCell = element.querySelector("[data-process-priority]");
+      if (priorityCell) priorityCell.textContent = row.priority;
       element.classList?.toggle?.("is-selected", row.selected);
     }
     if (table.dataset) {
@@ -344,6 +363,14 @@ export class AppView {
 
   getTerminalInputValue() {
     return this.getTerminalInput()?.value || "";
+  }
+
+  consumeSystemPriorityPassword() {
+    const input = this.root.querySelector?.("#system-priority-password");
+    if (!input) return "";
+    const password = input.value || "";
+    input.value = "";
+    return password;
   }
 
   setTerminalInput(value, focus = true) {

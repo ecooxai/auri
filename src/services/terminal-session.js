@@ -22,6 +22,19 @@ const TERMINAL_FILE_EXTENSIONS = new Set([
   "apk", "dmg", "exe", "img", "iso", "jar", "deb", "rpm"
 ]);
 
+export function formatMiniImageMetadata(sizeBytes, width, height) {
+  const size = Number(sizeBytes);
+  const w = Math.round(Number(width));
+  const h = Math.round(Number(height));
+  const parts = [];
+  if (Number.isFinite(size) && size >= 0) {
+    const kb = size / 1024;
+    parts.push(`${kb >= 10 ? kb.toFixed(0) : kb.toFixed(1)} KB`);
+  }
+  if (w > 0 && h > 0) parts.push(`${w}×${h}`);
+  return parts.join("  ");
+}
+
 function trimTerminalCandidate(value) {
   return String(value || "")
     .trim()
@@ -616,20 +629,22 @@ export class TerminalSession {
 
     const body = document.createElement("div");
     body.className = "terminal-link-preview-body";
-    body.setAttribute("role", "button");
-    body.setAttribute("tabindex", "0");
-    body.setAttribute("aria-label", `Open ${target.text} in a new tab`);
+    const openButton = document.createElement("button");
+    openButton.className = "terminal-link-preview-open";
+    openButton.type = "button";
+    openButton.textContent = "↗";
+    openButton.title = target.kind === "url" ? "Open in web tab" : "Open in viewer tab";
+    openButton.setAttribute("aria-label", `Open ${target.text} in a new tab`);
     const frame = document.createElement("iframe");
     frame.className = "terminal-link-preview-frame";
     frame.title = `Preview of ${target.text}`;
     frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads");
     frame.setAttribute("allow", "autoplay");
-    frame.setAttribute("tabindex", "-1");
     const loading = document.createElement("span");
     loading.className = "terminal-link-preview-loading";
     loading.textContent = "Loading preview…";
     body.append(frame, loading);
-    preview.append(body);
+    preview.append(body, openButton);
     document.body.append(preview);
     this.previewElement = preview;
     this.positionPreview(preview, anchor);
@@ -654,12 +669,7 @@ export class TerminalSession {
       if (!loading.isConnected) body.append(loading);
     };
     const open = () => this.openPreviewTarget(target, showFeedback);
-    body.addEventListener("click", open);
-    body.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      open();
-    });
+    openButton.addEventListener("click", open);
     frame.addEventListener("load", () => loading.remove());
 
     this.previewDocumentAbort = new AbortController();
@@ -685,10 +695,17 @@ export class TerminalSession {
           image.alt = prepared.title || target.text || "Image preview";
           image.addEventListener("load", () => {
             resizeMediaPreview(image.naturalWidth, image.naturalHeight);
+            const infoText = formatMiniImageMetadata(prepared.size, image.naturalWidth, image.naturalHeight);
+            if (infoText) {
+              const info = document.createElement("span");
+              info.className = "terminal-link-preview-media-info";
+              info.textContent = infoText;
+              body.append(info);
+            }
             loading.remove();
           });
           image.addEventListener("error", () => {
-            loading.textContent = "Image preview is unavailable. Click to open it.";
+            loading.textContent = "Image preview is unavailable. Use the open button to view it.";
           });
           preview.classList.add("is-image");
           frame.replaceWith(image);
@@ -707,7 +724,7 @@ export class TerminalSession {
             video.play?.().catch?.(() => {});
           });
           video.addEventListener("error", () => {
-            loading.textContent = "Video preview is unavailable. Click to open it.";
+            loading.textContent = "Video preview is unavailable. Use the open button to view it.";
           });
           preview.classList.add("is-video");
           frame.replaceWith(video);

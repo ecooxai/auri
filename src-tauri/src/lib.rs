@@ -235,7 +235,10 @@ fn remove_clipboard_entry(id: String) -> Result<Vec<clipboard::ClipboardEntry>, 
 }
 
 #[tauri::command]
-fn update_clipboard_entry(id: String, text: String) -> Result<Vec<clipboard::ClipboardEntry>, String> {
+fn update_clipboard_entry(
+    id: String,
+    text: String,
+) -> Result<Vec<clipboard::ClipboardEntry>, String> {
     clipboard::update_entry_text(&id, &text)
 }
 
@@ -263,20 +266,28 @@ fn take_pending_open_files(
 #[tauri::command]
 async fn system_snapshot(
     state: tauri::State<'_, SystemMonitorState>,
+    include_gpus: Option<bool>,
 ) -> Result<system::SystemSnapshot, String> {
-    let previous = *state
+    let previous = state
         .0
         .lock()
-        .map_err(|_| "System monitor state is unavailable.".to_string())?;
-    let (snapshot, sample) =
-        tauri::async_runtime::spawn_blocking(move || system::snapshot(previous))
-            .await
-            .map_err(|error| format!("System monitor task failed: {error}"))??;
+        .map_err(|_| "System monitor state is unavailable.".to_string())?
+        .clone();
+    let (snapshot, sample) = tauri::async_runtime::spawn_blocking(move || {
+        system::snapshot(previous, include_gpus.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| format!("System monitor task failed: {error}"))??;
     *state
         .0
         .lock()
         .map_err(|_| "System monitor state is unavailable.".to_string())? = Some(sample);
     Ok(snapshot)
+}
+
+#[tauri::command]
+fn search_path_commands(query: String) -> Vec<system::PathCommandInfo> {
+    system::search_path_commands(&query, 30)
 }
 
 #[tauri::command]
@@ -289,6 +300,27 @@ async fn kill_process(pid: u32) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || system::kill_process(pid))
         .await
         .map_err(|error| format!("Process kill task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_process_priority(pid: u32, nice: i32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || system::set_process_priority(pid, nice))
+        .await
+        .map_err(|error| format!("Process priority task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn set_process_priority_privileged(
+    pid: u32,
+    nice: i32,
+    password: String,
+    method: String,
+) -> Result<system::ProcessPriorityAuthorization, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        system::set_process_priority_privileged(pid, nice, password, &method)
+    })
+    .await
+    .map_err(|error| format!("Process priority authorization task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -570,7 +602,12 @@ fn webview_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn tab_window_show(app: tauri::AppHandle, id: String, url: String, title: String) -> Result<(), String> {
+fn tab_window_show(
+    app: tauri::AppHandle,
+    id: String,
+    url: String,
+    title: String,
+) -> Result<(), String> {
     webview::show_standalone(&app, &id, &url, &title)
 }
 
@@ -706,7 +743,10 @@ pub fn run() {
             take_pending_open_files,
             read_shell_history,
             system_snapshot,
+            search_path_commands,
             kill_process,
+            set_process_priority,
+            set_process_priority_privileged,
             cloudflared_status,
             cloudflared_start_tunnel,
             cloudflared_active_tunnels,

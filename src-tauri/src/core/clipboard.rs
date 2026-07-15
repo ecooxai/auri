@@ -241,7 +241,10 @@ fn backfill_image_metadata(entries: &mut [ClipboardEntry]) -> bool {
             }
         }
         if entry.format.is_none() {
-            if let Some(extension) = Path::new(&path).extension().and_then(|value| value.to_str()) {
+            if let Some(extension) = Path::new(&path)
+                .extension()
+                .and_then(|value| value.to_str())
+            {
                 entry.format = Some(extension.to_lowercase());
                 changed = true;
             }

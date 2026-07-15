@@ -1,18 +1,21 @@
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct NetworkSample {
     pub at: Instant,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+    pub gpu_busy_ns: HashMap<String, u64>,
+    pub gpu_process_busy_ns: HashMap<String, u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -24,7 +27,107 @@ pub struct SystemSnapshot {
     pub memory: MemoryInfo,
     pub network: NetworkInfo,
     pub disk: DiskInfo,
+    pub gpus: Vec<GpuInfo>,
     pub processes: Vec<ProcessInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuInfo {
+    pub id: String,
+    pub vendor: String,
+    pub name: String,
+    pub usage_percent: Option<f64>,
+    pub vram_total_bytes: u64,
+    pub vram_used_bytes: u64,
+    pub temperature_celsius: Option<f64>,
+    pub processes: Vec<GpuProcessInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub usage_percent: Option<f64>,
+    pub vram_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathCommandInfo {
+    pub name: String,
+    pub path: String,
+}
+
+fn path_entry_is_executable(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(target_family = "unix")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(target_family = "unix"))]
+    {
+        true
+    }
+}
+
+pub fn search_executable_commands_in_paths(
+    query: &str,
+    paths: &[PathBuf],
+    limit: usize,
+) -> Vec<PathCommandInfo> {
+    let needle = query.trim().to_ascii_lowercase();
+    if needle.chars().count() <= 3 || limit == 0 {
+        return Vec::new();
+    }
+    let mut seen = HashSet::new();
+    let mut matches = Vec::new();
+    for directory in paths {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.to_ascii_lowercase().contains(&needle) || seen.contains(&name) {
+                continue;
+            }
+            let path = entry.path();
+            if !path_entry_is_executable(&path) {
+                continue;
+            }
+            seen.insert(name.clone());
+            matches.push(PathCommandInfo {
+                name,
+                path: fs::canonicalize(&path)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned(),
+            });
+        }
+    }
+    matches.sort_by(|left, right| {
+        let left_starts = left.name.to_ascii_lowercase().starts_with(&needle);
+        let right_starts = right.name.to_ascii_lowercase().starts_with(&needle);
+        right_starts
+            .cmp(&left_starts)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    matches.truncate(limit);
+    matches
+}
+
+pub fn search_path_commands(query: &str, limit: usize) -> Vec<PathCommandInfo> {
+    let paths = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    search_executable_commands_in_paths(query, &paths, limit)
 }
 
 #[derive(Debug, Serialize)]
@@ -109,6 +212,7 @@ pub struct ProcessInfo {
     pub working_directory: String,
     pub command_line: String,
     pub status: String,
+    pub priority: i32,
     pub cpu_percent: f64,
     pub memory_bytes: u64,
     pub download_bytes: u64,
@@ -1099,6 +1203,7 @@ fn parse_process_line(line: &str) -> Option<ProcessInfo> {
         working_directory: String::new(),
         command_line: raw_path,
         status,
+        priority: 0,
         cpu_percent,
         memory_bytes: rss_kb.saturating_mul(1024),
         download_bytes: 0,
@@ -1127,6 +1232,91 @@ fn process_command_lines_by_pid() -> HashMap<u32, String> {
         .lines()
         .filter_map(parse_process_command_line)
         .collect()
+}
+
+fn process_priorities_by_pid() -> HashMap<u32, i32> {
+    command_output("ps", &["-axo", "pid=,ni="])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let mut values = line.split_whitespace();
+            Some((values.next()?.parse().ok()?, values.next()?.parse().ok()?))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+pub fn process_executable_path(pid: u32) -> Option<String> {
+    fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+        .filter(|path| !path.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_executable_path(pid: u32) -> Option<String> {
+    use std::ffi::c_void;
+    const MAX_PATH: usize = 4096;
+    #[link(name = "proc")]
+    extern "C" {
+        fn proc_pidpath(pid: i32, buffer: *mut c_void, buffer_size: u32) -> i32;
+    }
+    let mut buffer = vec![0_u8; MAX_PATH];
+    let length = unsafe {
+        proc_pidpath(
+            pid as i32,
+            buffer.as_mut_ptr().cast::<c_void>(),
+            buffer.len() as u32,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    buffer.truncate(length as usize);
+    String::from_utf8(buffer)
+        .ok()
+        .filter(|path| !path.is_empty())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn process_executable_path(_pid: u32) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn process_executable_paths_by_pid() -> HashMap<u32, String> {
+    let mut paths = HashMap::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return paths;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if let Some(path) = process_executable_path(pid) {
+            paths.insert(pid, path);
+        }
+    }
+    paths
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable_paths_by_pid() -> HashMap<u32, String> {
+    command_output("ps", &["-axo", "pid="])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .filter_map(|pid| process_executable_path(pid).map(|path| (pid, path)))
+        .collect()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_executable_paths_by_pid() -> HashMap<u32, String> {
+    HashMap::new()
 }
 
 #[cfg(target_os = "linux")]
@@ -1500,6 +1690,489 @@ fn process_disk_totals_by_pid() -> HashMap<u32, (u64, u64)> {
     HashMap::new()
 }
 
+#[cfg(target_os = "linux")]
+fn read_trimmed(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "linux")]
+fn read_u64(path: &Path) -> u64 {
+    read_trimmed(path)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+fn read_optional_f64(path: &Path) -> Option<f64> {
+    read_trimmed(path)?.parse::<f64>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_gpu_memory_value(line: &str) -> Option<u64> {
+    let value = line.split_once(':')?.1.trim();
+    let mut fields = value.split_whitespace();
+    let number = fields.next()?.parse::<f64>().ok()?;
+    let multiplier = match fields.next().unwrap_or("B").to_ascii_lowercase().as_str() {
+        "kib" | "kb" => 1024_f64,
+        "mib" | "mb" => 1024_f64 * 1024_f64,
+        "gib" | "gb" => 1024_f64 * 1024_f64 * 1024_f64,
+        _ => 1_f64,
+    };
+    Some((number.max(0.0) * multiplier).round() as u64)
+}
+
+#[cfg(target_os = "linux")]
+fn gpu_process_memory_from_fdinfo(text: &str) -> u64 {
+    text.lines()
+        .filter(|line| {
+            line.starts_with("drm-memory-vram:") || line.starts_with("drm-memory-system:")
+        })
+        .filter_map(parse_gpu_memory_value)
+        .sum()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_nvidia_gpu_line(line: &str) -> Option<(GpuInfo, String)> {
+    let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+    if fields.len() < 7 {
+        return None;
+    }
+    let index = fields[0].parse::<u32>().ok()?;
+    let uuid = fields[1].to_string();
+    let parse_optional = |value: &str| value.parse::<f64>().ok();
+    let mib = |value: &str| {
+        value
+            .parse::<f64>()
+            .ok()
+            .map(|number| (number.max(0.0) * 1024_f64 * 1024_f64).round() as u64)
+            .unwrap_or(0)
+    };
+    Some((
+        GpuInfo {
+            id: format!("nvidia:{index}"),
+            vendor: "nvidia".to_string(),
+            name: fields[2].to_string(),
+            usage_percent: parse_optional(fields[3]),
+            vram_total_bytes: mib(fields[4]),
+            vram_used_bytes: mib(fields[5]),
+            temperature_celsius: parse_optional(fields[6]),
+            processes: Vec::new(),
+        },
+        uuid,
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_nvidia_process_line(line: &str) -> Option<(String, GpuProcessInfo)> {
+    let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+    if fields.len() < 4 {
+        return None;
+    }
+    let pid = fields[1].parse::<u32>().ok()?;
+    let vram_bytes = fields[3]
+        .parse::<f64>()
+        .ok()
+        .map(|number| (number.max(0.0) * 1024_f64 * 1024_f64).round() as u64)
+        .unwrap_or(0);
+    Some((
+        fields[0].to_string(),
+        GpuProcessInfo {
+            pid,
+            name: Path::new(fields[2].split_whitespace().next().unwrap_or(fields[2]))
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(fields[2])
+                .to_string(),
+            usage_percent: None,
+            vram_bytes,
+        },
+    ))
+}
+
+#[cfg(target_os = "linux")]
+pub fn parse_nvidia_pmon_line(line: &str) -> Option<(u32, GpuProcessInfo)> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 10 || line.trim_start().starts_with('#') {
+        return None;
+    }
+    let gpu_index = fields[0].parse::<u32>().ok()?;
+    let pid = fields[1].parse::<u32>().ok()?;
+    let usage_percent = fields[3..9]
+        .iter()
+        .filter_map(|value| value.parse::<f64>().ok())
+        .reduce(f64::max);
+    let name = fields[9..].join(" ");
+    Some((
+        gpu_index,
+        GpuProcessInfo {
+            pid,
+            name: Path::new(name.split_whitespace().next().unwrap_or(&name))
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or(&name)
+                .to_string(),
+            usage_percent,
+            vram_bytes: 0,
+        },
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn merge_gpu_process(processes: &mut Vec<GpuProcessInfo>, incoming: GpuProcessInfo) {
+    if let Some(current) = processes
+        .iter_mut()
+        .find(|process| process.pid == incoming.pid)
+    {
+        if incoming.usage_percent.is_some() {
+            current.usage_percent = incoming.usage_percent;
+        }
+        current.vram_bytes = current.vram_bytes.max(incoming.vram_bytes);
+        if current.name.is_empty() || current.name.starts_with("pid ") {
+            current.name = incoming.name;
+        }
+    } else {
+        processes.push(incoming);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn nvidia_gpu_info() -> Vec<GpuInfo> {
+    let Some(text) = command_output(
+        "nvidia-smi",
+        &[
+            "--query-gpu=index,uuid,name,utilization.gpu,memory.total,memory.used,temperature.gpu",
+            "--format=csv,noheader,nounits",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    let parsed: Vec<(GpuInfo, String)> = text.lines().filter_map(parse_nvidia_gpu_line).collect();
+    let mut gpus: Vec<GpuInfo> = parsed.iter().map(|(gpu, _)| gpu.clone()).collect();
+    let uuid_to_index: HashMap<String, usize> = parsed
+        .iter()
+        .enumerate()
+        .map(|(index, (_, uuid))| (uuid.clone(), index))
+        .collect();
+    if let Some(process_text) = command_output(
+        "nvidia-smi",
+        &[
+            "--query-compute-apps=gpu_uuid,pid,process_name,used_gpu_memory",
+            "--format=csv,noheader,nounits",
+        ],
+    ) {
+        for (uuid, process) in process_text.lines().filter_map(parse_nvidia_process_line) {
+            if let Some(index) = uuid_to_index.get(&uuid).copied() {
+                merge_gpu_process(&mut gpus[index].processes, process);
+            }
+        }
+    }
+    if let Some(process_text) = command_output("nvidia-smi", &["pmon", "-c", "1"]) {
+        for (gpu_index, process) in process_text.lines().filter_map(parse_nvidia_pmon_line) {
+            if let Some(gpu) = gpus
+                .iter_mut()
+                .find(|gpu| gpu.id == format!("nvidia:{gpu_index}"))
+            {
+                merge_gpu_process(&mut gpu.processes, process);
+            }
+        }
+    }
+    for gpu in &mut gpus {
+        gpu.processes.sort_by(|left, right| {
+            right
+                .vram_bytes
+                .cmp(&left.vram_bytes)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+    }
+    gpus
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct DrmGpuDevice {
+    gpu: GpuInfo,
+    device_path: PathBuf,
+    pci_slot: String,
+}
+
+#[cfg(target_os = "linux")]
+fn drm_gpu_temperature(device_path: &Path) -> Option<f64> {
+    let hwmon = fs::read_dir(device_path.join("hwmon")).ok()?;
+    for entry in hwmon.flatten() {
+        if let Some(raw) = read_optional_f64(&entry.path().join("temp1_input")) {
+            return Some(if raw.abs() > 1000.0 {
+                raw / 1000.0
+            } else {
+                raw
+            });
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn drm_gpu_name(card: &str, device_path: &Path, vendor: &str) -> String {
+    for file in ["product_name", "label", "marketing_name"] {
+        if let Some(name) = read_trimmed(&device_path.join(file)) {
+            return name;
+        }
+    }
+    let driver = read_trimmed(&device_path.join("uevent"))
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("DRIVER=").map(str::to_string))
+        })
+        .unwrap_or_else(|| "GPU".to_string());
+    format!("{} {} ({})", vendor, driver, card)
+}
+
+#[cfg(target_os = "linux")]
+fn drm_gpu_devices(include_nvidia: bool) -> Vec<DrmGpuDevice> {
+    let mut devices = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/class/drm") else {
+        return devices;
+    };
+    for entry in entries.flatten() {
+        let card = entry.file_name().to_string_lossy().into_owned();
+        let Some(suffix) = card.strip_prefix("card") else {
+            continue;
+        };
+        if suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit()) {
+            continue;
+        }
+        let device_link = entry.path().join("device");
+        let Ok(device_path) = fs::canonicalize(&device_link) else {
+            continue;
+        };
+        let vendor_code = read_trimmed(&device_link.join("vendor")).unwrap_or_default();
+        let vendor = match vendor_code
+            .trim_start_matches("0x")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "8086" => "intel",
+            "1002" => "amd",
+            "10de" => "nvidia",
+            _ => continue,
+        };
+        if vendor == "nvidia" && !include_nvidia {
+            continue;
+        }
+        let usage_percent = read_optional_f64(&device_link.join("gpu_busy_percent"))
+            .or_else(|| read_optional_f64(&entry.path().join("gt/gt0/busy_percent")));
+        devices.push(DrmGpuDevice {
+            gpu: GpuInfo {
+                id: card.clone(),
+                vendor: vendor.to_string(),
+                name: drm_gpu_name(&card, &device_link, vendor),
+                usage_percent,
+                vram_total_bytes: read_u64(&device_link.join("mem_info_vram_total")),
+                vram_used_bytes: read_u64(&device_link.join("mem_info_vram_used")),
+                temperature_celsius: drm_gpu_temperature(&device_link),
+                processes: Vec::new(),
+            },
+            device_path,
+            pci_slot: read_trimmed(&device_link.join("uevent"))
+                .and_then(|text| {
+                    text.lines()
+                        .find_map(|line| line.strip_prefix("PCI_SLOT_NAME=").map(str::to_string))
+                })
+                .unwrap_or_default(),
+        });
+    }
+    devices.sort_by(|left, right| left.gpu.id.cmp(&right.gpu.id));
+    devices
+}
+
+#[cfg(target_os = "linux")]
+fn parse_drm_engine_busy_ns(text: &str) -> Option<(String, String, u64)> {
+    let client = text
+        .lines()
+        .find_map(|line| line.strip_prefix("drm-client-id:").map(str::trim))?
+        .to_string();
+    let pdev = text
+        .lines()
+        .find_map(|line| line.strip_prefix("drm-pdev:").map(str::trim))?
+        .to_string();
+    let busy = text
+        .lines()
+        .filter_map(|line| {
+            if !line.starts_with("drm-engine-") {
+                return None;
+            }
+            line.split_once(':')?
+                .1
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .sum();
+    Some((client, pdev, busy))
+}
+
+#[cfg(target_os = "linux")]
+fn drm_gpu_processes(
+    devices: &[DrmGpuDevice],
+) -> (
+    HashMap<String, Vec<GpuProcessInfo>>,
+    HashMap<String, u64>,
+    HashMap<String, u64>,
+) {
+    let mut node_to_gpu = HashMap::new();
+    if let Ok(entries) = fs::read_dir("/sys/class/drm") {
+        for entry in entries.flatten() {
+            let node = entry.file_name().to_string_lossy().into_owned();
+            if !(node.starts_with("card") || node.starts_with("renderD")) {
+                continue;
+            }
+            let Ok(device_path) = fs::canonicalize(entry.path().join("device")) else {
+                continue;
+            };
+            if let Some(device) = devices
+                .iter()
+                .find(|device| device.device_path == device_path)
+            {
+                node_to_gpu.insert(node, device.gpu.id.clone());
+            }
+        }
+    }
+    let pdev_to_gpu: HashMap<String, String> = devices
+        .iter()
+        .filter(|device| !device.pci_slot.is_empty())
+        .map(|device| (device.pci_slot.clone(), device.gpu.id.clone()))
+        .collect();
+    let mut found: HashMap<(u32, String), GpuProcessInfo> = HashMap::new();
+    let mut busy_by_client: HashMap<(String, u32, String), u64> = HashMap::new();
+    let Ok(proc_entries) = fs::read_dir("/proc") else {
+        return (HashMap::new(), HashMap::new(), HashMap::new());
+    };
+    for process_entry in proc_entries.flatten() {
+        let Ok(pid) = process_entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let process_path = process_entry.path();
+        let name = read_trimmed(&process_path.join("comm")).unwrap_or_else(|| format!("pid {pid}"));
+        let Ok(fds) = fs::read_dir(process_path.join("fd")) else {
+            continue;
+        };
+        for fd in fds.flatten() {
+            let fd_name = fd.file_name();
+            let fdinfo =
+                fs::read_to_string(process_path.join("fdinfo").join(&fd_name)).unwrap_or_default();
+            let Ok(target) = fs::read_link(fd.path()) else {
+                continue;
+            };
+            let from_fdinfo = parse_drm_engine_busy_ns(&fdinfo);
+            let gpu_id = from_fdinfo
+                .as_ref()
+                .and_then(|(_, pdev, _)| pdev_to_gpu.get(pdev).cloned())
+                .or_else(|| {
+                    target
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .and_then(|node| node_to_gpu.get(node).cloned())
+                });
+            let Some(gpu_id) = gpu_id else {
+                continue;
+            };
+            if let Some((client, _, busy)) = from_fdinfo {
+                let total = busy_by_client
+                    .entry((gpu_id.clone(), pid, client))
+                    .or_default();
+                *total = (*total).max(busy);
+            }
+            let memory = gpu_process_memory_from_fdinfo(&fdinfo);
+            let process = found
+                .entry((pid, gpu_id))
+                .or_insert_with(|| GpuProcessInfo {
+                    pid,
+                    name: name.clone(),
+                    usage_percent: None,
+                    vram_bytes: 0,
+                });
+            process.vram_bytes = process.vram_bytes.max(memory);
+        }
+    }
+    let mut by_gpu: HashMap<String, Vec<GpuProcessInfo>> = HashMap::new();
+    for ((_, gpu_id), process) in found {
+        by_gpu.entry(gpu_id).or_default().push(process);
+    }
+    for processes in by_gpu.values_mut() {
+        processes.sort_by(|left, right| {
+            right
+                .vram_bytes
+                .cmp(&left.vram_bytes)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+    }
+    let mut busy_by_gpu = HashMap::new();
+    let mut busy_by_process = HashMap::new();
+    for ((gpu_id, pid, _), busy) in busy_by_client {
+        let total = busy_by_gpu.entry(gpu_id.clone()).or_insert(0_u64);
+        *total = total.saturating_add(busy);
+        let process_total = busy_by_process
+            .entry(format!("{gpu_id}:{pid}"))
+            .or_insert(0_u64);
+        *process_total = process_total.saturating_add(busy);
+    }
+    (by_gpu, busy_by_gpu, busy_by_process)
+}
+
+#[cfg(target_os = "linux")]
+fn gpu_info(previous: Option<&NetworkSample>, sample: &mut NetworkSample) -> Vec<GpuInfo> {
+    let mut gpus = nvidia_gpu_info();
+    let mut drm_devices = drm_gpu_devices(gpus.is_empty());
+    let (mut processes, busy_by_gpu, busy_by_process) = drm_gpu_processes(&drm_devices);
+    for device in &mut drm_devices {
+        if device.gpu.usage_percent.is_none() {
+            if let (Some(prior), Some(&current)) = (previous, busy_by_gpu.get(&device.gpu.id)) {
+                if let Some(&before) = prior.gpu_busy_ns.get(&device.gpu.id) {
+                    let elapsed_ns = sample.at.duration_since(prior.at).as_nanos() as f64;
+                    if elapsed_ns > 0.0 {
+                        device.gpu.usage_percent = Some(
+                            (current.saturating_sub(before) as f64 / elapsed_ns * 100.0)
+                                .clamp(0.0, 100.0),
+                        );
+                    }
+                }
+            }
+        }
+        device.gpu.processes = processes.remove(&device.gpu.id).unwrap_or_default();
+        for process in &mut device.gpu.processes {
+            let key = format!("{}:{}", device.gpu.id, process.pid);
+            if let (Some(prior), Some(&current)) = (previous, busy_by_process.get(&key)) {
+                if let Some(&before) = prior.gpu_process_busy_ns.get(&key) {
+                    let elapsed_ns = sample.at.duration_since(prior.at).as_nanos() as f64;
+                    if elapsed_ns > 0.0 {
+                        process.usage_percent = Some(
+                            (current.saturating_sub(before) as f64 / elapsed_ns * 100.0)
+                                .clamp(0.0, 100.0),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    sample.gpu_busy_ns = busy_by_gpu;
+    sample.gpu_process_busy_ns = busy_by_process;
+    gpus.extend(drm_devices.into_iter().map(|device| device.gpu));
+    gpus.sort_by(|left, right| {
+        left.vendor
+            .cmp(&right.vendor)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    gpus
+}
+
+#[cfg(not(target_os = "linux"))]
+fn gpu_info(_previous: Option<&NetworkSample>, _sample: &mut NetworkSample) -> Vec<GpuInfo> {
+    Vec::new()
+}
+
 fn disk_info() -> DiskInfo {
     let text = command_output("df", &["-kP"]).unwrap_or_default();
     let mut mounts = Vec::new();
@@ -1567,6 +2240,8 @@ fn process_info() -> Vec<ProcessInfo> {
     let ports_by_pid = listening_ports_by_pid();
     let port_details_by_pid = build_port_details(&ports_by_pid);
     let command_lines_by_pid = process_command_lines_by_pid();
+    let priorities_by_pid = process_priorities_by_pid();
+    let executable_paths_by_pid = process_executable_paths_by_pid();
     let working_directories_by_pid = working_directories_by_pid();
     let network_by_pid = process_network_totals_by_pid();
     let disk_by_pid = process_disk_totals_by_pid();
@@ -1582,6 +2257,10 @@ fn process_info() -> Vec<ProcessInfo> {
             if let Some(command_line) = command_lines_by_pid.get(&process.pid) {
                 process.command_line = command_line.clone();
             }
+            if let Some(path) = executable_paths_by_pid.get(&process.pid) {
+                process.path = path.clone();
+            }
+            process.priority = priorities_by_pid.get(&process.pid).copied().unwrap_or(0);
             process.name = display_process_name(
                 &process.command_line,
                 &process.path,
@@ -1782,6 +2461,8 @@ fn network_info(previous: Option<NetworkSample>) -> (NetworkInfo, NetworkSample)
         at: Instant::now(),
         rx_bytes: total_rx,
         tx_bytes: total_tx,
+        gpu_busy_ns: HashMap::new(),
+        gpu_process_busy_ns: HashMap::new(),
     };
     let (download_rate, upload_rate) = previous
         .and_then(|previous| {
@@ -1830,10 +2511,241 @@ pub fn kill_process(pid: u32) -> Result<(), String> {
     }
 }
 
+pub fn valid_process_nice(nice: i32) -> bool {
+    (-20..=19).contains(&nice)
+}
+
+fn priority_permission_denied(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    text.contains("permission denied")
+        || text.contains("operation not permitted")
+        || text.contains("not permitted")
+}
+
+pub fn set_process_priority(pid: u32, nice: i32) -> Result<(), String> {
+    if pid == 0 {
+        return Err("Choose a process PID.".to_string());
+    }
+    if !valid_process_nice(nice) {
+        return Err("Priority nice value must be from -20 through 19.".to_string());
+    }
+    if cfg!(target_os = "windows") {
+        return Err("Process priority changes are not supported on Windows yet.".to_string());
+    }
+    let output = Command::new("renice")
+        .args(["-n", &nice.to_string(), "-p", &pid.to_string()])
+        .output()
+        .map_err(|error| format!("Could not start renice: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    if !priority_permission_denied(&output.stderr) {
+        return Err(format!("Could not set process {pid} priority to {nice}."));
+    }
+
+    #[cfg(target_os = "linux")]
+    match Command::new("sudo")
+        .args([
+            "-n",
+            "--",
+            "renice",
+            "-n",
+            &nice.to_string(),
+            "-p",
+            &pid.to_string(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("AURI_PRIORITY_ROOT_REQUIRED: sudo is unavailable; root permission is required for process {pid}."));
+        }
+        _ => {}
+    }
+
+    Err(format!("AURI_PRIORITY_ADMIN_REQUIRED: administrator permission is required to set process {pid} priority to {nice}."))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessPriorityAuthorization {
+    pub applied: bool,
+    pub requires_root: bool,
+    pub message: String,
+}
+
+#[cfg(target_os = "linux")]
+fn sudo_set_process_priority(pid: u32, nice: i32, password: &mut String) -> Result<bool, String> {
+    let mut child = match Command::new("sudo")
+        .args([
+            "-S",
+            "-p",
+            "",
+            "--",
+            "renice",
+            "-n",
+            &nice.to_string(),
+            "-p",
+            &pid.to_string(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Could not start sudo: {error}")),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(password.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .map_err(|error| format!("Could not send the sudo credential: {error}"))?;
+        stdin.flush().ok();
+    }
+    password.clear();
+    child
+        .wait()
+        .map(|status| status.success())
+        .map_err(|error| format!("Could not wait for sudo: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn root_set_process_priority(pid: u32, nice: i32, password: &mut String) -> Result<bool, String> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 8,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| format!("Could not create a root authentication terminal: {error}"))?;
+    let mut command = CommandBuilder::new("su");
+    command.args(["root", "-c", &format!("exec renice -n {nice} -p {pid}")]);
+    command.env("LC_ALL", "C");
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| format!("Could not start root authentication: {error}"))?;
+    drop(pair.slave);
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| format!("Could not read root authentication: {error}"))?;
+    let mut writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| format!("Could not open root authentication input: {error}"))?;
+    let (sender, receiver) = mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 512];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    if sender.send(buffer[..count].to_vec()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let mut prompt = String::new();
+    let mut credential_sent = false;
+    loop {
+        if let Ok(chunk) = receiver.recv_timeout(Duration::from_millis(100)) {
+            prompt.push_str(&String::from_utf8_lossy(&chunk));
+            if prompt.len() > 4096 {
+                prompt.drain(..prompt.len() - 4096);
+            }
+        }
+        if !credential_sent && prompt.to_ascii_lowercase().contains("password") {
+            writer
+                .write_all(password.as_bytes())
+                .and_then(|_| writer.write_all(b"\n"))
+                .map_err(|error| format!("Could not send the root credential: {error}"))?;
+            writer.flush().ok();
+            password.clear();
+            credential_sent = true;
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("Could not inspect root authentication: {error}"))?
+        {
+            password.clear();
+            return Ok(status.success());
+        }
+        if started.elapsed() >= Duration::from_secs(15) {
+            password.clear();
+            child.kill().ok();
+            return Err("Root authentication timed out.".to_string());
+        }
+    }
+}
+
+pub fn set_process_priority_privileged(
+    pid: u32,
+    nice: i32,
+    mut password: String,
+    method: &str,
+) -> Result<ProcessPriorityAuthorization, String> {
+    if pid == 0 || !valid_process_nice(nice) {
+        password.clear();
+        return Err("Invalid process priority request.".to_string());
+    }
+    if password.is_empty() {
+        return Err("Enter an administrator password.".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let applied = match method {
+            "sudo" => sudo_set_process_priority(pid, nice, &mut password)?,
+            "root" => root_set_process_priority(pid, nice, &mut password)?,
+            _ => {
+                password.clear();
+                return Err("Choose sudo or root authorization.".to_string());
+            }
+        };
+        password.clear();
+        return Ok(ProcessPriorityAuthorization {
+            applied,
+            requires_root: !applied && method == "sudo",
+            message: if applied {
+                String::new()
+            } else if method == "sudo" {
+                "sudo was unavailable or could not authorize the priority change.".to_string()
+            } else {
+                "Root authentication failed. Check the root password and try again.".to_string()
+            },
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        password.clear();
+        let _ = method;
+        Err(
+            "Administrator priority authorization is currently supported only on Linux."
+                .to_string(),
+        )
+    }
+}
+
 pub fn snapshot(
     previous: Option<NetworkSample>,
+    include_gpus: bool,
 ) -> Result<(SystemSnapshot, NetworkSample), String> {
-    let (network, sample) = network_info(previous);
+    let (network, mut sample) = network_info(previous.clone());
+    let gpus = if include_gpus {
+        gpu_info(previous.as_ref(), &mut sample)
+    } else {
+        Vec::new()
+    };
     let snapshot = SystemSnapshot {
         captured_at: now_isoish(),
         host: HostInfo {
@@ -1852,6 +2764,7 @@ pub fn snapshot(
         memory: memory_info(),
         network,
         disk: disk_info(),
+        gpus,
         processes: process_info(),
     };
     Ok((snapshot, sample))
@@ -1867,7 +2780,21 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::parse_nettop_process_line;
     #[cfg(target_os = "linux")]
-    use super::{parse_proc_net_tcp_listener, parse_socket_inode_link, parse_ss_listening_port};
+    use super::{
+        gpu_process_memory_from_fdinfo, parse_drm_engine_busy_ns, parse_nvidia_gpu_line,
+        parse_nvidia_pmon_line, parse_nvidia_process_line, parse_proc_net_tcp_listener,
+        parse_socket_inode_link, parse_ss_listening_port,
+    };
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_intel_drm_engine_busy_time_without_perf_permissions() {
+        let fdinfo = "drm-client-id:\t18\ndrm-pdev:\t0000:00:02.0\ndrm-engine-render:\t125000000 ns\ndrm-engine-copy:\t25000000 ns\n";
+        assert_eq!(
+            parse_drm_engine_busy_ns(fdinfo),
+            Some(("18".to_string(), "0000:00:02.0".to_string(), 150_000_000))
+        );
+    }
 
     #[test]
     fn port_details_dedupe_by_port_and_transport() {
@@ -1895,7 +2822,9 @@ mod tests {
     fn parses_ss_udp_listening_ports() {
         use super::parse_ss_udp_port;
         assert_eq!(
-            parse_ss_udp_port("UNCONN 0 0 0.0.0.0:68 0.0.0.0:* users:((\"dhclient\",pid=987,fd=6))"),
+            parse_ss_udp_port(
+                "UNCONN 0 0 0.0.0.0:68 0.0.0.0:* users:((\"dhclient\",pid=987,fd=6))"
+            ),
             Some((987, 68))
         );
         assert_eq!(parse_ss_udp_port("LISTEN 0 128 0.0.0.0:22 0.0.0.0:*"), None);
@@ -1991,6 +2920,54 @@ mod tests {
         .unwrap();
         assert_eq!(parsed, (159940, 8000));
         assert_eq!(parse_socket_inode_link("socket:[159940]"), Some(159940));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_nvidia_gpu_and_process_rows() {
+        let (gpu, uuid) =
+            parse_nvidia_gpu_line("0, GPU-abc, NVIDIA GeForce RTX 4090, 72, 24564, 4096, 63")
+                .unwrap();
+        assert_eq!(gpu.id, "nvidia:0");
+        assert_eq!(gpu.vendor, "nvidia");
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 4090");
+        assert_eq!(gpu.usage_percent, Some(72.0));
+        assert_eq!(gpu.vram_total_bytes, 24_564 * 1024 * 1024);
+        assert_eq!(uuid, "GPU-abc");
+
+        let (process_uuid, process) =
+            parse_nvidia_process_line("GPU-abc, 4242, /usr/bin/blender, 1536").unwrap();
+        assert_eq!(process_uuid, "GPU-abc");
+        assert_eq!(process.pid, 4242);
+        assert_eq!(process.name, "blender");
+        assert_eq!(process.vram_bytes, 1536 * 1024 * 1024);
+
+        let (_, process_with_args) = parse_nvidia_process_line(
+            "GPU-abc, 4243, /usr/lib/chromium/chromium --type=gpu-process --ozone-platform=x11, 512",
+        )
+        .unwrap();
+        assert_eq!(process_with_args.name, "chromium");
+
+        let (gpu_index, graphics_process) =
+            parse_nvidia_pmon_line("0 1030534 C+G 25 1 - - - - chromium --type=gpu-process")
+                .unwrap();
+        assert_eq!(gpu_index, 0);
+        assert_eq!(graphics_process.pid, 1_030_534);
+        assert_eq!(graphics_process.name, "chromium");
+        assert_eq!(graphics_process.usage_percent, Some(25.0));
+
+        let (_, xorg) = parse_nvidia_pmon_line("0 670086 G - - - - - - Xorg").unwrap();
+        assert_eq!(xorg.usage_percent, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parses_drm_process_memory_counters() {
+        let text = "drm-driver:\tamdgpu\ndrm-memory-vram:\t512 KiB\ndrm-memory-system:\t2 MiB\n";
+        assert_eq!(
+            gpu_process_memory_from_fdinfo(text),
+            512 * 1024 + 2 * 1024 * 1024
+        );
     }
 
     #[cfg(target_os = "macos")]

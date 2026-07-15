@@ -212,6 +212,7 @@ function browserSystemSnapshot() {
     memory,
     network: { interfaces: [{ name: "browser", ip: "Unavailable in browser preview", status: "preview", rxBytes: 0, txBytes: 0 }], downloadBytesPerSecond: null, uploadBytesPerSecond: null, totalRxBytes: 0, totalTxBytes: 0 },
     disk: { mounts: [], totalBytes: 0, usedBytes: 0, freeBytes: 0, usagePercent: null, readBytesPerSecond: null, writeBytesPerSecond: null },
+    gpus: [],
     processes: []
   };
 }
@@ -388,14 +389,34 @@ export class Backend {
     return this.call("read_shell_history");
   }
 
-  async systemSnapshot() {
+  async systemSnapshot(options = {}) {
     if (!this.invoke) return browserSystemSnapshot();
-    return this.call("system_snapshot");
+    return this.call("system_snapshot", { includeGpus: Boolean(options.includeGpus) });
+  }
+
+  async searchPathCommands(query) {
+    if (!this.invoke) return [];
+    return this.call("search_path_commands", { query: String(query || "") });
   }
 
   async killProcess(pid) {
     if (!this.invoke) throw new Error("Killing processes needs the native Tauri build.");
     return this.call("kill_process", { pid: Number(pid) });
+  }
+
+  async setProcessPriority(pid, nice) {
+    if (!this.invoke) throw new Error("Changing process priority needs the native Tauri build.");
+    return this.call("set_process_priority", { pid: Number(pid), nice: Number(nice) });
+  }
+
+  async setProcessPriorityPrivileged(pid, nice, password, method) {
+    if (!this.invoke) throw new Error("Administrator priority authorization needs the native Tauri build.");
+    return this.call("set_process_priority_privileged", {
+      pid: Number(pid),
+      nice: Number(nice),
+      password: String(password || ""),
+      method: String(method || "")
+    });
   }
 
   async cloudflaredActiveTunnels() {
@@ -586,7 +607,7 @@ export class Backend {
 
   async getMediaPermissions() {
     if (!this.invoke) {
-      return { microphone: "unavailable", screenRecording: "unavailable" };
+      return { platform: "browser", microphone: "unavailable", screenRecording: "unavailable", systemAudio: "unavailable" };
     }
     return this.call("media_permission_status");
   }
@@ -598,7 +619,7 @@ export class Backend {
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       for (const track of stream.getTracks()) track.stop();
-      return { microphone: "authorized", screenRecording: "unavailable" };
+      return { platform: "browser", microphone: "authorized", screenRecording: "unavailable", systemAudio: "unavailable" };
     }
     return this.call("request_media_permission", { permission });
   }

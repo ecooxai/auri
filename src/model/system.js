@@ -1,6 +1,6 @@
 export const SYSTEM_PROCESS_PAGE_SIZE = 10;
 
-const VALID_SORTS = new Set(["cpu", "port", "name", "pid", "ram", "net", "disk"]);
+const VALID_SORTS = new Set(["cpu", "port", "name", "pid", "priority", "ram", "net", "disk"]);
 
 export const emptySystemSnapshot = Object.freeze({
   capturedAt: null,
@@ -9,6 +9,7 @@ export const emptySystemSnapshot = Object.freeze({
   memory: { totalBytes: 0, usedBytes: 0, freeBytes: 0, usagePercent: null, swapTotalBytes: 0, swapUsedBytes: 0, swapFreeBytes: 0, swapUsagePercent: null },
   network: { interfaces: [], downloadBytesPerSecond: null, uploadBytesPerSecond: null, totalRxBytes: 0, totalTxBytes: 0 },
   disk: { mounts: [], totalBytes: 0, usedBytes: 0, freeBytes: 0, usagePercent: null, readBytesPerSecond: null, writeBytesPerSecond: null },
+  gpus: [],
   processes: []
 });
 
@@ -18,6 +19,8 @@ function finiteNumber(value, fallback = 0) {
 }
 
 function nullableNumber(value) {
+  // Native Option<f64> values arrive as null; keep unsupported counters distinct from a real zero.
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -87,7 +90,7 @@ export function normalizePortDetails(process) {
 // a process matches when ANY keyword is a substring of its searchable text, so
 // "chrome claude" shows every Chrome and every Claude process.
 function processSearchHaystack(process) {
-  return [process?.name, process?.commandLine, process?.path, process?.pid, ...normalizePortList(process?.ports)]
+  return [process?.name, process?.commandLine, process?.path, process?.pid, ...(process?.gpuNames || []), ...(process?.gpuIds || []), ...normalizePortList(process?.ports)]
     .map((value) => String(value ?? ""))
     .join(" ")
     .toLowerCase();
@@ -163,7 +166,15 @@ export function primaryProcessPort(process) {
   return ports.length ? ports[0] : null;
 }
 
-export function sortSystemProcesses(processes = [], sortBy = "cpu") {
+export function processPriorityIdentity(process) {
+  const path = String(process?.path || "").trim();
+  if (path.includes("/") || /^[A-Za-z]:[\\/]/.test(path)) return path;
+  const command = String(process?.commandLine || "").trim();
+  if (command) return command.split(/\s+/)[0];
+  return path || String(process?.name || "").trim();
+}
+
+export function sortSystemProcesses(processes = [], sortBy = "cpu", sortDirection = "desc") {
   const normalizedSort = normalizeSystemSort(sortBy);
   const items = Array.isArray(processes) ? processes.map((item) => ({ ...item, ports: normalizePortList(item?.ports) })) : [];
   return items.sort((left, right) => {
@@ -177,11 +188,86 @@ export function sortSystemProcesses(processes = [], sortBy = "cpu") {
     }
     if (normalizedSort === "name") return String(left.name || "").localeCompare(String(right.name || "")) || finiteNumber(left.pid) - finiteNumber(right.pid);
     if (normalizedSort === "pid") return finiteNumber(left.pid) - finiteNumber(right.pid);
+    if (normalizedSort === "priority") {
+      const order = finiteNumber(left.priority) - finiteNumber(right.priority);
+      return (sortDirection === "asc" ? order : -order) || String(left.name || "").localeCompare(String(right.name || ""));
+    }
     if (normalizedSort === "ram") return finiteNumber(right.memoryBytes) - finiteNumber(left.memoryBytes) || finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent);
     if (normalizedSort === "net") return combinedNetworkBytes(right) - combinedNetworkBytes(left) || finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent);
     if (normalizedSort === "disk") return combinedDiskBytes(right) - combinedDiskBytes(left) || finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent);
     return finiteNumber(right.cpuPercent) - finiteNumber(left.cpuPercent) || finiteNumber(right.memoryBytes) - finiteNumber(left.memoryBytes);
   });
+}
+
+function normalizeGpuProcess(process) {
+  return {
+    pid: finiteNumber(process?.pid),
+    name: String(process?.name || `pid ${finiteNumber(process?.pid)}`),
+    usagePercent: nullableNumber(process?.usagePercent),
+    vramBytes: finiteNumber(process?.vramBytes)
+  };
+}
+
+function normalizeGpu(gpu, index) {
+  const id = String(gpu?.id || `gpu-${index}`);
+  return {
+    id,
+    vendor: String(gpu?.vendor || "unknown").toLowerCase(),
+    name: String(gpu?.name || id),
+    usagePercent: nullableNumber(gpu?.usagePercent),
+    vramTotalBytes: finiteNumber(gpu?.vramTotalBytes),
+    vramUsedBytes: finiteNumber(gpu?.vramUsedBytes),
+    temperatureCelsius: nullableNumber(gpu?.temperatureCelsius),
+    processes: Array.isArray(gpu?.processes)
+      ? gpu.processes.map(normalizeGpuProcess).filter((process) => process.pid > 0)
+      : []
+  };
+}
+
+export function gpuProcessesForSnapshot(snapshot = emptySystemSnapshot) {
+  const systemProcesses = new Map((snapshot?.processes || []).map((process) => [finiteNumber(process?.pid), process]));
+  const combined = new Map();
+  for (const gpu of snapshot?.gpus || []) {
+    for (const gpuProcess of gpu?.processes || []) {
+      const pid = finiteNumber(gpuProcess?.pid);
+      if (!pid) continue;
+      const current = combined.get(pid) || {
+        ...(systemProcesses.get(pid) || {}),
+        pid,
+        name: String(gpuProcess?.name || systemProcesses.get(pid)?.name || `pid ${pid}`),
+        gpuIds: [],
+        gpuNames: [],
+        gpuDetails: [],
+        gpuLabel: "",
+        usagePercent: null,
+        vramBytes: 0
+      };
+      if (!current.gpuIds.includes(gpu.id)) current.gpuIds.push(gpu.id);
+      if (!current.gpuNames.includes(gpu.name)) current.gpuNames.push(gpu.name);
+      const usage = nullableNumber(gpuProcess?.usagePercent);
+      const vendor = String(gpu.vendor || "unknown").toLowerCase();
+      const shortName = vendor === "nvidia" ? "NV" : vendor === "intel" ? "Intel" : vendor === "amd" ? "AMD" : String(gpu.name || gpu.id);
+      if (!current.gpuDetails.some((detail) => detail.id === gpu.id)) {
+        current.gpuDetails.push({
+          id: gpu.id,
+          name: shortName,
+          fullName: gpu.name,
+          vendor,
+          usagePercent: usage,
+          vramBytes: finiteNumber(gpuProcess?.vramBytes)
+        });
+      }
+      if (usage !== null) current.usagePercent = current.usagePercent === null ? usage : Math.max(current.usagePercent, usage);
+      current.vramBytes += finiteNumber(gpuProcess?.vramBytes);
+      current.gpuLabel = current.gpuDetails.map((detail) => `${detail.name} (${detail.usagePercent === null ? "—" : `${detail.usagePercent < 10 ? detail.usagePercent.toFixed(1) : Math.round(detail.usagePercent)}%`})`).join(" · ");
+      combined.set(pid, current);
+    }
+  }
+  return [...combined.values()].sort((left, right) =>
+    finiteNumber(right.usagePercent, -1) - finiteNumber(left.usagePercent, -1)
+    || finiteNumber(right.vramBytes) - finiteNumber(left.vramBytes)
+    || String(left.name || "").localeCompare(String(right.name || ""))
+  );
 }
 
 function appNameFromText(value) {
@@ -284,6 +370,7 @@ export function normalizeSystemSnapshot(snapshot = emptySystemSnapshot) {
         writeBytesPerSecond: nullableNumber(snapshot?.disk?.writeBytesPerSecond)
       };
     })(),
+    gpus: Array.isArray(snapshot?.gpus) ? snapshot.gpus.map(normalizeGpu) : [],
     processes: Array.isArray(snapshot?.processes)
       ? snapshot.processes.map((process) => {
           const portDetails = normalizePortDetails(process);
@@ -294,6 +381,7 @@ export function normalizeSystemSnapshot(snapshot = emptySystemSnapshot) {
             workingDirectory: String(process?.workingDirectory || ""),
             commandLine: String(process?.commandLine || process?.path || process?.name || ""),
             status: String(process?.status || ""),
+            priority: Math.trunc(finiteNumber(process?.priority)),
             cpuPercent: finiteNumber(process?.cpuPercent),
             memoryBytes: finiteNumber(process?.memoryBytes),
             downloadBytes: finiteNumber(process?.downloadBytes),

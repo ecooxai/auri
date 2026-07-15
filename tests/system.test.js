@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { SYSTEM_PROCESS_PAGE_SIZE, attachProcessNetworkRates, filterSystemProcesses, matchesProcessSearch, normalizeSystemSnapshot, primaryProcessPort, protocolForPort, sortSystemProcesses } from "../src/model/system.js";
-import { renderActivePanel, renderSubtabs, renderSystemKillPrompt } from "../src/views/panels.js";
+import { SYSTEM_PROCESS_PAGE_SIZE, attachProcessNetworkRates, filterSystemProcesses, gpuProcessesForSnapshot, matchesProcessSearch, normalizeSystemSnapshot, primaryProcessPort, processPriorityIdentity, protocolForPort, sortSystemProcesses } from "../src/model/system.js";
+import { buildGpuCardRows, renderActivePanel, renderSubtabs, renderSystemKillPrompt, renderSystemPriorityPrompt } from "../src/views/panels.js";
 import { createInitialState, reduceState } from "../src/model/state.js";
 
 test("system state records snapshots and sort preference", () => {
@@ -13,6 +13,180 @@ test("system state records snapshots and sort preference", () => {
   state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ processes: [{ pid: 12, name: "node" }] }) } });
   assert.equal(state.system.status, "ready");
   assert.equal(state.system.snapshot.processes[0].pid, 12);
+});
+
+test("priority sorting starts at low-to-high priority and toggles high-to-low", () => {
+  const processes = [{ pid: 1, priority: -10 }, { pid: 2, priority: 19 }, { pid: 3, priority: 0 }];
+  assert.deepEqual(sortSystemProcesses(processes, "priority", "desc").map((item) => item.priority), [19, 0, -10]);
+  assert.deepEqual(sortSystemProcesses(processes, "priority", "asc").map((item) => item.priority), [-10, 0, 19]);
+  let state = createInitialState();
+  state = reduceState(state, { type: "SYSTEM_SORT_SET", payload: { sortBy: "priority" } });
+  assert.deepEqual([state.system.sortBy, state.system.sortDirection], ["priority", "desc"]);
+  state = reduceState(state, { type: "SYSTEM_SORT_SET", payload: { sortBy: "priority" } });
+  assert.equal(state.system.sortDirection, "asc");
+});
+
+test("saved normal priority rules migrate to nice 1", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "SYSTEM_PROCESS_PRIORITY_SET",
+    payload: { identity: "/usr/bin/node", level: "normal", nice: 0 }
+  });
+  assert.equal(state.system.processPriorities["/usr/bin/node"].nice, 1);
+});
+
+test("priority permission prompt asks for sudo then root credentials without storing a password", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "UI_SET",
+    payload: { systemPriorityPrompt: { pid: 42, name: "node", method: "sudo", nice: -10, error: "" } }
+  });
+  let html = renderSystemPriorityPrompt(state);
+  assert.match(html, /aria-label="Administrator permission required"/);
+  assert.match(html, /id="system-priority-password"[^>]*type="password"/);
+  assert.match(html, /data-action="system-priority-prompt-confirm"[^>]*>Continue with sudo<\/button>/);
+  assert.doesNotMatch(JSON.stringify(state), /password|secret/i);
+
+  state = reduceState(state, {
+    type: "UI_SET",
+    payload: { systemPriorityPrompt: { pid: 42, name: "node", method: "root", nice: -10, error: "sudo authentication failed" } }
+  });
+  html = renderSystemPriorityPrompt(state);
+  assert.match(html, /Root password/);
+  assert.match(html, /sudo authentication failed/);
+  assert.match(html, /data-action="system-priority-prompt-confirm"[^>]*>Continue as root<\/button>/);
+});
+
+test("process snapshots preserve OS priority and saved rules use a stable executable identity", () => {
+  const snapshot = normalizeSystemSnapshot({ processes: [{ pid: 12, name: "node", path: "/usr/bin/node", commandLine: "/usr/bin/node server.js", priority: 7 }] });
+  assert.equal(snapshot.processes[0].priority, 7);
+  assert.equal(processPriorityIdentity(snapshot.processes[0]), "/usr/bin/node");
+  assert.equal(processPriorityIdentity({ pid: 13, name: "worker", commandLine: "/opt/bin/worker --queue fast" }), "/opt/bin/worker");
+});
+
+test("process priority preferences are stored by identity", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity: "/usr/bin/node", level: "low", nice: 19 } });
+  assert.deepEqual(state.system.processPriorities, { "/usr/bin/node": { identity: "/usr/bin/node", level: "low", nice: 10 } });
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity: "/usr/bin/node", level: "lower", nice: 0 } });
+  assert.equal(state.system.processPriorities["/usr/bin/node"].nice, 15);
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity: "/usr/bin/node", level: "lowest", nice: 0 } });
+  assert.equal(state.system.processPriorities["/usr/bin/node"].nice, 19);
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PRIORITY_REMOVE", payload: { identity: "/usr/bin/node" } });
+  assert.deepEqual(state.system.processPriorities, {});
+});
+
+test("GPU snapshot normalization preserves cards and combines per-GPU process membership", () => {
+  const snapshot = normalizeSystemSnapshot({
+    processes: [{ pid: 42, name: "Blender", cpuPercent: 12, memoryBytes: 500_000_000, path: "/usr/bin/blender" }],
+    gpus: [
+      { id: "card0", vendor: "intel", name: "Intel Arc", usagePercent: 21.5, vramTotalBytes: 8_000_000_000, vramUsedBytes: 2_000_000_000, processes: [{ pid: 42, name: "Blender", usagePercent: 8, vramBytes: 300_000_000 }] },
+      { id: "nvidia:0", vendor: "nvidia", name: "RTX 4090", usagePercent: 72, vramTotalBytes: 24_000_000_000, vramUsedBytes: 4_000_000_000, processes: [{ pid: 42, name: "Blender", usagePercent: 65, vramBytes: 2_000_000_000 }] }
+    ]
+  });
+
+  assert.equal(snapshot.gpus.length, 2);
+  assert.equal(snapshot.gpus[0].vendor, "intel");
+  assert.equal(snapshot.gpus[1].vramUsedBytes, 4_000_000_000);
+  assert.deepEqual(snapshot.gpus[1].processes[0], { pid: 42, name: "Blender", usagePercent: 65, vramBytes: 2_000_000_000 });
+  assert.deepEqual(gpuProcessesForSnapshot(snapshot).map((process) => ({ pid: process.pid, gpuNames: process.gpuNames, gpuLabel: process.gpuLabel, gpuDetails: process.gpuDetails, vramBytes: process.vramBytes, usagePercent: process.usagePercent, path: process.path })), [
+    {
+      pid: 42,
+      gpuNames: ["Intel Arc", "RTX 4090"],
+      gpuLabel: "Intel (8.0%) · NV (65%)",
+      gpuDetails: [
+        { id: "card0", name: "Intel", fullName: "Intel Arc", vendor: "intel", usagePercent: 8, vramBytes: 300_000_000 },
+        { id: "nvidia:0", name: "NV", fullName: "RTX 4090", vendor: "nvidia", usagePercent: 65, vramBytes: 2_000_000_000 }
+      ],
+      vramBytes: 2_300_000_000,
+      usagePercent: 65,
+      path: "/usr/bin/blender"
+    }
+  ]);
+});
+
+test("GPU normalization keeps unavailable native counters unavailable", () => {
+  const snapshot = normalizeSystemSnapshot({
+    gpus: [{ id: "card1", vendor: "intel", name: "Intel i915", usagePercent: null, temperatureCelsius: null, processes: [{ pid: 7, name: "web", usagePercent: null }] }]
+  });
+  assert.equal(snapshot.gpus[0].usagePercent, null);
+  assert.equal(snapshot.gpus[0].temperatureCelsius, null);
+  assert.equal(snapshot.gpus[0].processes[0].usagePercent, null);
+  const state = { ...createInitialState(), system: { ...createInitialState().system, snapshot, gpuMode: true } };
+  assert.equal(buildGpuCardRows(state)[0].temperature, "Temperature unavailable");
+});
+
+test("GPU mode replaces Disk Swap and Uptime cards and renders GPU-only processes", () => {
+  let state = createInitialState();
+  const systemTab = state.tabs[0].subtabs.find((item) => item.type === "system");
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: systemTab.id }] };
+  state = reduceState(state, { type: "SYSTEM_GPU_MODE_TOGGLE" });
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({
+    processes: [{ pid: 77, name: "render-worker", cpuPercent: 19, memoryBytes: 900_000_000 }],
+    gpus: [{
+      id: "card1", vendor: "amd", name: "AMD Radeon RX 7900 XTX", usagePercent: 87,
+      vramTotalBytes: 24_000_000_000, vramUsedBytes: 7_500_000_000,
+      processes: [{ pid: 77, name: "render-worker", usagePercent: 80, vramBytes: 4_000_000_000 }]
+    }]
+  }) } });
+
+  const html = renderActivePanel(state);
+  assert.match(html, /data-action="system-gpus"[^>]*aria-pressed="true"[^>]*>GPUs<\/button>/);
+  assert.match(html, /data-metric="cpu"/);
+  assert.match(html, /data-metric="memory"/);
+  assert.match(html, /data-metric="network"/);
+  assert.doesNotMatch(html, /data-metric="disk"/);
+  assert.doesNotMatch(html, /data-metric="swap"/);
+  assert.doesNotMatch(html, /data-metric="uptime"/);
+  assert.match(html, /data-gpu-card="card1"/);
+  assert.match(html, /AMD Radeon RX 7900 XTX/);
+  assert.match(html, /class="gpu-process-popover"/);
+  assert.match(html, /render-worker/);
+  assert.match(html, /Name[\s\S]*GPU usage[\s\S]*VRAM[\s\S]*Priority/);
+  assert.doesNotMatch(html, /<span role="columnheader">GPU use<\/span>/);
+  assert.match(html, /AMD \(80%\)/);
+  assert.match(html, /data-gpu-process-row="77"/);
+  assert.doesNotMatch(html, /data-system-status/, "ready GPU mode should not add an explanatory line above its cards");
+});
+
+test("GPU process detail shows one card per GPU with usage, VRAM, and process RAM", () => {
+  let state = createInitialState();
+  const systemTab = state.tabs[0].subtabs.find((item) => item.type === "system");
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: systemTab.id }] };
+  state = reduceState(state, { type: "SYSTEM_GPU_MODE_TOGGLE" });
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({
+    processes: [{ pid: 77, name: "render-worker", memoryBytes: 900_000_000, path: "/usr/bin/render-worker" }],
+    gpus: [
+      { id: "card1", vendor: "intel", name: "Intel Iris", processes: [{ pid: 77, name: "render-worker", usagePercent: 25, vramBytes: 40_000_000 }] },
+      { id: "nvidia:0", vendor: "nvidia", name: "NVIDIA MX110", processes: [{ pid: 77, name: "render-worker", usagePercent: 1, vramBytes: 70_000_000 }] }
+    ]
+  }) } });
+  state = reduceState(state, { type: "SYSTEM_PROCESS_SELECT", payload: { pid: 77 } });
+
+  const html = renderActivePanel(state);
+  assert.match(html, /class="process-detail-gpus"/);
+  assert.match(html, /data-process-gpu-detail="card1"[\s\S]*Intel[\s\S]*25%[\s\S]*VRAM[\s\S]*40\.0MB[\s\S]*RAM[\s\S]*900MB/);
+  assert.match(html, /data-process-gpu-detail="nvidia:0"[\s\S]*NV[\s\S]*1\.0%[\s\S]*VRAM[\s\S]*70\.0MB[\s\S]*RAM[\s\S]*900MB/);
+});
+
+test("GPU mode reports an honest empty capability card", () => {
+  let state = createInitialState();
+  const systemTab = state.tabs[0].subtabs.find((item) => item.type === "system");
+  state = { ...state, tabs: [{ ...state.tabs[0], activeSubtabId: systemTab.id }] };
+  state = reduceState(state, { type: "SYSTEM_GPU_MODE_TOGGLE" });
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({ gpus: [] }) } });
+  assert.match(renderActivePanel(state), /data-gpu-empty[\s\S]*No supported GPU detected/);
+});
+
+test("GPU process paging uses GPU processes instead of the general process list", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SYSTEM_GPU_MODE_TOGGLE" });
+  state = reduceState(state, { type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: normalizeSystemSnapshot({
+    processes: [{ pid: 1, name: "only-general-process" }],
+    gpus: [{ id: "card0", vendor: "intel", name: "Intel GPU", processes: Array.from({ length: 12 }, (_, index) => ({ pid: index + 10, name: `gpu-${index}`, vramBytes: index })) }]
+  }) } });
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PAGE_NEXT" });
+  assert.equal(state.system.processPage, 2);
 });
 
 test("process sorting by CPU uses memory as a tie breaker", () => {
@@ -286,7 +460,7 @@ test("system panel uses compact cards and centered selected-process detail", () 
         memory: { totalBytes: 2_000_000, usedBytes: 1_000_000, swapTotalBytes: 2_000_000_000, swapUsedBytes: 1_000_000_000 },
         network: { downloadBytesPerSecond: 1_000_000, uploadBytesPerSecond: 500_000, totalRxBytes: 3_000_000, totalTxBytes: 4_000_000 },
         processes: [
-          { pid: 10, name: "web", path: "/usr/bin/web", commandLine: "/usr/bin/web --serve very-long-project", memoryBytes: 2_000_000, cpuPercent: 1, downloadBytes: 1_000_000, uploadBytes: 500_000, diskReadBytes: 200_000, diskWriteBytes: 100_000, ports: [3000, 5173] }
+          { pid: 10, name: "web", path: "/usr/bin/web", commandLine: "/usr/bin/web --serve very-long-project", priority: 5, memoryBytes: 2_000_000, cpuPercent: 1, downloadBytes: 1_000_000, uploadBytes: 500_000, diskReadBytes: 200_000, diskWriteBytes: 100_000, ports: [3000, 5173] }
         ]
       })
     }
@@ -339,6 +513,18 @@ test("system panel uses compact cards and centered selected-process detail", () 
   assert.match(html, /data-action="system-process-kill"/);
   assert.match(html, /data-action="system-process-open-path"/);
   assert.match(html, /process-row\s+is-selected/);
+  assert.match(html, /data-action="system-sort"[^>]*data-sort="priority"[^>]*>Priority<\/button>/);
+  assert.match(html, /data-process-priority><code>5<\/code>/);
+  assert.doesNotMatch(html, /<span role="columnheader">PID<\/span>/);
+  assert.match(html, /class="process-detail-scroll"[^>]*overflow:auto/);
+  assert.match(html, /class="process-detail-priority"[\s\S]*<strong>Priority<\/strong><code>5<\/code>[\s\S]*data-action="system-process-priority"[^>]*data-level="lowest"[\s\S]*data-level="lower"[\s\S]*data-level="low"[\s\S]*data-level="normal"[\s\S]*data-level="high"/);
+  assert.doesNotMatch(html, /Set priority|Current nice/);
+  assert.match(html, /data-level="low"[^>]*title="Set nice value 10"/);
+  assert.match(html, /data-level="lower"[^>]*title="Set nice value 15"/);
+  assert.match(html, /data-level="lowest"[^>]*title="Set nice value 19"/);
+  assert.match(html, /data-level="normal"[^>]*title="Set nice value 1"/);
+  assert.match(html, /data-level="unset"[^>]*>Unset<\/button>/);
+  assert.match(html, /data-action="system-sort"[^>]*data-sort="priority"/);
 });
 
 
@@ -419,11 +605,11 @@ test("process table name column is wide enough and columns are ordered for scann
   });
 
   const html = renderActivePanel(state);
-  assert.match(html, /Name[\s\S]*Port[\s\S]*RAM[\s\S]*CPU[\s\S]*>Net<[\s\S]*PID/);
+  assert.match(html, /Name[\s\S]*Port[\s\S]*RAM[\s\S]*CPU[\s\S]*>Net<[\s\S]*Priority/);
   assert.match(html, /data-action="system-sort" data-sort="ram"/);
   assert.match(html, /data-action="system-sort" data-sort="port"/);
   assert.match(html, /data-action="system-sort" data-sort="cpu"/);
-  assert.match(html, /title="web">web<\/span>[\s\S]*<code[^>]*>3000<span[^>]*>http<\/span><\/code> <code[^>]*>17078<span[^>]*>tcp<\/span><\/code>[\s\S]*2\.00MB[\s\S]*1\.0%[\s\S]*↓ 0\.00MB  ↑ 0\.00MB[\s\S]*<code>10<\/code>/);
+  assert.match(html, /title="web">web<\/span>[\s\S]*<code[^>]*>3000<span[^>]*>http<\/span><\/code> <code[^>]*>17078<span[^>]*>tcp<\/span><\/code>[\s\S]*2\.00MB[\s\S]*1\.0%[\s\S]*↓ 0\.00MB  ↑ 0\.00MB[\s\S]*<code>0<\/code>/);
 
   const css = readFileSync("styles.css", "utf8");
   assert.match(css, /\.process-row\s*\{[^}]*grid-template-columns:\s*minmax\(140px, 1.5fr\) minmax\(130px, 1.6fr\) 8ch 60px minmax\(150px, 1.7fr\) 62px/s);
@@ -626,8 +812,10 @@ test("process table scroll resets when the sort changes", async () => {
   const scrollCapture = source.indexOf("const processScrollTop = resetProcessScroll ? 0 : captureProcessScroll(this.root);", resetDecision);
   const replace = source.indexOf("this.root.innerHTML =", scrollCapture);
   const restore = source.indexOf("processTable.scrollTop = processScrollTop", replace);
-  const remember = source.indexOf("this.lastProcessSortBy = processSortBy", restore);
+  const directionCapture = source.indexOf("const processSortKey =", sortCapture);
+  const remember = source.indexOf("this.lastProcessSortBy = processSortKey", restore);
   assert.ok(sortCapture >= 0, "process sort value must be tracked during render");
+  assert.ok(directionCapture > sortCapture, "process sort direction must participate in scroll reset tracking");
   assert.ok(resetDecision > sortCapture, "sort changes must decide whether process scroll resets before DOM replacement");
   assert.ok(scrollCapture > resetDecision && scrollCapture < replace, "process scroll must reset to top before replacing the DOM when sort changes");
   assert.ok(restore > replace, "process scroll must be restored after replacing the DOM");

@@ -14,6 +14,7 @@ function hiddenKey(entry) {
 export function sortFolderEntries(entries = [], sortBy = "name") {
   const sorted = [...entries];
   sorted.sort((left, right) => {
+    if (Boolean(left?._auriNew) !== Boolean(right?._auriNew)) return left?._auriNew ? -1 : 1;
     const leftDirectory = left.kind === "directory";
     const rightDirectory = right.kind === "directory";
     if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
@@ -31,4 +32,12 @@ export function sortFolderEntries(entries = [], sortBy = "name") {
     return nameKey(left).localeCompare(nameKey(right));
   });
   return sorted;
+}
+
+export function mergePolledFolderEntries(previous = [], fresh = []) {
+  const known = new Set((Array.isArray(previous) ? previous : []).map((entry) => String(entry?.path || entry?.name || "")));
+  const current = Array.isArray(fresh) ? fresh : [];
+  const added = current.filter((entry) => !known.has(String(entry?.path || entry?.name || ""))).map((entry) => ({ ...entry, _auriNew: true }));
+  const existing = current.filter((entry) => known.has(String(entry?.path || entry?.name || ""))).map((entry) => ({ ...entry, _auriNew: false }));
+  return [...added, ...existing];
 }

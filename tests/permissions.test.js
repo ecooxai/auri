@@ -46,6 +46,24 @@ test("not-determined permission uses a Request button", () => {
   assert.match(html, /data-permission="screenRecording"[\s\S]*permission-check/);
 });
 
+test("Linux settings show detected PulseAudio PipeWire and screen capture capabilities", () => {
+  const state = createInitialState();
+  state.permissions = {
+    platform: "linux",
+    microphone: "authorized",
+    screenRecording: "authorized",
+    systemAudio: "authorized"
+  };
+
+  const html = renderSettings(state);
+
+  assert.match(html, /Linux audio and desktop capture services/);
+  assert.doesNotMatch(html, /Auri needs these macOS permissions/);
+  assert.match(html, /data-permission="microphone"[\s\S]*Microphone[\s\S]*PulseAudio \/ PipeWire input ready[\s\S]*permission-check/);
+  assert.match(html, /data-permission="screenRecording"[\s\S]*Screen recording[\s\S]*X11 or desktop portal ready[\s\S]*permission-check/);
+  assert.match(html, /data-permission="systemAudio"[\s\S]*System audio[\s\S]*PulseAudio \/ PipeWire monitor ready[\s\S]*permission-check/);
+});
+
 test("backend exposes native media permission commands", async () => {
   const backend = new Backend();
   const calls = [];
@@ -106,7 +124,12 @@ test("requesting a permission refreshes controller state", async () => {
   });
 
   await controller.refreshMediaPermissions();
-  assert.deepEqual(controller.state.permissions, { microphone: "notDetermined", screenRecording: "authorized" });
+  assert.deepEqual(controller.state.permissions, {
+    platform: "unknown",
+    microphone: "notDetermined",
+    screenRecording: "authorized",
+    systemAudio: "unknown"
+  });
 
   await controller.handleClick({
     target: { closest: () => ({ dataset: { action: "permission-request", permission: "microphone" } }) },
@@ -114,7 +137,12 @@ test("requesting a permission refreshes controller state", async () => {
   });
 
   assert.deepEqual(calls, ["microphone"]);
-  assert.deepEqual(controller.state.permissions, { microphone: "authorized", screenRecording: "authorized" });
+  assert.deepEqual(controller.state.permissions, {
+    platform: "unknown",
+    microphone: "authorized",
+    screenRecording: "authorized",
+    systemAudio: "unknown"
+  });
 });
 
 test("macOS bundle declares why HTML previews may need microphone, camera, and location access", async () => {

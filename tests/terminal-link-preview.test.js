@@ -299,10 +299,13 @@ test("media mini previews preserve aspect ratio and cap tall content at 500 pixe
   );
 });
 
-test("terminal previews are chrome-free, compact, and remain click-to-open", async () => {
+test("terminal previews keep content interactive and open only from the top-left icon", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const css = await readFile("styles.css", "utf8");
   assert.match(terminal, /terminal-link-preview/);
+  assert.match(terminal, /terminal-link-preview-open/);
+  assert.match(terminal, /openButton\.setAttribute\("aria-label", `Open \$\{target\.text\} in a new tab`\)/);
+  assert.match(terminal, /openButton\.addEventListener\("click", open\)/);
   assert.match(terminal, /createElement\("iframe"\)/);
   assert.match(terminal, /frame\.setAttribute\("allow",\s*"autoplay"\)/);
   assert.match(terminal, /createElement\("img"\)/);
@@ -312,8 +315,12 @@ test("terminal previews are chrome-free, compact, and remain click-to-open", asy
   assert.match(terminal, /image\.naturalWidth/);
   assert.match(terminal, /video\.videoWidth/);
   assert.match(terminal, /preview\.classList\.add\("is-image"\)/);
+  assert.match(terminal, /terminal-link-preview-media-info/);
+  assert.match(terminal, /formatMiniImageMetadata/);
   assert.doesNotMatch(terminal, /preview\.append\(header, body\)/);
   assert.doesNotMatch(terminal, /terminal-link-preview-close/);
+  assert.doesNotMatch(terminal, /body\.setAttribute\("role", "button"\)/);
+  assert.doesNotMatch(terminal, /body\.addEventListener\("click", open\)/);
   assert.match(terminal, /event\.button !== 0/);
   assert.match(terminal, /contextmenu[\s\S]*copySelection/);
   assert.match(css, /\.terminal-link-preview\s*\{[^}]*width:\s*min\(max\(225px,\s*45vw\),\s*calc\(100vw - 16px\)\)/s);
@@ -322,6 +329,10 @@ test("terminal previews are chrome-free, compact, and remain click-to-open", asy
   assert.doesNotMatch(css, /\.terminal-link-preview\s*>\s*header/);
   assert.match(css, /\.terminal-link-preview\.is-image[^}]*grid-template-rows:\s*1fr/s);
   assert.match(css, /\.terminal-link-preview-image[^}]*object-fit:\s*contain/s);
+  assert.match(css, /\.terminal-link-preview-media-info[^}]*background:\s*rgba\(0,\s*0,\s*0,\s*\.7\)[^}]*color:\s*#fff/s);
   assert.match(css, /\.terminal-link-preview-video[^}]*object-fit:\s*contain/s);
-  assert.match(css, /\.terminal-link-preview-frame/);
+  assert.match(css, /\.terminal-link-preview-open\s*\{[^}]*top:\s*8px[^}]*left:\s*8px/s);
+  assert.match(css, /\.terminal-link-preview-frame\s*\{[^}]*pointer-events:\s*auto/s);
+  assert.match(css, /\.terminal-link-preview-image\s*\{[^}]*pointer-events:\s*auto/s);
+  assert.match(css, /\.terminal-link-preview-video\s*\{[^}]*pointer-events:\s*auto/s);
 });

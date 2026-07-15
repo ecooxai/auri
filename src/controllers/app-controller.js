@@ -1,6 +1,7 @@
 import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
-import { normalizeSystemSnapshot, protocolForPort } from "../model/system.js";
+import { normalizeSystemSnapshot, processPriorityIdentity, protocolForPort } from "../model/system.js";
+import { mergePolledFolderEntries } from "../model/folder.js";
 import { classifyTerminalInput } from "../model/presentation.js";
 import { MediaCapture, pickRecordingDevices } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
@@ -80,7 +81,10 @@ function hasAssistantActionPopup(state) {
 
 function permissionsEqual(left, right) {
   if (!left || !right) return false;
-  return left.microphone === right.microphone && left.screenRecording === right.screenRecording;
+  return left.platform === right.platform
+    && left.microphone === right.microphone
+    && left.screenRecording === right.screenRecording
+    && left.systemAudio === right.systemAudio;
 }
 
 function systemSnapshotAgeMs(snapshot) {
@@ -160,7 +164,12 @@ export class AppController {
     this.clipboardPollTimer = null;
     this.clipboardPolling = false;
     this.systemMonitorTimer = null;
+    this.processPriorityTimer = null;
+    this.processPrioritySuggestionTimer = null;
+    this.processPriorityErrors = new Set();
     this.systemMonitorRefreshing = false;
+    this.folderPollTimer = null;
+    this.folderPolling = false;
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
     this.folderPreviewPath = null;
@@ -226,6 +235,9 @@ export class AppController {
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
         showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
         refreshSystemMonitor: () => this.refreshSystemMonitor(),
+        requestProcessPriorityPermission: (prompt) => this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: prompt } }, { preserveInput: true }),
+        consumeProcessPriorityPassword: () => this.view.consumeSystemPriorityPassword?.() || "",
+        closeProcessPriorityPermission: () => this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: null } }, { preserveInput: true }),
         exitApp: () => this.backend.exitApp()
       }
     };
@@ -500,6 +512,74 @@ export class AppController {
     }
   }
 
+  startFolderPolling() {
+    if (this.folderPollTimer || !this.backend.listDirectory) return;
+    this.folderPollTimer = setInterval(() => {
+      this.pollCurrentFolder().catch((error) => this.reportError("Folder refresh", error));
+    }, 3000);
+    this.folderPollTimer.unref?.();
+  }
+
+  async pollCurrentFolder() {
+    if (this.folderPolling) return false;
+    this.folderPolling = true;
+    const workspaceId = this.state.activeTabId;
+    const path = activeWorkspace(this.state).folder.path;
+    try {
+      const fresh = await this.backend.listDirectory(path);
+      const workspace = activeWorkspace(this.state);
+      if (this.state.activeTabId !== workspaceId || workspace.folder.path !== path) return false;
+      const previous = workspace.folder.entries || [];
+      const merged = mergePolledFolderEntries(previous, fresh);
+      const comparable = (entries) => JSON.stringify(entries.map(({ _auriNew, ...entry }) => entry));
+      const hasNew = merged.some((entry) => entry._auriNew);
+      if (!hasNew && comparable(previous) === comparable(merged)) return false;
+      this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries: merged } }, { preserveInput: true });
+      return true;
+    } finally {
+      this.folderPolling = false;
+    }
+  }
+
+  startProcessPriorityEnforcement() {
+    if (this.processPriorityTimer || !this.backend.setProcessPriority) return;
+    this.processPriorityTimer = setInterval(() => {
+      this.reapplySavedProcessPriorities().catch((error) => this.reportError("Process priority", error));
+    }, 60_000);
+    this.processPriorityTimer.unref?.();
+  }
+
+  async reapplySavedProcessPriorities() {
+    const rules = this.state.system?.processPriorities || {};
+    if (!Object.keys(rules).length || !this.backend.systemSnapshot) return [];
+    const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot({ includeGpus: Boolean(this.state.system.gpuMode) }));
+    this.applySystemMonitorEvent({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { render: false });
+    return this.applySavedProcessPriorities(snapshot);
+  }
+
+  async applySavedProcessPriorities(snapshot) {
+    if (!this.backend.setProcessPriority) return [];
+    const rules = this.state.system?.processPriorities || {};
+    const results = [];
+    for (const process of snapshot.processes || []) {
+      const identity = processPriorityIdentity(process);
+      const rule = rules[identity];
+      if (!rule || Number(process.priority) === Number(rule.nice)) continue;
+      try {
+        await this.backend.setProcessPriority(process.pid, rule.nice);
+        this.applySystemMonitorEvent({ type: "SYSTEM_PROCESS_PRIORITY_APPLIED", payload: { pid: process.pid, nice: rule.nice } }, { render: false });
+        this.processPriorityErrors.delete(identity);
+        results.push({ pid: process.pid, identity, nice: rule.nice });
+      } catch (error) {
+        if (!this.processPriorityErrors.has(identity)) {
+          this.processPriorityErrors.add(identity);
+          this.reportError("Process priority", `${process.name}: ${error?.message || String(error)}`);
+        }
+      }
+    }
+    return results;
+  }
+
   async refreshSystemMonitor({ quiet = false } = {}) {
     if (this.systemMonitorRefreshing) return this.state.system.snapshot;
     if (!this.backend.systemSnapshot) throw new Error("System monitor is unavailable in this runtime.");
@@ -511,8 +591,9 @@ export class AppController {
       this.applySystemMonitorEvent({ type: "SYSTEM_STATUS_SET", payload: { status: "loading" } }, { render });
     }
     try {
-      const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot());
+      const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot({ includeGpus: Boolean(this.state.system.gpuMode) }));
       this.applySystemMonitorEvent({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { render });
+      await this.applySavedProcessPriorities(snapshot);
       const syncTunnels = !quiet || (this.systemMonitorQuietPollCount += 1) % 3 === 0;
       if (syncTunnels) await this.refreshActiveTunnels({ render });
       if (quiet) this.patchOrRenderSystemMonitor();
@@ -676,6 +757,9 @@ export class AppController {
           if (Array.isArray(parsed.models)) this.state = { ...this.state, models: parsed.models };
           if (parsed.selectedModelId) this.state = { ...this.state, selectedModelId: parsed.selectedModelId };
           if (parsed.browser) this.state = reduceState(this.state, { type: "BROWSER_RESTORE", payload: parsed.browser });
+          for (const rule of Object.values(parsed.processPriorities || {})) {
+            this.state = reduceState(this.state, { type: "SYSTEM_PROCESS_PRIORITY_SET", payload: rule });
+          }
           if (Array.isArray(parsed.workspaceSession?.items) && parsed.workspaceSession.items.length) {
             this.state = reduceState(this.state, { type: "WORKSPACES_RESTORE", payload: parsed.workspaceSession });
             restoredWorkspaces = true;
@@ -733,6 +817,8 @@ export class AppController {
       await this.activeTerminalSession().initializePromise;
       this.render();
       this.startClipboardPolling();
+      this.startFolderPolling();
+      this.startProcessPriorityEnforcement();
       await this.drainPendingOpenFiles();
     } catch (error) {
       this.reportError("Startup", error);
@@ -1035,6 +1121,7 @@ export class AppController {
     const insideProcessDetail = event.target?.closest?.(".system-process-detail");
     const insideSystemTunnelPrompt = event.target?.closest?.(".system-tunnel-prompt");
     const insideSystemKillPrompt = event.target?.closest?.(".system-kill-prompt");
+    const insideSystemPriorityPrompt = event.target?.closest?.(".system-priority-prompt");
     const insideTunnelUrlMenu = event.target?.closest?.(".process-detail-port-url-menu, .process-detail-port-url");
     const insideCommandMenu = event.target?.closest?.(".command-menu-wrap");
     const insideSubtabActionMenu = event.target?.closest?.(".subtab-action-menu, .subtab-icon-menu");
@@ -1057,7 +1144,7 @@ export class AppController {
       this.dispatch({ type: "UI_SET", payload: { clipboardInfoId: null } }, { preserveInput: true });
     }
     const action = target?.dataset?.action || "";
-    if (this.state.system.selectedProcessPid && !insideProcessDetail && !insideSystemTunnelPrompt && !insideSystemKillPrompt && !action.startsWith("system-tunnel-prompt-") && !action.startsWith("system-kill-prompt-") && action !== "system-process-select") {
+    if (this.state.system.selectedProcessPid && !insideProcessDetail && !insideSystemTunnelPrompt && !insideSystemKillPrompt && !insideSystemPriorityPrompt && !action.startsWith("system-tunnel-prompt-") && !action.startsWith("system-kill-prompt-") && !action.startsWith("system-priority-prompt-") && action !== "system-process-select") {
       await this.runInternal("system deselect");
     }
     if (!target) return;
@@ -1160,6 +1247,9 @@ export class AppController {
         case "system-refresh":
           await this.runInternal("system refresh");
           break;
+        case "system-gpus":
+          await this.runInternal("system gpus");
+          break;
         case "system-sort":
           await this.runInternal(`system sort ${target.dataset.sort || "cpu"}`);
           break;
@@ -1185,6 +1275,20 @@ export class AppController {
           break;
         case "system-process-select":
           await this.runInternal(`system select ${target.dataset.pid || ""}`);
+          break;
+        case "system-process-priority": {
+          const pid = this.state.system.selectedProcessPid;
+          if (pid) await this.runInternal(`system priority ${pid} ${target.dataset.level || "normal"}`);
+          break;
+        }
+        case "system-priority-prompt-confirm": {
+          const prompt = this.state.ui.systemPriorityPrompt;
+          if (prompt?.pid) await this.runInternal(`system priority-auth ${prompt.pid} ${prompt.level || "normal"} ${prompt.method || "sudo"}`);
+          break;
+        }
+        case "system-priority-prompt-cancel":
+          if (event.target.closest(".system-priority-prompt") && !event.target.closest("button")) break;
+          this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: null } }, { preserveInput: true });
           break;
         case "system-process-kill": {
           const pid = this.state.system.selectedProcessPid;
@@ -1255,6 +1359,32 @@ export class AppController {
         case "system-process-detail-close":
           await this.runInternal("system deselect");
           break;
+        case "process-priority-settings-toggle":
+          await this.runInternal("settings priority-rules toggle");
+          break;
+        case "process-priority-filter-toggle": {
+          await this.runInternal("settings priority-rules search-toggle");
+          if (this.state.ui.processPriorityFilterOpen) {
+            this.view.root.querySelector?.("#process-priority-filter")?.focus?.();
+          }
+          break;
+        }
+        case "process-priority-suggestion": {
+          const path = String(target.dataset.value || "");
+          if (path) {
+            await this.runInternal(`system priority-rule choose ${quoteArg(path)}`);
+            this.view.root.querySelector?.("#process-priority-rule-identity")?.focus?.();
+          }
+          break;
+        }
+        case "process-priority-rule-remove": {
+          const identity = String(target.dataset.identity || "");
+          if (identity) {
+            await this.runInternal(`system priority-rule remove ${quoteArg(identity)}`);
+            this.view.showToast("Priority rule removed", "success");
+          }
+          break;
+        }
         case "folder-home":
           this.cancelFolderPathNavigation();
           await this.changeDirectory("~", { echoInTerminal: true });
@@ -1824,6 +1954,29 @@ export class AppController {
       this.view.syncCustomCompletionLineNumbers?.(input.value);
       return;
     }
+    if (input.id === "process-priority-rule-identity") {
+      const query = String(input.value || "");
+      this.dispatch({ type: "UI_SET", payload: { processPriorityDraft: query } }, { render: false });
+      if (this.processPrioritySuggestionTimer) clearTimeout(this.processPrioritySuggestionTimer);
+      this.processPrioritySuggestionTimer = null;
+      if (query.trim().length <= 3) {
+        if (this.state.ui.processPrioritySuggestions?.length) {
+          this.dispatch({ type: "UI_SET", payload: { processPrioritySuggestions: [] } }, { preserveInput: true });
+        }
+        return;
+      }
+      this.processPrioritySuggestionTimer = setTimeout(() => {
+        this.processPrioritySuggestionTimer = null;
+        this.runInternal(`system priority-rule suggest ${quoteArg(query.trim())}`)
+          .catch((error) => this.reportError("PATH command search", error));
+      }, 150);
+      return;
+    }
+    if (input.id === "process-priority-filter") {
+      this.runInternal(`settings priority-rules filter ${quoteArg(input.value || "")}`)
+        .catch((error) => this.reportError("Priority rule filter", error));
+      return;
+    }
     if (input.id !== "folder-path-input") return;
     const originalValue = String(input.value ?? "");
     const cleanValue = stripMacNavigationText(originalValue);
@@ -1992,6 +2145,19 @@ export class AppController {
   }
 
   async handleSubmit(event) {
+    if (event.target.id === "process-priority-rule-add" || event.target.classList?.contains?.("process-priority-rule-form")) {
+      event.preventDefault();
+      const values = Object.fromEntries(new FormData(event.target).entries());
+      const identity = String(values.identity || "").trim();
+      const nice = String(values.nice || "").trim();
+      const originalIdentity = String(event.target.dataset.originalIdentity || "").trim();
+      await this.runInternal(`system priority-rule set ${quoteArg(identity)} ${quoteArg(nice)}`);
+      if (originalIdentity && originalIdentity !== identity) {
+        await this.runInternal(`system priority-rule remove ${quoteArg(originalIdentity)}`);
+      }
+      this.view.showToast(originalIdentity ? "Priority rule saved" : "Priority rule added", "success");
+      return;
+    }
     if (event.target.id === "folder-create-form") {
       event.preventDefault();
       await this.submitFolderCreate();
@@ -2635,7 +2801,8 @@ export class AppController {
       models: this.state.models,
       selectedModelId: this.state.selectedModelId,
       browser: this.state.browser,
-      workspaceSession: serializeWorkspaceSession(this.state)
+      workspaceSession: serializeWorkspaceSession(this.state),
+      processPriorities: this.state.system?.processPriorities || {}
     });
   }
 
@@ -3113,7 +3280,7 @@ export class AppController {
     if (target?.kind !== "file" || !target.value) throw new Error("Choose a file path or web URL.");
     const metadata = await this.backend.inspectFile(target.value);
     const fileView = await this.backend.createFileView(target.value, metadata, { autoplay: true });
-    return { ...target, ...fileView, title: fileView.title || metadata.name || target.text, viewerKind: fileView.viewerKind || metadata.kind || "file" };
+    return { ...target, ...fileView, size: metadata.size, title: fileView.title || metadata.name || target.text, viewerKind: fileView.viewerKind || metadata.kind || "file" };
   }
 
   async openTerminalPreview(target) {

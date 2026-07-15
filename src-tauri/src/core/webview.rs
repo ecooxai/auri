@@ -1,8 +1,8 @@
 use super::{lifecycle, util};
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Rect,
-    WebviewBuilder, WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    Rect, WebviewBuilder, WebviewUrl,
 };
 
 const PREFIX: &str = "auri-web-";
@@ -178,15 +178,12 @@ fn open_popup(app: &AppHandle, url: &str) {
             .unwrap_or_default()
     );
     let _ = app.run_on_main_thread(move || {
-        let _ = tauri::WebviewWindowBuilder::new(
-            &handle,
-            &label,
-            tauri::WebviewUrl::External(parsed),
-        )
-        .title("Auri")
-        .inner_size(520.0, 680.0)
-        .focused(true)
-        .build();
+        let _ =
+            tauri::WebviewWindowBuilder::new(&handle, &label, tauri::WebviewUrl::External(parsed))
+                .title("Auri")
+                .inner_size(520.0, 680.0)
+                .focused(true)
+                .build();
     });
 }
 
@@ -203,7 +200,11 @@ fn handle_internal_navigation(app: &AppHandle, id: &str, url: &tauri::Url) -> bo
         return true;
     }
     if url.path() == "/tab-return" || url.path() == "/tab-close" {
-        let event = if url.path() == "/tab-return" { "auri-tab-window-return" } else { "auri-tab-window-close" };
+        let event = if url.path() == "/tab-return" {
+            "auri-tab-window-return"
+        } else {
+            "auri-tab-window-close"
+        };
         let _ = app.emit(event, serde_json::json!({ "id": id }));
         if let Some(window) = app.get_webview_window(&standalone_label_for(id)) {
             let _ = window.close();
@@ -259,7 +260,9 @@ pub fn show_standalone(app: &AppHandle, id: &str, url: &str, title: &str) -> Res
     let parsed = parse_url(url)?;
     if let Some(window) = app.get_webview_window(&label) {
         if let Some(webview) = app.get_webview(&label) {
-            webview.navigate(parsed).map_err(|error| error.to_string())?;
+            webview
+                .navigate(parsed)
+                .map_err(|error| error.to_string())?;
         }
         window.show().map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
@@ -277,7 +280,13 @@ pub fn show_standalone(app: &AppHandle, id: &str, url: &str, title: &str) -> Res
             if handle_internal_navigation(&navigation_app, &navigation_id, target) {
                 return false;
             }
-            let _ = event_app.emit("auri-web-navigation", WebNavigation { id: event_id.clone(), url: target.to_string() });
+            let _ = event_app.emit(
+                "auri-web-navigation",
+                WebNavigation {
+                    id: event_id.clone(),
+                    url: target.to_string(),
+                },
+            );
             true
         })
         .focused(true)

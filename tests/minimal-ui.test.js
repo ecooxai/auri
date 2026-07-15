@@ -187,26 +187,41 @@ test("folder navigation controls sit above an editable compact path field", asyn
   assert.match(folder, /id="folder-path-input"/);
   assert.match(folder, /button\("⌂", "Home", "folder-home"\)[\s\S]*button\("↑", "Parent folder", "folder-up"\)[\s\S]*button\("↻", "Refresh", "folder-refresh"\)/);
   assert.ok(folder.indexOf('folder-toolbar') < folder.indexOf('id="folder-path-input"'));
+  assert.doesNotMatch(folder, /folder-heading-copy/);
+  assert.doesNotMatch(folder, />FILES</);
   assert.doesNotMatch(folder, />LOCATION</);
   assert.match(css, /\.pane-heading\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)[^}]*grid-template-rows:\s*auto auto/s);
   assert.match(css, /\.folder-toolbar\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*row[^}]*flex-wrap:\s*nowrap[^}]*width:\s*max-content/s);
   assert.match(css, /\.folder-path-input\s*\{[^}]*background:\s*rgba\(255, 255, 255, \.56\)[^}]*border:\s*1px[^}]*border-radius:\s*9px[^}]*font-size:\s*\.6[0-9]*rem/s);
+  assert.match(css, /\.folder-path-input\s*\{[^}]*font-weight:\s*700/s);
   assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*white[^}]*box-shadow:/s);
 });
 
-test("folder rows expose a separate expander and wrap long names compactly", async () => {
+test("folder rows keep expanders but show full wrapped names without item icons", async () => {
   const panels = await readFile("src/views/panels.js", "utf8");
   const css = await readFile("styles.css", "utf8");
+  const { createInitialState } = await import("../src/model/state.js");
+  const { renderFolder } = await import("../src/views/panels.js");
+  const state = createInitialState();
+  const longName = "2fee12a6-5cd6-4c9d-8c71-373efeb82b2-f57c9dd8-9e4a-4798-converted-preview-image.webp";
+  state.tabs[0].folder.path = "/home/a/Desktop/teptic";
+  state.tabs[0].folder.entries = [
+    { name: longName, path: `${state.tabs[0].folder.path}/${longName}`, kind: "image" },
+    { name: "archive", path: `${state.tabs[0].folder.path}/archive`, kind: "directory" }
+  ];
+  const html = renderFolder(state);
 
   assert.match(panels, /data-action="folder-toggle"/);
   assert.match(panels, /aria-expanded="\$\{expanded \? "true" : "false"\}"/);
   assert.match(panels, /file-row \$\{isDirectory \? "is-directory" : ""\}/);
-  assert.match(panels, /file-icon \$\{isDirectory \? "is-directory" : ""\}/);
+  assert.doesNotMatch(html, /class="file-icon/);
+  assert.match(html, new RegExp(longName));
   assert.doesNotMatch(panels, /class="file-size"/);
-  assert.match(css, /\.file-name\s*\{[^}]*-webkit-line-clamp:\s*3/s);
   assert.match(css, /\.file-name\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.doesNotMatch(css, /\.file-name\s*\{[^}]*-webkit-line-clamp:/s);
+  assert.doesNotMatch(css, /\.file-name\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.file-name\s*\{[^}]*font-size:\s*\.68rem/s);
-  assert.match(css, /\.file-row\.is-directory\s*\{[^}]*grid-template-columns:\s*20px minmax\(0,\s*1fr\)/s);
+  assert.match(css, /\.file-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
   assert.doesNotMatch(css, /\.file-size\s*\{/);
 });
 

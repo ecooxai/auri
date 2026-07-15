@@ -13,6 +13,318 @@ function harness() {
   };
 }
 
+test("system priority command applies and persists a stable process preference", async () => {
+  const h = harness();
+  const applied = [];
+  const saved = [];
+  h.backend.setProcessPriority = async (pid, nice) => applied.push({ pid, nice });
+  h.backend.saveSettings = async (configuration) => saved.push(configuration);
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 42, name: "node", path: "/usr/bin/node", priority: 0 }] } } });
+
+  await executeCommand("system priority 42 low", h);
+
+  assert.deepEqual(applied, [{ pid: 42, nice: 10 }]);
+  assert.equal(h.state().system.snapshot.processes[0].priority, 10, "the live value updates immediately after renice succeeds");
+  assert.equal(h.state().system.processPriorities["/usr/bin/node"].level, "low");
+  assert.equal(saved.at(-1).processPriorities["/usr/bin/node"].nice, 10);
+
+  await executeCommand("system priority 42 unset", h);
+  assert.deepEqual(applied, [{ pid: 42, nice: 10 }], "unset must not modify the running process");
+  assert.equal(h.state().system.processPriorities["/usr/bin/node"], undefined);
+});
+
+test("system priority-rule commands add edit and remove saved executable rules without a running PID", async () => {
+  const h = harness();
+  const saved = [];
+  h.backend.saveSettings = async (configuration) => saved.push(configuration);
+
+  await executeCommand('system priority-rule set "/opt/My App/bin/worker" 7', h);
+  assert.deepEqual(h.state().system.processPriorities["/opt/My App/bin/worker"], {
+    identity: "/opt/My App/bin/worker", level: "custom", nice: 7
+  });
+  assert.equal(saved.at(-1).processPriorities["/opt/My App/bin/worker"].nice, 7);
+
+  await executeCommand('system priority-rule set "/opt/My App/bin/worker" -20', h);
+  assert.equal(h.state().system.processPriorities["/opt/My App/bin/worker"].nice, -20);
+  await assert.rejects(() => executeCommand('system priority-rule set "/opt/My App/bin/worker" 20', h), /-20.*19/);
+
+  await executeCommand('system priority-rule remove "/opt/My App/bin/worker"', h);
+  assert.equal(h.state().system.processPriorities["/opt/My App/bin/worker"], undefined);
+});
+
+test("priority settings panel and PATH suggestions use commands", async () => {
+  const h = harness();
+  const queries = [];
+  h.backend.searchPathCommands = async (query) => {
+    queries.push(query);
+    return [{ name: "python3", path: "/usr/bin/python3" }];
+  };
+
+  await executeCommand("settings priority-rules toggle", h);
+  assert.equal(h.state().ui.processPrioritySettingsOpen, true);
+  await executeCommand("settings priority-rules search-toggle", h);
+  assert.equal(h.state().ui.processPriorityFilterOpen, true);
+  await executeCommand('settings priority-rules filter "python"', h);
+  assert.equal(h.state().ui.processPriorityFilter, "python");
+  await executeCommand("system priority-rule suggest pyth", h);
+  assert.deepEqual(queries, ["pyth"]);
+  assert.deepEqual(h.state().ui.processPrioritySuggestions, [{ name: "python3", path: "/usr/bin/python3" }]);
+  await executeCommand('system priority-rule choose "/usr/bin/python3"', h);
+  assert.equal(h.state().ui.processPriorityDraft, "/usr/bin/python3");
+  assert.deepEqual(h.state().ui.processPrioritySuggestions, []);
+});
+
+test("low lower and lowest process priorities map to nice 10 15 and 19", async () => {
+  const h = harness();
+  const applied = [];
+  h.backend.setProcessPriority = async (pid, nice) => applied.push({ pid, nice });
+  h.backend.saveSettings = async () => {};
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 42, name: "python3", path: "/usr/bin/python3.13", priority: 0 }] } } });
+
+  await executeCommand("system priority 42 low", h);
+  await executeCommand("system priority 42 lower", h);
+  await executeCommand("system priority 42 lowest", h);
+
+  assert.deepEqual(applied.map((item) => item.nice), [10, 15, 19]);
+  assert.deepEqual(h.state().system.processPriorities["/usr/bin/python3.13"], {
+    identity: "/usr/bin/python3.13", level: "lowest", nice: 19
+  });
+});
+
+test("normal process priority uses nice 1", async () => {
+  const h = harness();
+  const applied = [];
+  h.backend.setProcessPriority = async (pid, nice) => applied.push({ pid, nice });
+  h.backend.saveSettings = async () => {};
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 42, name: "node", path: "/usr/bin/node", priority: 0 }] } } });
+
+  await executeCommand("system priority 42 normal", h);
+
+  assert.deepEqual(applied, [{ pid: 42, nice: 1 }]);
+  assert.deepEqual(h.state().system.processPriorities["/usr/bin/node"], {
+    identity: "/usr/bin/node", level: "normal", nice: 1
+  });
+});
+
+test("high priority requests sudo authentication only after native permission is required", async () => {
+  const h = harness();
+  const prompts = [];
+  h.backend.setProcessPriority = async () => { throw new Error("AURI_PRIORITY_ADMIN_REQUIRED: administrator permission required"); };
+  h.actions = { requestProcessPriorityPermission: (prompt) => prompts.push(prompt) };
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 42, name: "node", path: "/usr/bin/node", priority: 19 }] } } });
+
+  const result = await executeCommand("system priority 42 high", h);
+
+  assert.equal(result.pendingPermission, true);
+  assert.deepEqual(prompts, [{ pid: 42, name: "node", method: "sudo", level: "high", nice: -10, error: "" }]);
+  assert.equal(h.state().system.processPriorities["/usr/bin/node"], undefined);
+});
+
+test("low priority uses the same authorization prompt when the process is protected", async () => {
+  const h = harness();
+  const prompts = [];
+  h.backend.setProcessPriority = async () => { throw new Error("AURI_PRIORITY_ADMIN_REQUIRED: administrator permission required"); };
+  h.actions = { requestProcessPriorityPermission: (prompt) => prompts.push(prompt) };
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 9, name: "protected", path: "/usr/bin/protected", priority: 0 }] } } });
+
+  const result = await executeCommand("system priority 9 low", h);
+
+  assert.equal(result.pendingPermission, true);
+  assert.deepEqual(prompts, [{ pid: 9, name: "protected", method: "sudo", level: "low", nice: 10, error: "" }]);
+});
+
+test("sudo priority authentication falls back to a root-password prompt without persisting a secret", async () => {
+  const h = harness();
+  const calls = [];
+  const prompts = [];
+  h.backend.setProcessPriorityPrivileged = async (pid, nice, password, method) => {
+    calls.push({ pid, nice, password, method });
+    return { applied: false, requiresRoot: true, message: "sudo authentication failed" };
+  };
+  h.actions = {
+    consumeProcessPriorityPassword: () => "admin-secret",
+    requestProcessPriorityPermission: (prompt) => prompts.push(prompt),
+    closeProcessPriorityPermission: () => prompts.push("closed")
+  };
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 42, name: "node", path: "/usr/bin/node", priority: 19 }] } } });
+
+  const result = await executeCommand("system priority-auth 42 high sudo", h);
+
+  assert.equal(result.pendingPermission, true);
+  assert.deepEqual(calls, [{ pid: 42, nice: -10, password: "admin-secret", method: "sudo" }]);
+  assert.deepEqual(prompts, [{ pid: 42, name: "node", method: "root", level: "high", nice: -10, error: "sudo authentication failed" }]);
+  assert.doesNotMatch(JSON.stringify(h.state()), /admin-secret/);
+});
+
+test("successful privileged priority authentication saves the rule and closes the prompt", async () => {
+  const h = harness();
+  const saved = [];
+  let closed = 0;
+  h.backend.setProcessPriorityPrivileged = async () => ({ applied: true, requiresRoot: false, message: "" });
+  h.backend.saveSettings = async (configuration) => saved.push(configuration);
+  h.actions = {
+    consumeProcessPriorityPassword: () => "root-secret",
+    requestProcessPriorityPermission: () => {},
+    closeProcessPriorityPermission: () => { closed += 1; }
+  };
+  h.dispatch({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot: { processes: [{ pid: 42, name: "node", path: "/usr/bin/node", priority: 19 }] } } });
+
+  await executeCommand("system priority-auth 42 high root", h);
+
+  assert.equal(closed, 1);
+  assert.equal(saved.at(-1).processPriorities["/usr/bin/node"].nice, -10);
+  assert.doesNotMatch(JSON.stringify(saved), /root-secret/);
+});
+
+test("process priority controls use the command path and saved rules reapply to matching executables", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const applied = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({ processes: [{ pid: 84, name: "node", path: "/usr/bin/node", priority: 0 }] }),
+      setProcessPriority: async (pid, nice) => applied.push({ pid, nice })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state = reduceState(controller.state, { type: "SYSTEM_PROCESS_SELECT", payload: { pid: 84 } });
+  controller.state = reduceState(controller.state, { type: "SYSTEM_PROCESS_PRIORITY_SET", payload: { identity: "/usr/bin/node", level: "lowest", nice: 19 } });
+  controller.runInternal = async (command) => commands.push(command);
+  await controller.handleClick({ target: { closest: () => ({ dataset: { action: "system-process-priority", level: "high" } }) }, preventDefault() {} });
+  assert.deepEqual(commands, ["system priority 84 high"]);
+
+  await controller.reapplySavedProcessPriorities();
+  assert.deepEqual(applied, [{ pid: 84, nice: 19 }]);
+});
+
+test("settings priority rule forms and remove buttons use the command path", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {},
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => commands.push(command);
+  const OriginalFormData = globalThis.FormData;
+  globalThis.FormData = class {
+    constructor(form) { this.form = form; }
+    entries() { return Object.entries(this.form.values); }
+  };
+  try {
+    await controller.handleSubmit({
+      preventDefault() {},
+      target: {
+        id: "",
+        classList: { contains: (name) => name === "process-priority-rule-form" },
+        dataset: { originalIdentity: "/usr/bin/python3" },
+        values: { identity: "/opt/Python 3/bin/python3", nice: "15" }
+      }
+    });
+  } finally {
+    globalThis.FormData = OriginalFormData;
+  }
+  await controller.handleClick({
+    preventDefault() {},
+    target: { closest: () => ({ dataset: { action: "process-priority-rule-remove", identity: "/opt/Python 3/bin/python3" } }) }
+  });
+  assert.deepEqual(commands, [
+    'system priority-rule set "/opt/Python 3/bin/python3" "15"',
+    'system priority-rule remove "/usr/bin/python3"',
+    'system priority-rule remove "/opt/Python 3/bin/python3"'
+  ]);
+});
+
+test("priority settings clicks and add-field typing use commands and native PATH suggestions", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const queries = [];
+  let focused = "";
+  const controller = new AppController({
+    view: {
+      root: { querySelector: (selector) => selector.startsWith("#process-priority-") ? ({ focus: () => { focused = selector; } }) : null },
+      render() {},
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
+    backend: {
+      searchPathCommands: async (query) => {
+        queries.push(query);
+        return [{ name: "python3", path: "/usr/bin/python3" }];
+      }
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const click = (dataset) => controller.handleClick({
+    preventDefault() {},
+    target: { closest: () => ({ dataset }) }
+  });
+
+  await click({ action: "process-priority-settings-toggle" });
+  assert.equal(controller.state.ui.processPrioritySettingsOpen, true);
+  await click({ action: "process-priority-filter-toggle" });
+  assert.equal(controller.state.ui.processPriorityFilterOpen, true);
+  assert.equal(focused, "#process-priority-filter");
+
+  controller.handleInput({ target: { id: "process-priority-rule-identity", value: "pyt" } });
+  await new Promise((resolve) => setTimeout(resolve, 170));
+  assert.deepEqual(queries, [], "three characters must not scan PATH");
+  controller.handleInput({ target: { id: "process-priority-rule-identity", value: "pyth" } });
+  await new Promise((resolve) => setTimeout(resolve, 190));
+  assert.deepEqual(queries, ["pyth"]);
+  assert.deepEqual(controller.state.ui.processPrioritySuggestions, [{ name: "python3", path: "/usr/bin/python3" }]);
+
+  await click({ action: "process-priority-suggestion", value: "/usr/bin/python3" });
+  assert.equal(controller.state.ui.processPriorityDraft, "/usr/bin/python3");
+  assert.deepEqual(controller.state.ui.processPrioritySuggestions, []);
+  assert.equal(focused, "#process-priority-rule-identity");
+});
+
+test("system refresh reapplies a saved priority immediately when a process restarts with a new pid", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const applied = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, patchSystemMonitor: () => true, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: true,
+      systemSnapshot: async () => ({ processes: [{ pid: 99, name: "auri-dev", path: "src-tauri/target/debug/auri-dev", priority: 0 }] }),
+      setProcessPriority: async (pid, nice) => applied.push({ pid, nice })
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state = reduceState(controller.state, {
+    type: "SYSTEM_PROCESS_PRIORITY_SET",
+    payload: { identity: "src-tauri/target/debug/auri-dev", level: "low", nice: 19 }
+  });
+
+  await controller.refreshSystemMonitor({ quiet: true });
+
+  assert.deepEqual(applied, [{ pid: 99, nice: 10 }]);
+  assert.equal(controller.state.system.snapshot.processes[0].priority, 10);
+});
+
+test("three-second folder poll refreshes metadata and promotes newly discovered entries", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: { isNative: true, listDirectory: async () => [
+      { path: "/tmp/old", name: "old", size: 9 },
+      { path: "/tmp/new", name: "new", size: 1 }
+    ] },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const workspace = controller.state.tabs[0];
+  controller.state = {
+    ...controller.state,
+    tabs: [{ ...workspace, folder: { ...workspace.folder, path: "/tmp", entries: [{ path: "/tmp/old", name: "old", size: 1 }] } }]
+  };
+  assert.equal(await controller.pollCurrentFolder(), true);
+  assert.deepEqual(controller.state.tabs[0].folder.entries.map((entry) => [entry.name, entry.size, entry._auriNew]), [
+    ["new", 1, true], ["old", 9, false]
+  ]);
+});
+
 
 test("model overflow Edit action reveals and closes the model editor", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
@@ -121,6 +433,42 @@ test("system search sets and clears the process filter through the command layer
   assert.equal(h.state().system.filter, "chrome claude");
   await executeCommand("system search", h);
   assert.equal(h.state().system.filter, "");
+});
+
+test("system gpus toggles GPU mode and refreshes native GPU data through the command layer", async () => {
+  const h = harness();
+  const requests = [];
+  h.backend.systemSnapshot = async (options) => {
+    requests.push(options);
+    return { gpus: options?.includeGpus ? [{ id: "card0", vendor: "intel", name: "Intel Graphics" }] : [] };
+  };
+
+  await executeCommand("system gpus", h);
+  assert.equal(h.state().system.gpuMode, true);
+  assert.equal(h.state().system.snapshot.gpus[0].name, "Intel Graphics");
+  assert.deepEqual(requests, [{ includeGpus: true }]);
+
+  await executeCommand("system gpus", h);
+  assert.equal(h.state().system.gpuMode, false);
+  assert.deepEqual(requests, [{ includeGpus: true }, { includeGpus: false }]);
+});
+
+test("GPU topbar clicks execute the system gpus command", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: { isNative: false },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+
+  await controller.handleClick({
+    target: { closest: () => ({ dataset: { action: "system-gpus" } }) },
+    preventDefault() {}
+  });
+
+  assert.deepEqual(commands, ["system gpus"]);
 });
 
 test("system search toggle opens the filter box and clear runs the search command", async () => {

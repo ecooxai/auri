@@ -99,6 +99,56 @@ test("settings expose an all-workspaces desktop visibility toggle", () => {
   assert.match(html, /Show on every desktop/);
 });
 
+test("process priority settings are collapsed by default at the bottom and put Add above the saved list", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "SYSTEM_PROCESS_PRIORITY_RULE_SET",
+    payload: { identity: "/usr/bin/python3", nice: 10 }
+  });
+  let html = renderSettings(state);
+
+  assert.match(html, /<h3>Process priorities<\/h3>/);
+  assert.match(html, /data-action="process-priority-settings-toggle"[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(html, /class="priority-rule-card"/);
+  assert.ok(html.indexOf("Browser AI prompts") < html.indexOf("Process priorities"));
+
+  state = reduceState(state, { type: "UI_SET", payload: { processPrioritySettingsOpen: true } });
+  html = renderSettings(state);
+  assert.match(html, /data-action="process-priority-settings-toggle"[^>]*aria-expanded="true"/);
+  assert.match(html, /class="process-priority-rule-form"[^>]*data-original-identity="\/usr\/bin\/python3"/);
+  assert.match(html, /name="identity"[^>]*value="\/usr\/bin\/python3"/);
+  assert.match(html, /name="nice"[^>]*min="-20"[^>]*max="19"[^>]*value="10"/);
+  assert.match(html, /data-action="process-priority-rule-remove"[^>]*data-identity="\/usr\/bin\/python3"/);
+  assert.match(html, /id="process-priority-rule-add"[\s\S]*name="identity"[\s\S]*name="nice"[\s\S]*Add rule/);
+  assert.ok(html.indexOf('id="process-priority-rule-add"') < html.indexOf('class="priority-rule-list"'));
+  assert.match(html, /data-action="process-priority-filter-toggle"/);
+});
+
+test("priority rule search filters saved rules and PATH suggestions appear after four typed characters", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PRIORITY_RULE_SET", payload: { identity: "/usr/bin/python3", nice: 10 } });
+  state = reduceState(state, { type: "SYSTEM_PROCESS_PRIORITY_RULE_SET", payload: { identity: "/usr/bin/node", nice: 15 } });
+  state = reduceState(state, { type: "UI_SET", payload: {
+    processPrioritySettingsOpen: true,
+    processPriorityFilterOpen: true,
+    processPriorityFilter: "python",
+    processPriorityDraft: "pyth",
+    processPrioritySuggestions: [
+      { name: "python3", path: "/usr/bin/python3" },
+      { name: "python3.13", path: "/usr/bin/python3.13" }
+    ]
+  } });
+  const html = renderSettings(state);
+
+  assert.match(html, /id="process-priority-filter"[^>]*value="python"/);
+  assert.match(html, /data-original-identity="\/usr\/bin\/python3"/);
+  assert.doesNotMatch(html, /data-original-identity="\/usr\/bin\/node"/);
+  assert.match(html, /id="process-priority-rule-identity"[^>]*value="pyth"/);
+  assert.match(html, /class="priority-command-suggestions"/);
+  assert.match(html, /data-action="process-priority-suggestion"[^>]*data-value="\/usr\/bin\/python3"/);
+  assert.match(html, /python3\.13/);
+});
+
 test("settings expose a light numbered custom terminal completion editor", async () => {
   let state = createInitialState();
   state = reduceState(state, {
