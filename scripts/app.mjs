@@ -1,10 +1,25 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { hasBundleOverride, runNativeBuild } from "./native-build.mjs";
+
+export function releaseBuildId({ projectRoot = process.cwd() } = {}) {
+  const checkout = path.resolve(projectRoot);
+  const digest = createHash("sha256").update(checkout).digest("hex").slice(0, 12);
+  return `app-${digest}`;
+}
+
+export function releaseBuildEnvironment({ env = process.env, projectRoot = process.cwd() } = {}) {
+  const configuredBuildId = String(env.AURI_BUILD_ID ?? "").trim();
+  return {
+    ...env,
+    AURI_BUILD_ID: configuredBuildId || releaseBuildId({ projectRoot })
+  };
+}
 
 export async function readTauriAppMetadata() {
   const config = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
@@ -95,7 +110,11 @@ function spawnInCurrentTerminal(command, args) {
 
 export async function runReleaseApp({ platform = process.platform, extraArgs = process.argv.slice(2) } = {}) {
   const metadata = await readTauriAppMetadata();
-  await runNativeBuild({ platform, extraArgs: releaseBuildArgs({ platform, extraArgs }) });
+  await runNativeBuild({
+    platform,
+    extraArgs: releaseBuildArgs({ platform, extraArgs }),
+    env: releaseBuildEnvironment()
+  });
 
   const appPath = releaseAppPath({ platform, ...metadata });
   const { command, args } = releaseLaunchCommand({ platform, appPath, binaryName: metadata.binaryName });

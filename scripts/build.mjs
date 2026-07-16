@@ -1,47 +1,86 @@
 import { build } from "esbuild";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
+import path from "node:path";
+import { writeFileIfChanged } from "./build-files.mjs";
 
-await rm("dist", { recursive: true, force: true });
 await mkdir("dist", { recursive: true });
 
-await build({
+async function writeBuildOutputs(buildResult) {
+  await Promise.all(
+    buildResult.outputFiles.map((output) => writeFileIfChanged(output.path, output.contents))
+  );
+}
+
+const appBuild = await build({
   entryPoints: ["src/main.js"],
   bundle: true,
   platform: "browser",
   format: "esm",
   target: ["safari15"],
   outfile: "dist/app.js",
-  sourcemap: true
+  sourcemap: true,
+  write: false
 });
+await writeBuildOutputs(appBuild);
 
-await build({
+const codemirrorBuild = await build({
   entryPoints: ["src/services/codemirror-viewer-entry.js"],
   bundle: true,
   platform: "browser",
   format: "esm",
   target: ["safari15"],
   outfile: "dist/codemirror-viewer.js",
-  sourcemap: true
+  sourcemap: true,
+  write: false
 });
+await writeBuildOutputs(codemirrorBuild);
 
-await build({
+const threeViewerBuild = await build({
   entryPoints: ["src/services/three-viewer-entry.js"],
   bundle: true,
   platform: "browser",
   format: "esm",
   target: ["safari15"],
   outfile: "src-tauri/src/core/three-viewer.js",
-  minify: true
+  minify: true,
+  write: false
 });
-await cp("src-tauri/src/core/three-viewer.js", "dist/three-viewer.js");
+await writeFileIfChanged(
+  "src-tauri/src/core/three-viewer.js",
+  threeViewerBuild.outputFiles[0].contents
+);
+await writeFileIfChanged("dist/three-viewer.js", threeViewerBuild.outputFiles[0].contents);
 
 const index = (await readFile("index.html", "utf8"))
   .replace('src="src/main.js"', 'src="app.js?v=3"');
-await writeFile("dist/index.html", index);
-await cp("styles.css", "dist/styles.css");
-await cp("favicon.png", "dist/favicon.png");
-await cp("browser-overlay.html", "dist/browser-overlay.html");
-await cp("browser-overlay.css", "dist/browser-overlay.css");
-await cp("browser-overlay.js", "dist/browser-overlay.js");
+await writeFileIfChanged("dist/index.html", index);
+
+const staticFiles = [
+  "styles.css",
+  "favicon.png",
+  "browser-overlay.html",
+  "browser-overlay.css",
+  "browser-overlay.js"
+];
+await Promise.all(
+  staticFiles.map(async (filename) => {
+    await writeFileIfChanged(path.join("dist", filename), await readFile(filename));
+  })
+);
+
+const expectedOutputs = new Set([
+  "app.js",
+  "app.js.map",
+  "codemirror-viewer.js",
+  "codemirror-viewer.js.map",
+  "three-viewer.js",
+  "index.html",
+  ...staticFiles
+]);
+for (const entry of await readdir("dist")) {
+  if (!expectedOutputs.has(entry)) {
+    await rm(path.join("dist", entry), { recursive: true, force: true });
+  }
+}
 
 console.log("Built bundled Auri frontend in dist/");

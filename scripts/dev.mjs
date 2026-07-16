@@ -4,6 +4,7 @@ import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFileIfChanged } from "./build-files.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = process.env.AURI_DIST_DIR
@@ -57,15 +58,20 @@ function scheduleStaticCopy(filename) {
 await rm(dist, { recursive: true, force: true });
 await copyStatic();
 
-await build({
+const threeViewerBuild = await build({
   entryPoints: [path.join(root, "src/services/three-viewer-entry.js")],
   bundle: true,
   platform: "browser",
   format: "esm",
   target: ["safari15"],
   outfile: path.join(root, "src-tauri/src/core/three-viewer.js"),
-  minify: true
+  minify: true,
+  write: false
 });
+await writeFileIfChanged(
+  path.join(root, "src-tauri/src/core/three-viewer.js"),
+  threeViewerBuild.outputFiles[0].contents
+);
 await cp(path.join(root, "src-tauri/src/core/three-viewer.js"), path.join(dist, "three-viewer.js"));
 
 const ctx = await context({

@@ -34,6 +34,8 @@ Build and run the release app in the current terminal session on macOS or Linux:
 npm run app
 ```
 
+`npm run app` uses a stable build identity derived from the checkout path unless `AURI_BUILD_ID` is set. Frontend build outputs must be written only when their content changes so an unchanged app invocation remains fresh in Cargo and does not recompile the native crate.
+
 Package the already-built Linux release executable and checksum:
 
 ```bash

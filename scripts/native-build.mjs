@@ -54,9 +54,9 @@ function expectedArtifactMessage(platform) {
   return "";
 }
 
-function runCommand(command, args) {
+function runCommand(command, args, env = process.env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", env: process.env });
+    const child = spawn(command, args, { stdio: "inherit", env });
     child.on("error", reject);
     child.on("exit", (code, signal) => {
       if (signal) {
@@ -118,11 +118,15 @@ export async function createMacDmg() {
   return dmgPath;
 }
 
-export async function runNativeBuild({ platform = process.platform, extraArgs = process.argv.slice(2) } = {}) {
+export async function runNativeBuild({
+  platform = process.platform,
+  extraArgs = process.argv.slice(2),
+  env = process.env
+} = {}) {
   const args = nativeBuildArgs({ platform, extraArgs });
   console.log(`Host: ${describeHost()}`);
   console.log(`Running native build: node scripts/tauri-build.mjs ${args.join(" ")}`);
-  await runCommand(process.execPath, ["scripts/tauri-build.mjs", ...args]);
+  await runCommand(process.execPath, ["scripts/tauri-build.mjs", ...args], env);
 
   if (shouldCreateMacDmg({ platform, extraArgs })) {
     await createMacDmg();

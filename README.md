@@ -22,6 +22,8 @@ Build and run the release app in the current terminal session on macOS or Linux:
 npm run app
 ```
 
+The first run compiles the release app. Later runs from the same checkout use a stable local build identity and preserve unchanged generated frontend files, allowing Cargo to reuse its release build instead of recompiling `auri`. Set `AURI_BUILD_ID` to override the local identity when needed.
+
 Package the already-built Linux executable as a downloadable archive:
 
 ```bash
