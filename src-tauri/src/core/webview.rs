@@ -1,5 +1,5 @@
-use super::{lifecycle, util};
-use serde::Serialize;
+use super::{lifecycle, util, webview_sleep};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[cfg(not(target_os = "linux"))]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -856,6 +856,7 @@ pub fn show_overlay(
     y: f64,
     width: f64,
     height: f64,
+    focus: bool,
 ) -> Result<(), String> {
     let value: serde_json::Value = serde_json::from_str(payload)
         .map_err(|error| format!("Invalid browser overlay data: {error}"))?;
@@ -873,7 +874,7 @@ pub fn show_overlay(
     )
     .initialization_script(initialization)
     .transparent(true)
-    .focused(true);
+    .focused(focus);
     let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
     let size = LogicalSize::new(width.max(1.0), height.max(1.0));
     #[cfg(target_os = "linux")]
@@ -958,6 +959,9 @@ pub fn action(app: &AppHandle, id: &str, action: &str, value: Option<f64>) -> Re
 }
 
 pub fn close(app: &AppHandle, id: &str) -> Result<(), String> {
+    if let Ok(directory) = sleep_state_directory(app) {
+        webview_sleep::remove_record(&directory, id);
+    }
     let label = label_for(id);
     if let Some(webview_window) = app.get_webview_window(&label) {
         webview_window.close().map_err(|error| error.to_string())?;
@@ -966,4 +970,90 @@ pub fn close(app: &AppHandle, id: &str) -> Result<(), String> {
         webview.close().map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+const SLEEP_DIR_NAME: &str = "browser-sleep";
+
+/// State returned to the frontend when a web tab sleeps or wakes. The disk
+/// format lives in [`webview_sleep`]; page cookies and storage stay in the
+/// shared browser profile on disk.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebviewSleepState {
+    pub id: String,
+    pub url: String,
+    pub slept_at_ms: u64,
+}
+
+impl From<webview_sleep::SleepRecord> for WebviewSleepState {
+    fn from(record: webview_sleep::SleepRecord) -> Self {
+        Self {
+            id: record.id,
+            url: record.url,
+            slept_at_ms: record.slept_at_ms,
+        }
+    }
+}
+
+fn sleep_state_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve the webview sleep directory: {error}"))?
+        .join(SLEEP_DIR_NAME))
+}
+
+/// Restored workspaces recreate web tabs from their persisted URLs, so sleep
+/// states from a previous run are stale by the time the app starts.
+pub fn clear_sleep_states(app: &AppHandle) {
+    if let Ok(directory) = sleep_state_directory(app) {
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Persist a background web tab to disk and destroy its webview so the WebKit
+/// content process it holds is released. Returns `None` when the webview does
+/// not exist or no restorable URL is known; the tab then simply stays awake.
+pub fn sleep(
+    app: &AppHandle,
+    id: &str,
+    fallback_url: &str,
+) -> Result<Option<WebviewSleepState>, String> {
+    let Some(webview) = app.get_webview(&label_for(id)) else {
+        return Ok(None);
+    };
+    let live_url = webview
+        .url()
+        .ok()
+        .map(|url| url.to_string())
+        .filter(|url| url.starts_with("http://") || url.starts_with("https://"));
+    let url = live_url.or_else(|| {
+        let fallback = fallback_url.trim();
+        (fallback.starts_with("http://") || fallback.starts_with("https://"))
+            .then(|| fallback.to_string())
+    });
+    let Some(url) = url else {
+        return Ok(None);
+    };
+    let record = webview_sleep::SleepRecord {
+        id: id.to_string(),
+        url,
+        slept_at_ms: now_ms(),
+    };
+    webview_sleep::write_record(&sleep_state_directory(app)?, &record)?;
+    webview.close().map_err(|error| error.to_string())?;
+    Ok(Some(record.into()))
+}
+
+/// Consume the sleep state saved for a tab so the caller can recreate its
+/// webview. Returns `None` when nothing was slept for that id.
+pub fn wake(app: &AppHandle, id: &str) -> Result<Option<WebviewSleepState>, String> {
+    Ok(webview_sleep::take_record(&sleep_state_directory(app)?, id).map(Into::into))
 }

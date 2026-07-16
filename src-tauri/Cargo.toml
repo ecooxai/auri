@@ -23,6 +23,12 @@ path = "src/bin/auri.rs"
 name = "auri_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Thin LTO and symbol stripping shrink the shipped binaries, which lowers the
+# dirty and mapped memory each Auri process carries at runtime.
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

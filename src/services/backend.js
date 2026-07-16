@@ -326,9 +326,9 @@ export class Backend {
     return this.call("webview_hide_all");
   }
 
-  async showBrowserOverlay(payload, bounds) {
+  async showBrowserOverlay(payload, bounds, focus = true) {
     if (!this.invoke) return;
-    return this.call("webview_overlay_show", { payload: JSON.stringify(payload), ...bounds });
+    return this.call("webview_overlay_show", { payload: JSON.stringify(payload), focus, ...bounds });
   }
 
   async hideBrowserOverlay() {
@@ -344,6 +344,16 @@ export class Backend {
   async webviewAction(id, action, value = null) {
     if (!this.invoke) throw new Error("Website navigation needs the native Tauri build.");
     return this.call("webview_action", { id, action, value });
+  }
+
+  async sleepWebview(id, url) {
+    if (!this.invoke) return null;
+    return this.call("webview_sleep", { id, url });
+  }
+
+  async wakeWebview(id) {
+    if (!this.invoke) return null;
+    return this.call("webview_wake", { id });
   }
 
   async openExternalUrl(url) {

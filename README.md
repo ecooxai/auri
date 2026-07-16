@@ -60,6 +60,7 @@ Implemented now:
 - Audio/video recording through the WebView media APIs, with native persistence under `~/auri/media`.
 - Native screenshot capture, workspace creation, local configuration, file access, and external file opening.
 - A real external `auri` CLI that sends commands to the running desktop app over a user-only Unix socket.
+- Web tabs left in the background for 30 seconds sleep to disk: their state is saved under the app data directory and their webview is destroyed so its WebKit content process releases memory. A toast announces the sleep, and reopening the tab restores it from disk with another toast. File-viewer tabs never sleep because they can hold unsaved editor state.
 - Browser preview mode with safe capability fallbacks.
 
 Not complete yet:

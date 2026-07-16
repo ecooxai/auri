@@ -7,6 +7,9 @@ mod lifecycle;
 #[path = "../src/core/util.rs"]
 mod util;
 
+#[path = "../src/core/webview_sleep.rs"]
+mod webview_sleep;
+
 #[test]
 fn base64_encoder_matches_standard_vectors() {
     assert_eq!(util::encode_base64(b""), "");
@@ -190,4 +193,71 @@ fn linux_webkit_disables_only_the_crashing_pipewire_device_provider() {
         util::webkit_gstreamer_feature_rank(Some("pipewiredeviceprovider:PRIMARY")),
         "pipewiredeviceprovider:PRIMARY"
     );
+}
+
+fn sleep_test_directory(name: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("auri-webview-sleep-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    directory
+}
+
+fn sleep_record(id: &str) -> webview_sleep::SleepRecord {
+    webview_sleep::SleepRecord {
+        id: id.to_string(),
+        url: "https://example.com/page".to_string(),
+        slept_at_ms: 42,
+    }
+}
+
+#[test]
+fn webview_sleep_state_round_trips_through_disk_and_is_consumed_on_wake() {
+    let directory = sleep_test_directory("roundtrip");
+    webview_sleep::write_record(&directory, &sleep_record("subtab-1")).unwrap();
+    assert_eq!(
+        webview_sleep::take_record(&directory, "subtab-1"),
+        Some(sleep_record("subtab-1"))
+    );
+    assert_eq!(webview_sleep::take_record(&directory, "subtab-1"), None);
+}
+
+#[test]
+fn webview_sleep_removal_discards_the_saved_state() {
+    let directory = sleep_test_directory("remove");
+    webview_sleep::write_record(&directory, &sleep_record("subtab-2")).unwrap();
+    webview_sleep::remove_record(&directory, "subtab-2");
+    assert_eq!(webview_sleep::take_record(&directory, "subtab-2"), None);
+}
+
+#[test]
+fn webview_sleep_ignores_corrupted_or_non_web_records() {
+    let directory = sleep_test_directory("corrupt");
+    std::fs::write(directory.join("subtab-3.sleep"), "not a sleep record").unwrap();
+    assert_eq!(webview_sleep::take_record(&directory, "subtab-3"), None);
+    assert!(!directory.join("subtab-3.sleep").exists());
+
+    let mut record = sleep_record("subtab-4");
+    record.url = "file:///etc/passwd".to_string();
+    webview_sleep::write_record(&directory, &record).unwrap();
+    assert_eq!(webview_sleep::take_record(&directory, "subtab-4"), None);
+}
+
+#[test]
+fn webview_sleep_file_names_stay_safe_for_unusual_ids() {
+    let directory = sleep_test_directory("safe-names");
+    webview_sleep::write_record(&directory, &sleep_record("a/b:c")).unwrap();
+    assert_eq!(
+        webview_sleep::take_record(&directory, "a/b:c"),
+        Some(sleep_record("a/b:c"))
+    );
+    assert!(directory.read_dir().unwrap().next().is_none());
+}
+
+#[test]
+fn webview_sleep_rejects_records_with_line_breaks() {
+    let directory = sleep_test_directory("linebreaks");
+    let mut record = sleep_record("subtab-5");
+    record.url = "https://example.com/\nfake".to_string();
+    assert!(webview_sleep::write_record(&directory, &record).is_err());
 }

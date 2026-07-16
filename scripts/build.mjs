@@ -11,6 +11,9 @@ async function writeBuildOutputs(buildResult) {
   );
 }
 
+// Release bundles are minified: WebKit keeps each bundle's source text and
+// parsed code in the UI process, so smaller bundles directly lower app memory.
+// keepNames preserves function and class names for readable error reports.
 const appBuild = await build({
   entryPoints: ["src/main.js"],
   bundle: true,
@@ -19,6 +22,8 @@ const appBuild = await build({
   target: ["safari15"],
   outfile: "dist/app.js",
   sourcemap: true,
+  minify: true,
+  keepNames: true,
   write: false
 });
 await writeBuildOutputs(appBuild);
@@ -31,6 +36,8 @@ const codemirrorBuild = await build({
   target: ["safari15"],
   outfile: "dist/codemirror-viewer.js",
   sourcemap: true,
+  minify: true,
+  keepNames: true,
   write: false
 });
 await writeBuildOutputs(codemirrorBuild);

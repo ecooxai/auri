@@ -45,6 +45,10 @@ function scheduleFrame(callback) {
   else callback();
 }
 
+// A web tab left in the background this long has its native webview written to
+// disk and destroyed so its WebKit content process stops consuming memory.
+const WEBVIEW_SLEEP_DELAY_MS = 30_000;
+
 function isMacNavigationText(value) {
   return [...String(value ?? "")].some((character) => {
     const codePoint = character.codePointAt(0);
@@ -133,7 +137,7 @@ function requestMediaPreview(item, index = 0) {
 }
 
 export class AppController {
-  constructor({ view, backend, terminalSessionFactory }) {
+  constructor({ view, backend, terminalSessionFactory, webviewSleepDelayMs }) {
     this.view = view;
     this.backend = backend;
     this.state = createInitialState();
@@ -164,6 +168,9 @@ export class AppController {
     this.nativeWebviewLayouts = new Map();
     this.nativeWebviewShownId = null;
     this.nativeBrowserOverlayKey = null;
+    this.webviewSleepTimers = new Map();
+    this.sleptWebviews = new Map();
+    this.webviewSleepDelayMs = Number.isFinite(webviewSleepDelayMs) ? webviewSleepDelayMs : WEBVIEW_SLEEP_DELAY_MS;
     this.webMenuSuppressClick = false;
     this.subtabClickId = null;
     this.subtabClickAt = 0;
@@ -442,9 +449,7 @@ export class AppController {
       if (!stillExists) {
         this.backend.closeWebview?.(id).catch?.(() => {});
         this.backend.closeStandaloneTab?.(id).catch?.(() => {});
-        this.nativeWebviewUrls.delete(id);
-        this.nativeWebviewLayouts.delete(id);
-        if (this.nativeWebviewShownId === id) this.nativeWebviewShownId = null;
+        this.forgetNativeWebview(id);
       }
     }
     const targetWorkspaceId = event.payload?.workspaceId || this.state.activeTabId;
@@ -3232,6 +3237,10 @@ export class AppController {
         }
       };
     }
+    const toast = this.state.ui.webToast;
+    if (toast) {
+      return { mode: "toast", message: String(toast.message || ""), level: toast.level || "info" };
+    }
     return null;
   }
 
@@ -3303,6 +3312,16 @@ export class AppController {
         height
       };
     }
+    if (!this.state.ui.webDialog && !this.state.ui.webAiReply && this.state.ui.webToast) {
+      const width = Math.min(390, Math.max(220, hostRect.width - 24));
+      const height = 56;
+      return {
+        x: Math.max(8, hostRect.left + hostRect.width - width - 16),
+        y: Math.max(8, hostRect.top + hostRect.height - height - 16),
+        width,
+        height
+      };
+    }
     if (!this.state.ui.webDialog && this.state.ui.webAiReply) {
       const width = Math.min(460, Math.max(280, hostRect.width - 24));
       const height = Math.min(430, Math.max(220, hostRect.height - 24));
@@ -3341,7 +3360,9 @@ export class AppController {
     if (key === this.nativeBrowserOverlayKey) return;
     this.nativeBrowserOverlayKey = key;
     try {
-      await this.backend.showBrowserOverlay(payload, bounds);
+      // Toasts are passive notices; taking focus would interrupt typing in
+      // the website underneath.
+      await this.backend.showBrowserOverlay(payload, bounds, payload.mode !== "toast");
     } catch (error) {
       if (this.nativeBrowserOverlayKey === key) this.nativeBrowserOverlayKey = null;
       throw error;
@@ -3359,10 +3380,23 @@ export class AppController {
       }
       await this.backend.hideWebviews?.();
       this.nativeWebviewShownId = null;
+      this.updateWebviewSleepSchedule();
       return;
     }
+    this.cancelWebviewSleep(subtab.id);
+    const slept = this.sleptWebviews.get(subtab.id);
+    let restoredUrl = null;
+    if (slept) {
+      let persisted = null;
+      try {
+        persisted = await this.backend.wakeWebview?.(subtab.id);
+      } catch {
+        // The in-memory record still restores the tab if the disk read fails.
+      }
+      restoredUrl = persisted?.url || slept.url || null;
+    }
     const rect = this.nativeWebviewBounds(host);
-    const url = subtab.url || "https://www.google.com/";
+    const url = restoredUrl || subtab.url || "https://www.google.com/";
     const navigate = this.nativeWebviewUrls.get(subtab.id) !== url;
     const layout = [rect.left, rect.top, rect.width, rect.height].map((value) => Math.round(Number(value) || 0)).join(":");
     const needsShow = navigate
@@ -3378,8 +3412,114 @@ export class AppController {
       this.nativeWebviewUrls.set(subtab.id, url);
       this.nativeWebviewLayouts.set(subtab.id, layout);
       this.nativeWebviewShownId = subtab.id;
+      if (slept) await this.finishWebviewRestore(subtab, restoredUrl);
     }
     await this.syncBrowserOverlay(subtab, rect);
+    this.updateWebviewSleepSchedule();
+  }
+
+  async finishWebviewRestore(subtab, restoredUrl) {
+    this.sleptWebviews.delete(subtab.id);
+    if (restoredUrl && restoredUrl !== subtab.url && !subtab.filePath) {
+      this.state = reduceState(this.state, { type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { url: restoredUrl } } });
+    }
+    const zoom = Number(subtab.zoom) || 1;
+    if (zoom !== 1) {
+      try {
+        await this.backend.webviewAction?.(subtab.id, "zoom", zoom);
+      } catch {
+        // The restored page still works at the default zoom.
+      }
+    }
+    // render: false because the caller's overlay sync picks the toast up in
+    // this same pass.
+    this.showWebTabToast(`"${subtab.title || "Web tab"}" restored from disk`, "success", { render: false });
+  }
+
+  /// The DOM toast sits underneath the native website view, so web tab
+  /// notices also render through the native browser overlay whenever a
+  /// website is covering the UI.
+  showWebTabToast(message, level, { render = true } = {}) {
+    this.view.showToast(message, level);
+    const active = activeSubtab(this.state);
+    if (this.native && active?.type === "webview" && !active.standalone) {
+      this.setWebToast(message, level, { render });
+    }
+  }
+
+  setWebToast(message, level, { render = true } = {}) {
+    if (this.webToastTimer) clearTimeout(this.webToastTimer);
+    const event = { type: "UI_SET", payload: { webToast: { message, level } } };
+    if (render) this.dispatch(event, { preserveInput: true });
+    else this.state = reduceState(this.state, event);
+    this.webToastTimer = setTimeout(() => this.clearWebToast(), 2600);
+    this.webToastTimer.unref?.();
+  }
+
+  clearWebToast() {
+    if (this.webToastTimer) {
+      clearTimeout(this.webToastTimer);
+      this.webToastTimer = null;
+    }
+    if (!this.state.ui.webToast) return;
+    this.dispatch({ type: "UI_SET", payload: { webToast: null } }, { preserveInput: true });
+  }
+
+  forgetNativeWebview(id) {
+    this.cancelWebviewSleep(id);
+    this.sleptWebviews.delete(id);
+    this.nativeWebviewUrls.delete(id);
+    this.nativeWebviewLayouts.delete(id);
+    if (this.nativeWebviewShownId === id) this.nativeWebviewShownId = null;
+  }
+
+  cancelWebviewSleep(id) {
+    const timer = this.webviewSleepTimers.get(id);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.webviewSleepTimers.delete(id);
+  }
+
+  updateWebviewSleepSchedule() {
+    if (!this.native || !this.backend.sleepWebview) return;
+    const active = activeSubtab(this.state);
+    const visibleId = active?.type === "webview" && !active.standalone ? active.id : null;
+    const subtabs = new Map(this.state.tabs.flatMap((tab) => tab.subtabs).map((item) => [item.id, item]));
+    for (const id of this.nativeWebviewUrls.keys()) {
+      const subtab = subtabs.get(id);
+      // File viewer tabs can hold unsaved editor state, so they never sleep.
+      const eligible = subtab && subtab.type === "webview" && !subtab.standalone && !subtab.filePath && id !== visibleId;
+      if (!eligible) {
+        this.cancelWebviewSleep(id);
+        continue;
+      }
+      if (this.webviewSleepTimers.has(id)) continue;
+      const timer = setTimeout(() => {
+        this.webviewSleepTimers.delete(id);
+        this.sleepWebview(id).catch((error) => this.reportError("Web tab sleep", error));
+      }, this.webviewSleepDelayMs);
+      timer.unref?.();
+      this.webviewSleepTimers.set(id, timer);
+    }
+  }
+
+  async sleepWebview(id) {
+    this.cancelWebviewSleep(id);
+    const subtab = this.state.tabs.flatMap((tab) => tab.subtabs).find((item) => item.id === id);
+    if (!subtab || subtab.type !== "webview" || subtab.standalone || subtab.filePath) return false;
+    if (activeSubtab(this.state)?.id === id || !this.nativeWebviewUrls.has(id)) return false;
+    const fallbackUrl = this.nativeWebviewUrls.get(id) || subtab.url || "";
+    const saved = await this.backend.sleepWebview?.(id, fallbackUrl);
+    if (!saved?.url) return false;
+    this.nativeWebviewUrls.delete(id);
+    this.nativeWebviewLayouts.delete(id);
+    if (this.nativeWebviewShownId === id) this.nativeWebviewShownId = null;
+    this.sleptWebviews.set(id, { url: saved.url, sleptAt: saved.sleptAtMs || Date.now() });
+    if (saved.url !== subtab.url) {
+      this.state = reduceState(this.state, { type: "SUBTAB_UPDATE", payload: { id, patch: { url: saved.url } } });
+    }
+    this.showWebTabToast(`"${subtab.title || "Web tab"}" slept to disk to free memory`, "info");
+    return true;
   }
 
   nativeWebviewBounds(host) {
@@ -3414,9 +3554,7 @@ export class AppController {
       await this.backend.hideBrowserOverlay?.();
       this.nativeBrowserOverlayKey = null;
       await this.backend.closeWebview?.(subtab.id);
-      this.nativeWebviewUrls.delete(subtab.id);
-      this.nativeWebviewLayouts.delete(subtab.id);
-      if (this.nativeWebviewShownId === subtab.id) this.nativeWebviewShownId = null;
+      this.forgetNativeWebview(subtab.id);
       await this.syncNativeWebview();
       return;
     }
@@ -3434,6 +3572,10 @@ export class AppController {
     if (subtab.type !== "webview" || !subtab.url) throw new Error("Standalone windows currently support web and file-viewer tabs.");
     if (!this.backend.showStandaloneTab) throw new Error("Standalone tab windows need the native Auri build.");
     await this.backend.showStandaloneTab(subtab.id, subtab.url, subtab.title || "Auri");
+    // The standalone window has its own webview; keeping the embedded one
+    // alive would hold a hidden WebKit content process for no reason.
+    await this.backend.closeWebview?.(subtab.id);
+    this.forgetNativeWebview(subtab.id);
     this.dispatch({ type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { standalone: true } } }, { preserveInput: true });
   }
 

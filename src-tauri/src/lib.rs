@@ -572,8 +572,9 @@ fn webview_overlay_show(
     y: f64,
     width: f64,
     height: f64,
+    focus: Option<bool>,
 ) -> Result<(), String> {
-    webview::show_overlay(&app, &payload, x, y, width, height)
+    webview::show_overlay(&app, &payload, x, y, width, height, focus.unwrap_or(true))
 }
 
 #[tauri::command]
@@ -599,6 +600,23 @@ fn webview_action(
 #[tauri::command]
 fn webview_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
     webview::close(&app, &id)
+}
+
+#[tauri::command]
+fn webview_sleep(
+    app: tauri::AppHandle,
+    id: String,
+    url: String,
+) -> Result<Option<webview::WebviewSleepState>, String> {
+    webview::sleep(&app, &id, &url)
+}
+
+#[tauri::command]
+fn webview_wake(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<Option<webview::WebviewSleepState>, String> {
+    webview::wake(&app, &id)
 }
 
 #[tauri::command]
@@ -642,6 +660,7 @@ pub fn run() {
     }
     let app = tauri::Builder::default()
         .setup(|app| {
+            webview::clear_sleep_states(app.handle());
             fileserver::start().map_err(std::io::Error::other)?;
             let command_server =
                 ipc::start_command_server(app.handle().clone()).map_err(std::io::Error::other)?;
@@ -782,6 +801,8 @@ pub fn run() {
             open_external_url,
             webview_show,
             webview_hide_all,
+            webview_sleep,
+            webview_wake,
             webview_overlay_show,
             webview_overlay_hide,
             webview_overlay_update_zoom,
