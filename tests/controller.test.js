@@ -888,6 +888,36 @@ test("file open routes the selected file into a webview subtab", async () => {
   assert.deepEqual(openOptions, { autoplay: true });
 });
 
+test("file open creates a file viewer without replacing an existing website tab", async () => {
+  const h = harness();
+  h.dispatch({ type: "SUBTAB_NEW", payload: { type: "webview" } });
+  const websiteId = h.state().tabs[0].activeSubtabId;
+  h.dispatch({
+    type: "SUBTAB_UPDATE",
+    payload: { id: websiteId, patch: { url: "https://example.com/", title: "example.com" } }
+  });
+  h.backend.inspectFile = async (path) => ({ path, name: "notes.txt", kind: "text" });
+  h.actions = {
+    openFileInWebview: async (path, metadata) => ({
+      url: `http://localhost:8895${path}?view=1`,
+      title: metadata.name,
+      filePath: path,
+      mime: "text/html"
+    })
+  };
+
+  await executeCommand('file open "/tmp/notes.txt"', h);
+
+  const workspace = h.state().tabs[0];
+  const website = workspace.subtabs.find((item) => item.id === websiteId);
+  const fileViewer = workspace.subtabs.find((item) => item.filePath === "/tmp/notes.txt");
+  assert.equal(website.url, "https://example.com/");
+  assert.equal(website.filePath ?? null, null);
+  assert.ok(fileViewer);
+  assert.notEqual(fileViewer.id, websiteId);
+  assert.equal(workspace.activeSubtabId, fileViewer.id);
+});
+
 test("file open reuses the current file viewer tab for a different file", async () => {
   const h = harness();
   h.backend.inspectFile = async (path) => ({ path, name: path.split("/").pop(), kind: "text" });

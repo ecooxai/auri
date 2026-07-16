@@ -101,18 +101,16 @@ test("website tabs never fall back to an iframe for real websites", () => {
   assert.doesNotMatch(html, /browser-frame/);
 });
 
-test("website webviews stay embedded by default but linux falls back to a browser window", () => {
+test("website webviews stay embedded in the application window on every desktop platform", () => {
   const rust = readFileSync(new URL("../src-tauri/src/core/webview.rs", import.meta.url), "utf8");
   const backend = readFileSync(new URL("../src/services/backend.js", import.meta.url), "utf8");
   const panels = readFileSync(new URL("../src/views/panels.js", import.meta.url), "utf8");
 
-  // Embedded child webviews remain the default (macOS) path…
+  // Website content is always attached to the main window's tab-sized layer.
   assert.match(rust, /\.add_child\(/);
-  // …while Linux uses a dedicated, reliable browser window unless the user
-  // opts back into the embedded webview via AURI_EMBEDDED_WEBVIEW=1.
-  assert.match(rust, /use_window_webview/);
-  assert.match(rust, /AURI_EMBEDDED_WEBVIEW/);
-  assert.match(rust, /target_os = "linux"/);
+  assert.match(rust, /embed_linux_webview/);
+  assert.doesNotMatch(rust, /AURI_EMBEDDED_WEBVIEW/);
+  assert.doesNotMatch(rust, /fn show_window_webview/);
   assert.doesNotMatch(rust, /\.always_on_top\(true\)/);
   assert.doesNotMatch(backend, /supportsNativeChildWebviews/);
   assert.doesNotMatch(panels, /browser-frame/);
@@ -142,6 +140,28 @@ test("opened files render through a blob-backed HTML viewer app document", () =>
   assert.match(html, /<iframe[^>]+src="blob:auri-media-page"/);
   assert.match(html, /allow="[^"]*camera[^"]*microphone[^"]*geolocation/);
   assert.doesNotMatch(html, /src="\/tmp\/test\.m4a"/);
+});
+
+test("native opened files reuse the shared child webview host instead of an iframe", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "webview" } });
+  const id = state.tabs[0].activeSubtabId;
+  state = reduceState(state, {
+    type: "SUBTAB_UPDATE",
+    payload: {
+      id,
+      patch: {
+        url: "http://localhost:8895/tmp/manual.pdf?view=1",
+        filePath: "/tmp/manual.pdf",
+        fileMime: "text/html"
+      }
+    }
+  });
+
+  const html = renderWebview(state, { native: true });
+  assert.match(html, /id="native-webview-host"/);
+  assert.match(html, /data-url="http:\/\/localhost:8895\/tmp\/manual\.pdf\?view=1"/);
+  assert.doesNotMatch(html, /<iframe/);
 });
 
 

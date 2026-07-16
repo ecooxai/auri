@@ -99,10 +99,11 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "auri"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arboard",
  "block2",
+ "gtk",
  "image",
  "objc2",
  "objc2-av-foundation",
@@ -117,6 +118,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "url",
+ "webkit2gtk",
  "x11-dl",
 ]
 

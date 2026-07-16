@@ -38,7 +38,7 @@ test("native watch launch override uses the development product name", () => {
   );
 });
 
-test("native watch starts an isolated process without replacing another watcher or app", async () => {
+test("native watch owns isolated process groups that the guarded launcher can replace", async () => {
   const script = await readFile("scripts/native-watch.sh", "utf8");
   const watcher = await readFile("scripts/native-watch.mjs", "utf8");
 

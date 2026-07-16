@@ -161,6 +161,14 @@ export class AppController {
     this.native = backend.isNative;
     this.fileViewUrl = null;
     this.nativeWebviewUrls = new Map();
+    this.nativeWebviewLayouts = new Map();
+    this.nativeWebviewShownId = null;
+    this.nativeBrowserOverlayKey = null;
+    this.webMenuSuppressClick = false;
+    this.subtabClickId = null;
+    this.subtabClickAt = 0;
+    this.subtabMenuOpenedByClickId = null;
+    this.subtabMenuOpenedByClickAt = 0;
     this.clipboardPollTimer = null;
     this.clipboardPolling = false;
     this.systemMonitorTimer = null;
@@ -211,7 +219,7 @@ export class AppController {
         refreshMediaPermissions: () => this.refreshMediaPermissions(),
         requestMediaPermission: (permission) => this.requestMediaPermission(permission),
         attachMedia: (kind) => this.attachRecordedMedia(kind),
-        webReload: () => this.runWebviewAction("reload"),
+        webReload: () => this.reloadSubtab(activeSubtab(this.state).id),
         webBack: () => this.runWebviewAction("back"),
         webForward: () => this.runWebviewAction("forward"),
         webZoomIn: () => this.runWebviewZoom("in"),
@@ -435,6 +443,8 @@ export class AppController {
         this.backend.closeWebview?.(id).catch?.(() => {});
         this.backend.closeStandaloneTab?.(id).catch?.(() => {});
         this.nativeWebviewUrls.delete(id);
+        this.nativeWebviewLayouts.delete(id);
+        if (this.nativeWebviewShownId === id) this.nativeWebviewShownId = null;
       }
     }
     const targetWorkspaceId = event.payload?.workspaceId || this.state.activeTabId;
@@ -726,6 +736,17 @@ export class AppController {
       this.webAiUnlisten = await this.backend.listen?.("auri-web-ai", (payload) => {
         this.handleWebAiAction(payload).catch((error) => this.reportError("Web AI", error));
       });
+      this.webPopupErrorUnlisten = await this.backend.listen?.("auri-web-popup-error", (payload) => {
+        this.reportError("Browser popup", payload?.message || payload || "The browser popup could not be opened.");
+      });
+      this.webProcessRecoveryUnlisten = await this.backend.listen?.("auri-web-process-recovered", (payload) => {
+        const message = payload?.message || "Auri recovered a crashed website process.";
+        this.dispatch({
+          type: "INFO_ADD",
+          payload: { level: "warning", title: "Website recovered", message }
+        });
+        this.view.showToast("Website recovered and reloaded", "info");
+      });
       this.browserOverlayUnlisten = await this.backend.listen?.("auri-browser-overlay-action", (payload) => this.handleBrowserOverlayAction(payload));
       this.standaloneReturnUnlisten = await this.backend.listen?.("auri-tab-window-return", (payload) => {
         this.moveSubtabToMain(payload?.id, { closeWindow: false }).catch((error) => this.reportError("Tab window", error));
@@ -830,6 +851,7 @@ export class AppController {
     this.view.root.addEventListener("dblclick", (event) => this.handleDoubleClick(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleLiveRecordPointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleMagicPointerDown(event));
+    this.view.root.addEventListener("pointerdown", (event) => this.handleBrowserMenuPointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleFolderResizePointerDown(event));
     this.view.root.addEventListener("pointerdown", (event) => this.handleTopbarPointerDown(event));
     this.view.root.addEventListener("keydown", (event) => this.handleKeydown(event));
@@ -870,6 +892,22 @@ export class AppController {
 
 
   async handleDoubleClick(event) {
+    const tab = event.target?.closest?.("[data-tab-id]");
+    if (tab?.dataset?.tabId) {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const id = tab.dataset.tabId;
+      if (this.subtabMenuOpenedByClickId === id && Date.now() - this.subtabMenuOpenedByClickAt <= 700) {
+        this.subtabMenuOpenedByClickId = null;
+        this.subtabMenuOpenedByClickAt = 0;
+        return true;
+      }
+      const wasOpen = this.state.ui.subtabActionMenuId === id;
+      const placement = this.subtabActionMenuPlacement(tab);
+      await this.selectSubtabFromClick(id);
+      this.setSubtabActionMenu(wasOpen ? null : id, placement);
+      return true;
+    }
     const target = event.target?.closest?.('[data-action="file-entry"]');
     if (!target) return false;
     event.preventDefault?.();
@@ -880,6 +918,47 @@ export class AppController {
       this.view.showToast(error?.message || String(error), "error");
       return false;
     }
+  }
+
+  subtabActionMenuPlacement(tab) {
+    const tabRect = tab?.getBoundingClientRect?.();
+    const barRect = tab?.closest?.(".subtab-bar")?.getBoundingClientRect?.();
+    return tabRect ? tabRect.left - (barRect?.left || 0) : 148;
+  }
+
+  setSubtabActionMenu(id, placement = 148) {
+    this.dispatch({
+      type: "UI_SET",
+      payload: {
+        subtabActionMenuId: id,
+        subtabActionMenuX: placement,
+        addSubtabMenuOpen: false,
+        commandMenuOpen: false,
+        webMenuOpen: false,
+        webDialog: null
+      }
+    });
+  }
+
+  trackSubtabClick(id) {
+    const now = Date.now();
+    const repeated = this.subtabClickId === id && now - this.subtabClickAt <= 500;
+    this.subtabClickId = repeated ? null : id;
+    this.subtabClickAt = repeated ? 0 : now;
+    return repeated;
+  }
+
+  handleBrowserMenuPointerDown(event) {
+    const target = event.target?.closest?.('[data-action="web-menu"]');
+    if (!target || event.button !== 0) return false;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    this.webMenuSuppressClick = true;
+    this.dispatch({
+      type: "UI_SET",
+      payload: { webMenuOpen: !this.state.ui.webMenuOpen, webDialog: null, addSubtabMenuOpen: false, commandMenuOpen: false }
+    }, { preserveInput: true });
+    return true;
   }
 
   async handleLiveRecordPointerDown(event) {
@@ -1175,9 +1254,20 @@ export class AppController {
         case "tab-close":
           await this.runInternal(`tab close ${target.dataset.id || ""}`.trim());
           break;
-        case "subtab-select":
+        case "subtab-select": {
+          const isDoubleClick = this.trackSubtabClick(target.dataset.id);
+          const placement = isDoubleClick
+            ? this.subtabActionMenuPlacement(target.closest?.("[data-tab-id]"))
+            : 148;
           await this.selectSubtabFromClick(target.dataset.id);
+          if (isDoubleClick) {
+            event.stopPropagation?.();
+            this.setSubtabActionMenu(target.dataset.id, placement);
+            this.subtabMenuOpenedByClickId = target.dataset.id;
+            this.subtabMenuOpenedByClickAt = Date.now();
+          }
           break;
+        }
         case "subtab-close":
           event.stopPropagation();
           await this.runInternal(`subtab close ${target.dataset.id}`);
@@ -1220,7 +1310,7 @@ export class AppController {
           this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, commandMenuOpen: false, webMenuOpen: false, webDialog: null } });
           break;
         case "subtab-new":
-          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } });
+          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false, webMenuOpen: false } });
           await this.runInternal(`subtab new ${target.dataset.type}`);
           if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
           break;
@@ -1629,6 +1719,10 @@ export class AppController {
           break;
         }
         case "web-menu":
+          if (this.webMenuSuppressClick) {
+            this.webMenuSuppressClick = false;
+            break;
+          }
           this.dispatch({ type: "UI_SET", payload: { webMenuOpen: !this.state.ui.webMenuOpen, webDialog: null, addSubtabMenuOpen: false } }, { preserveInput: true });
           break;
         case "web-menu-close":
@@ -2821,6 +2915,31 @@ export class AppController {
   async handleBrowserOverlayAction(payload) {
     const action = String(payload?.action || "");
     if (!action) return;
+    if (["subtab-action-reload", "subtab-action-window", "subtab-action-main", "subtab-action-close"].includes(action)) {
+      const id = String(payload?.id || "");
+      if (!id) return;
+      this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } }, { preserveInput: true });
+      const command = {
+        "subtab-action-reload": `subtab reload ${id}`,
+        "subtab-action-window": `subtab move-window ${id}`,
+        "subtab-action-main": `subtab move-main ${id}`,
+        "subtab-action-close": `subtab close ${id}`
+      }[action];
+      await this.runInternal(command);
+      return;
+    }
+    if (action === "command-menu-tab") {
+      const id = String(payload?.id || "");
+      if (!id) return;
+      this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
+      await this.runInternal(`subtab select ${id}`);
+      return;
+    }
+    if (action === "app-exit") {
+      this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
+      await this.runInternal("app exit");
+      return;
+    }
     if (action === "web-dialog-close" || action === "web-menu-close") {
       this.dispatch({ type: "UI_SET", payload: { webDialog: null, webMenuOpen: false, bookmarkDraft: null } }, { preserveInput: true });
       return;
@@ -2828,8 +2947,9 @@ export class AppController {
     if (action === "subtab-new") {
       const type = String(payload?.type || "");
       if (!type) return;
-      this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false } }, { preserveInput: true });
+      this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false, webMenuOpen: false } }, { preserveInput: true });
       await this.runInternal(`subtab new ${type}`);
+      if (["system", "disk", "net"].includes(type)) await this.runInternal("system refresh");
       return;
     }
     if (action === "web-magic-close") {
@@ -2898,6 +3018,9 @@ export class AppController {
       this.dispatch({ type: "UI_SET", payload: { webMenuOpen: false } }, { preserveInput: true });
     }
     const commands = {
+      "web-reload": "web reload",
+      "web-back": "web back",
+      "web-forward": "web forward",
       "web-external": "web external",
       "web-download": "web download",
       "web-devtools": "web devtools",
@@ -2915,10 +3038,11 @@ export class AppController {
     const id = String(payload?.id || "");
     const url = String(payload?.url || "");
     if (!id || !/^https?:\/\//i.test(url)) return;
-    const exists = this.state.tabs.some((tab) => tab.subtabs.some((item) => item.id === id && item.type === "webview"));
-    if (!exists) return;
-    const title = titleForWebUrl(url);
+    const webview = this.state.tabs.flatMap((tab) => tab.subtabs).find((item) => item.id === id && item.type === "webview");
+    if (!webview) return;
     this.nativeWebviewUrls.set(id, url);
+    if (webview.filePath) return;
+    const title = titleForWebUrl(url);
     const active = activeSubtab(this.state);
     if (active.id === id) {
       this.dispatch({ type: "SUBTAB_UPDATE", payload: { id, patch: { url, title } } }, { preserveInput: true });
@@ -3057,6 +3181,25 @@ export class AppController {
   }
 
   browserOverlayPayload(subtab) {
+    if (this.state.ui.subtabActionMenuId) {
+      const item = activeWorkspace(this.state).subtabs.find((candidate) => candidate.id === this.state.ui.subtabActionMenuId);
+      if (item) {
+        return {
+          mode: "subtab-actions",
+          id: item.id,
+          title: item.title,
+          standalone: Boolean(item.standalone)
+        };
+      }
+    }
+    if (this.state.ui.commandMenuOpen) {
+      const workspace = activeWorkspace(this.state);
+      return {
+        mode: "command-menu",
+        activeId: workspace.activeSubtabId,
+        tabs: workspace.subtabs.map((item) => ({ id: item.id, title: item.title, type: item.type }))
+      };
+    }
     if (this.state.ui.addSubtabMenuOpen) {
       return { mode: "new-tab" };
     }
@@ -3099,11 +3242,36 @@ export class AppController {
     const viewportHeight = typeof window !== "undefined" && Number(window.innerHeight)
       ? Number(window.innerHeight)
       : hostRect.top + hostRect.height;
+    if (this.state.ui.subtabActionMenuId) {
+      const tab = this.view.root.querySelector?.(`[data-tab-id="${this.state.ui.subtabActionMenuId}"]`);
+      const tabRect = tab?.getBoundingClientRect?.() || { left: this.state.ui.subtabActionMenuX || 148, bottom: hostRect.top };
+      const width = 250;
+      const height = 150;
+      return {
+        x: Math.max(8, Math.min(viewportWidth - width - 8, Number(tabRect.left || 0))),
+        y: Math.max(8, Math.min(viewportHeight - height - 8, Number(tabRect.bottom || hostRect.top) + 6)),
+        width,
+        height
+      };
+    }
+    if (this.state.ui.commandMenuOpen) {
+      const button = this.view.root.querySelector?.('[data-action="command-menu"]');
+      const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 8, bottom: hostRect.top };
+      const width = 260;
+      const tabCount = activeWorkspace(this.state).subtabs.length;
+      const height = Math.min(420, Math.max(150, 76 + tabCount * 42));
+      return {
+        x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
+        y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || hostRect.top) + 6)),
+        width,
+        height
+      };
+    }
     if (this.state.ui.addSubtabMenuOpen) {
       const button = this.view.root.querySelector?.('[data-action="subtab-menu"]');
       const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 56, bottom: 56 };
       const width = 220;
-      const height = 300;
+      const height = 420;
       return {
         x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
         y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || 56) + 6)),
@@ -3127,7 +3295,7 @@ export class AppController {
       const button = this.view.root.querySelector?.('[data-action="web-menu"]');
       const buttonRect = button?.getBoundingClientRect?.() || { right: viewportWidth - 8, bottom: hostRect.top };
       const width = 260;
-      const height = 300;
+      const height = 500;
       return {
         x: Math.max(8, Math.min(viewportWidth - width - 8, Number(buttonRect.right || viewportWidth) - width)),
         y: Math.max(8, Math.min(viewportHeight - height - 8, Number(buttonRect.bottom || hostRect.top) + 6)),
@@ -3160,26 +3328,47 @@ export class AppController {
   async syncBrowserOverlay(subtab, hostRect) {
     const payload = this.browserOverlayPayload(subtab);
     if (!payload) {
-      await this.backend.hideBrowserOverlay?.();
+      if (this.nativeBrowserOverlayKey !== null) {
+        this.nativeBrowserOverlayKey = null;
+        await this.backend.hideBrowserOverlay?.();
+      }
       return;
     }
     if (!this.backend.showBrowserOverlay) return;
-    await this.backend.showBrowserOverlay(payload, this.browserOverlayBounds(hostRect));
+    const bounds = this.browserOverlayBounds(hostRect);
+    const cachePayload = payload.mode === "menu" ? { ...payload, zoom: null } : payload;
+    const key = JSON.stringify([cachePayload, bounds]);
+    if (key === this.nativeBrowserOverlayKey) return;
+    this.nativeBrowserOverlayKey = key;
+    try {
+      await this.backend.showBrowserOverlay(payload, bounds);
+    } catch (error) {
+      if (this.nativeBrowserOverlayKey === key) this.nativeBrowserOverlayKey = null;
+      throw error;
+    }
   }
 
   async syncNativeWebview() {
     if (!this.native) return;
     const subtab = activeSubtab(this.state);
     const host = this.view.root.querySelector?.("#native-webview-host");
-    if (subtab.type !== "webview" || subtab.filePath || subtab.standalone || !host) {
-      await this.backend.hideBrowserOverlay?.();
+    if (subtab.type !== "webview" || subtab.standalone || !host) {
+      if (this.nativeBrowserOverlayKey !== null) {
+        this.nativeBrowserOverlayKey = null;
+        await this.backend.hideBrowserOverlay?.();
+      }
       await this.backend.hideWebviews?.();
+      this.nativeWebviewShownId = null;
       return;
     }
     const rect = this.nativeWebviewBounds(host);
     const url = subtab.url || "https://www.google.com/";
     const navigate = this.nativeWebviewUrls.get(subtab.id) !== url;
-    if (this.backend.showWebview) {
+    const layout = [rect.left, rect.top, rect.width, rect.height].map((value) => Math.round(Number(value) || 0)).join(":");
+    const needsShow = navigate
+      || this.nativeWebviewShownId !== subtab.id
+      || this.nativeWebviewLayouts.get(subtab.id) !== layout;
+    if (this.backend.showWebview && needsShow) {
       await this.backend.showWebview(subtab.id, url, {
         x: rect.left,
         y: rect.top,
@@ -3187,6 +3376,8 @@ export class AppController {
         height: rect.height
       }, navigate, webAiMenuPayload(this.state.settings.webAiPrompts));
       this.nativeWebviewUrls.set(subtab.id, url);
+      this.nativeWebviewLayouts.set(subtab.id, layout);
+      this.nativeWebviewShownId = subtab.id;
     }
     await this.syncBrowserOverlay(subtab, rect);
   }
@@ -3202,7 +3393,7 @@ export class AppController {
 
   async runWebviewAction(action, value = null) {
     const subtab = activeSubtab(this.state);
-    if (subtab.type !== "webview" || subtab.filePath) throw new Error("Open a website tab first.");
+    if (subtab.type !== "webview") throw new Error("Open a web or file viewer tab first.");
     await this.backend.webviewAction(subtab.id, action, value);
   }
 
@@ -3214,12 +3405,19 @@ export class AppController {
     const subtab = this.subtabById(id);
     if (!subtab) throw new Error("Tab not found.");
     if (subtab.standalone) {
-      await this.backend.reloadStandaloneTab?.(subtab.id);
+      await this.backend.closeStandaloneTab?.(subtab.id);
+      await this.backend.showStandaloneTab?.(subtab.id, subtab.url, subtab.title || "Auri");
       return;
     }
-    if (subtab.type === "webview" && !subtab.filePath && this.native) {
+    if (subtab.type === "webview" && this.native) {
       if (activeWorkspace(this.state).activeSubtabId !== subtab.id) await this.selectSubtab(subtab.id);
-      await this.backend.webviewAction(subtab.id, "reload");
+      await this.backend.hideBrowserOverlay?.();
+      this.nativeBrowserOverlayKey = null;
+      await this.backend.closeWebview?.(subtab.id);
+      this.nativeWebviewUrls.delete(subtab.id);
+      this.nativeWebviewLayouts.delete(subtab.id);
+      if (this.nativeWebviewShownId === subtab.id) this.nativeWebviewShownId = null;
+      await this.syncNativeWebview();
       return;
     }
     if (["system", "disk", "net"].includes(subtab.type)) {
@@ -3250,7 +3448,7 @@ export class AppController {
 
   async runWebviewZoom(direction) {
     const subtab = activeSubtab(this.state);
-    if (subtab.type !== "webview" || subtab.filePath) throw new Error("Open a website tab first.");
+    if (subtab.type !== "webview") throw new Error("Open a web or file viewer tab first.");
     const zoom = nextWebZoom(subtab.zoom, direction);
     await this.runWebviewAction("zoom", zoom);
     const event = { type: "SUBTAB_UPDATE", payload: { id: subtab.id, patch: { zoom } } };

@@ -1,6 +1,6 @@
 # Auri
 
-Current release: **v0.5** (package version `0.5.0`).
+Current release: **v0.7** (package version `0.7.0`).
 
 ## Common commands
 
@@ -187,7 +187,7 @@ Open `http://localhost:4173`. Preview mode supports the full interface and safe 
 
 Agent development launch rule:
 
-Before starting, the guarded launcher scans for an existing `target/debug/auri-desktop` or `target/debug/auri-dev` process and also acquires a project-specific lock. When a development window or launcher is already active, it exits successfully without opening another one. Agents must not rerun `npm run dev` while that instance is live. For an intentional manual relaunch, stop the previous `npm run dev` process tree first and then run the command again. Release binaries under `target/release` or packaged `Auri.app` paths are deliberately ignored and are never stopped or replaced. The isolated frontend server watches bundled JavaScript and recopies root HTML, CSS, favicon, and browser-overlay assets so each guarded restart uses current files. `npm run tauri:dev` remains a low-level direct Tauri command, so contributors must perform the same existing-instance check before using it.
+Before starting, the guarded launcher stops every process owned by the previous project-specific development launcher, then acquires the project lock and starts a fresh watcher and debug app. Release binaries under `target/release` or packaged `Auri.app` paths are deliberately ignored and are never stopped or replaced. The isolated frontend server watches bundled JavaScript and recopies root HTML, CSS, favicon, and browser-overlay assets so each guarded restart uses current files. `npm run tauri:dev` remains a low-level direct Tauri command, so contributors must perform a manual existing-instance check before using it.
 
 Install the external CLI on your `PATH`:
 

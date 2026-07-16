@@ -7,7 +7,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
-  findExistingAuriDevelopmentProcess,
+  collectAuriDevelopmentProcessesToStop,
   parseProcessTable
 } from "./native-dev-utils.mjs";
 
@@ -58,6 +58,51 @@ async function releaseProjectLock() {
   if (ownerPid === process.pid) await rm(lockPath, { force: true });
 }
 
+async function readLockOwnerPid() {
+  const ownerPid = Number.parseInt(await readFile(lockPath, "utf8").catch(() => ""), 10);
+  return Number.isInteger(ownerPid) && ownerPid > 0 ? ownerPid : null;
+}
+
+function signalProcess(pid, signal) {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
+    return false;
+  }
+}
+
+async function waitForProcessesToExit(pids, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (pids.some(processIsAlive) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+async function stopPreviousDevelopment() {
+  const lockOwnerPid = await readLockOwnerPid();
+  const processes = await readProcesses();
+  const targets = collectAuriDevelopmentProcessesToStop(processes, {
+    currentPid: process.pid,
+    lockOwnerPid,
+    projectRoot
+  });
+  if (targets.length === 0) return;
+
+  const targetPids = new Set(targets.map(({ pid }) => pid));
+  const roots = targets.filter(({ ppid }) => !targetPids.has(ppid));
+  console.log(`Stopping ${targets.length} process${targets.length === 1 ? "" : "es"} from the previous Auri development instance...`);
+  for (const { pid } of roots) signalProcess(pid, "SIGTERM");
+  await waitForProcessesToExit(targets.map(({ pid }) => pid));
+
+  const remaining = targets.filter(({ pid }) => processIsAlive(pid));
+  for (const { pid } of remaining.reverse()) signalProcess(pid, "SIGKILL");
+  await waitForProcessesToExit(remaining.map(({ pid }) => pid), 1000);
+
+  if (lockOwnerPid && !processIsAlive(lockOwnerPid)) await rm(lockPath, { force: true });
+}
+
 function waitForExit(child) {
   return new Promise((resolve, reject) => {
     child.once("error", reject);
@@ -66,11 +111,7 @@ function waitForExit(child) {
 }
 
 export async function runNativeDevelopment() {
-  const existing = findExistingAuriDevelopmentProcess(await readProcesses());
-  if (existing) {
-    console.log(`Auri development is already running (PID ${existing.pid}); not starting another dev window.`);
-    return 0;
-  }
+  await stopPreviousDevelopment();
 
   const lock = await acquireProjectLock();
   if (!lock.acquired) {
@@ -83,12 +124,6 @@ export async function runNativeDevelopment() {
   const signalHandlers = new Map();
 
   try {
-    const afterLockExisting = findExistingAuriDevelopmentProcess(await readProcesses());
-    if (afterLockExisting) {
-      console.log(`Auri development is already running (PID ${afterLockExisting.pid}); not starting another dev window.`);
-      return 0;
-    }
-
     const watchDelay = String(process.env.AURI_WATCH_DELAY ?? "10").trim() || "10";
     console.log(`Starting guarded Auri development with a ${watchDelay}-second trailing rebuild debounce...`);
     child = spawn("bash", [watchScript], {

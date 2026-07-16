@@ -286,7 +286,7 @@ export async function executeCommand(input, context) {
       const workspace = activeWorkspace(getState());
       const currentViewer = workspace.subtabs.find((item) => item.type === "webview" && item.filePath);
       if (currentViewer) dispatch({ type: "SUBTAB_SELECT", payload: { id: currentViewer.id } });
-      else openSubtab("webview", context);
+      else openSubtab("webview", context, { forceNew: true });
       const current = activeSubtab(getState());
       dispatch({
         type: "SUBTAB_UPDATE",

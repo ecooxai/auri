@@ -175,3 +175,19 @@ fn main_webview_bounds_grow_when_the_window_is_enlarged() {
     assert_eq!(large, (0, 0, 2560, 1440));
     assert!(large.2 > small.2 && large.3 > small.3);
 }
+
+#[test]
+fn linux_webkit_disables_only_the_crashing_pipewire_device_provider() {
+    assert_eq!(
+        util::webkit_gstreamer_feature_rank(None),
+        "pipewiredeviceprovider:NONE"
+    );
+    assert_eq!(
+        util::webkit_gstreamer_feature_rank(Some("vaapidecodebin:MAX")),
+        "vaapidecodebin:MAX,pipewiredeviceprovider:NONE"
+    );
+    assert_eq!(
+        util::webkit_gstreamer_feature_rank(Some("pipewiredeviceprovider:PRIMARY")),
+        "pipewiredeviceprovider:PRIMARY"
+    );
+}

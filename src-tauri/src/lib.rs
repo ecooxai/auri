@@ -623,6 +623,23 @@ fn tab_window_close(app: tauri::AppHandle, id: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        let existing = std::env::var("GST_PLUGIN_FEATURE_RANK").ok();
+        std::env::set_var(
+            "GST_PLUGIN_FEATURE_RANK",
+            core::util::webkit_gstreamer_feature_rank(existing.as_deref()),
+        );
+        // WebKitGTK 2.52 can crash in Mesa's Skia GPU worker while a related
+        // OAuth view is created. Keep browser rendering on the stable software
+        // path; per-view settings below enforce the same policy after creation.
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
     let app = tauri::Builder::default()
         .setup(|app| {
             fileserver::start().map_err(std::io::Error::other)?;
@@ -643,12 +660,18 @@ pub fn run() {
                 .clone();
             let main_window =
                 tauri::window::WindowBuilder::from_config(app, &main_config)?.build()?;
+            // Keep Auri's application shell on its normal WebKit context. Only
+            // website/standalone views use the persistent browser profile; a
+            // browser data directory on the app shell can prevent the bundled
+            // UI from loading after a native development restart.
             let main_webview = tauri::webview::WebviewBuilder::from_config(&main_config);
-            main_window.add_child(
+            let main_webview = main_window.add_child(
                 main_webview,
                 tauri::LogicalPosition::new(0, 0),
                 main_window.inner_size()?,
             )?;
+            webview::install_linux_webview_layer(&main_webview)
+                .map_err(std::io::Error::other)?;
 
             #[cfg(desktop)]
             {

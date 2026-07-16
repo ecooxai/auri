@@ -91,12 +91,12 @@ export function renderSubtabs(state, { native = false } = {}) {
             <button type="button" class="subtab-select-target" data-action="subtab-select" data-id="${item.id}" aria-label="Open ${escapeHtml(item.title)}">
               <span class="subtab-title">${escapeHtml(compactSubtabLabels[item.type] || item.title)}</span>
             </button>
-            <button type="button" class="subtab-icon subtab-icon-menu" data-action="subtab-action-menu" data-id="${item.id}"
-              aria-label="${escapeHtml(item.title)} tab menu" aria-haspopup="menu" aria-expanded="${state.ui.subtabActionMenuId === item.id}">${subtabIcons[item.type] || "·"}</button>
+            <button type="button" class="subtab-icon" data-action="subtab-select" data-id="${item.id}"
+              aria-label="Open ${escapeHtml(item.title)}">${subtabIcons[item.type] || "·"}</button>
           </div>
         `).join("")}
       </div>
-      ${actionTab ? renderSubtabActionMenu(actionTab, state.ui.subtabActionMenuX) : ""}
+      ${actionTab && !nativeWebviewActive ? renderSubtabActionMenu(actionTab, state.ui.subtabActionMenuX) : ""}
       <div class="chrome-actions" aria-label="Tab controls">
         <div class="subtab-add-wrap">
           ${button("＋", "New tab", "subtab-menu", 'data-chrome-control="true"')}
@@ -104,7 +104,7 @@ export function renderSubtabs(state, { native = false } = {}) {
         </div>
         <div class="command-menu-wrap">
           ${button("⌘", "Open tabs and app commands", "command-menu", `data-chrome-control="true" aria-haspopup="menu" aria-expanded="${state.ui.commandMenuOpen ? "true" : "false"}"`)}
-          ${state.ui.commandMenuOpen ? renderCommandMenu(tab) : ""}
+          ${state.ui.commandMenuOpen && !nativeWebviewActive ? renderCommandMenu(tab) : ""}
         </div>
       </div>
     </div>`;
@@ -114,7 +114,7 @@ function renderSubtabActionMenu(item, x = 148) {
   const placement = Number.isFinite(Number(x)) ? Number(x) : 148;
   return `<div class="subtab-action-menu pop-menu" role="menu" aria-label="${escapeHtml(item.title)} tab actions" style="--subtab-menu-x:${placement}px">
     <button type="button" role="menuitem" data-action="subtab-action-reload" data-id="${escapeHtml(item.id)}"><span>↻</span>Reload tab</button>
-    <button type="button" role="menuitem" data-action="${item.standalone ? "subtab-action-main" : "subtab-action-window"}" data-id="${escapeHtml(item.id)}"><span>${item.standalone ? "↙" : "↗"}</span>${item.standalone ? "Go back to main window" : "Move to standalone window"}</button>
+    <button type="button" role="menuitem" data-action="${item.standalone ? "subtab-action-main" : "subtab-action-window"}" data-id="${escapeHtml(item.id)}"><span>${item.standalone ? "↙" : "↗"}</span>${item.standalone ? "Go back to main window" : "Open in new window"}</button>
     <span class="pop-menu-separator" role="separator"></span>
     <button type="button" role="menuitem" class="danger" data-action="subtab-action-close" data-id="${escapeHtml(item.id)}"><span>×</span>Close tab</button>
   </div>`;
@@ -332,6 +332,12 @@ export function renderViewer(state) {
 
 function renderWebMenu(subtab) {
   return `<div class="web-menu" role="menu" aria-label="Browser menu">
+    <button type="button" role="menuitem" data-action="subtab-new" data-type="webview"><span>＋</span><strong>New Webview tab</strong></button>
+    <div class="web-menu-separator"></div>
+    <button type="button" role="menuitem" data-action="web-reload"><span>↻</span><strong>Reload</strong></button>
+    <button type="button" role="menuitem" data-action="web-back"><span>←</span><strong>Back</strong></button>
+    <button type="button" role="menuitem" data-action="web-forward"><span>→</span><strong>Forward</strong></button>
+    <div class="web-menu-separator"></div>
     <button type="button" role="menuitem" data-action="web-external"><span>↗</span><strong>Open externally</strong></button>
     <button type="button" role="menuitem" data-action="web-download"><span>↓</span><strong>Download page</strong></button>
     <button type="button" role="menuitem" data-action="web-add-bookmark"><span>☆</span><strong>Add bookmark</strong></button>
@@ -530,13 +536,14 @@ export function renderWebview(state, { native = false } = {}) {
   const subtab = activeSubtab(state);
   const url = subtab.url || "https://www.google.com/";
   const displayUrl = subtab.filePath || url;
-  const content = subtab.filePath
-    ? `<iframe class="file-web-object" src="${escapeHtml(url)}" title="${escapeHtml(subtab.title || "File preview")}" allow="${FILE_WEBVIEW_FEATURE_POLICY}" allowfullscreen></iframe>`
-    : `<div id="native-webview-host" class="native-webview-host" data-webview-id="${escapeHtml(subtab.id)}" data-url="${escapeHtml(url)}"><div class="native-webview-fallback"><span>◎</span><p>Website content opens in the native Auri webview.</p><small>Browser preview cannot bypass site embedding restrictions.</small></div></div>`;
+  const useNativeHost = native || !subtab.filePath;
+  const content = useNativeHost
+    ? `<div id="native-webview-host" class="native-webview-host" data-webview-id="${escapeHtml(subtab.id)}" data-url="${escapeHtml(url)}"><div class="native-webview-fallback"><span>◎</span><p>Content opens in the native Auri webview.</p><small>Browser preview cannot bypass site embedding restrictions.</small></div></div>`
+    : `<iframe class="file-web-object" src="${escapeHtml(url)}" title="${escapeHtml(subtab.title || "File preview")}" allow="${FILE_WEBVIEW_FEATURE_POLICY}" allowfullscreen></iframe>`;
   return `<section class="web-panel">
     <div class="url-bar">${button("←", "Back", "web-back")}${button("→", "Forward", "web-forward")}${button("↻", "Reload", "web-reload")}<input id="web-url" value="${escapeHtml(displayUrl)}" aria-label="URL or question"><div class="web-magic-wrap"><button type="button" class="go-button magic-button" data-action="web-magic" aria-label="Magic button. Click for actions, hold to talk with the live AI." aria-haspopup="menu" aria-expanded="${Boolean(state.ui.webMagicMenuOpen)}" title="Click: Go / Ask AI · Hold: talk">✦</button>${state.ui.webMagicMenuOpen && !native ? `<button class="web-menu-dismiss" type="button" data-action="web-magic-close" aria-label="Close magic menu"></button>${renderMagicMenu()}` : ""}</div><div class="web-menu-wrap">${button("⋮", "Browser menu", "web-menu", `aria-haspopup="menu" aria-expanded="${state.ui.webMenuOpen}"`)}${state.ui.webMenuOpen && !native ? `<button class="web-menu-dismiss" type="button" data-action="web-menu-close" aria-label="Close browser menu"></button>${renderWebMenu(subtab)}` : ""}</div></div>
     ${!native && state.ui.webAiReply ? renderWebAiReply(state.ui.webAiReply) : ""}
-    <div class="web-frame-wrap ${subtab.filePath ? "is-file" : "is-native"}">${content}</div>
+    <div class="web-frame-wrap ${useNativeHost ? "is-native" : "is-file"}">${content}</div>
   </section>`;
 }
 

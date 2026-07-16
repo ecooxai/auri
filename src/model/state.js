@@ -157,7 +157,7 @@ export function reduceState(state, event) {
     }
     case "TAB_SELECT":
       return state.tabs.some((tab) => tab.id === event.payload.id)
-        ? { ...state, activeTabId: event.payload.id }
+        ? { ...state, activeTabId: event.payload.id, ui: { ...state.ui, webMenuOpen: false } }
         : state;
     case "TAB_CLOSE": {
       if (state.tabs.length === 1) return state;
@@ -184,10 +184,10 @@ export function reduceState(state, event) {
         subtabs.splice(insertAt, 0, subtab);
         return { ...tab, subtabs, activeSubtabId: subtab.id, terminal: { ...tab.terminal, cwd: subtab.cwd } };
       });
-    case "SUBTAB_SELECT":
-      return updateActiveTab(state, (tab) => {
+    case "SUBTAB_SELECT": {
+      if (!activeWorkspace(state).subtabs.some((item) => item.id === event.payload.id)) return state;
+      const nextState = updateActiveTab(state, (tab) => {
         const selected = tab.subtabs.find((item) => item.id === event.payload.id);
-        if (!selected) return tab;
         return {
           ...tab,
           activeSubtabId: selected.id,
@@ -196,6 +196,8 @@ export function reduceState(state, event) {
             : tab.terminal
         };
       });
+      return { ...nextState, ui: { ...nextState.ui, webMenuOpen: false } };
+    }
     case "SUBTAB_CLOSE":
       return updateActiveTab(state, (tab) => {
         if (tab.subtabs.length === 1) return tab;

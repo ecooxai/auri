@@ -653,7 +653,9 @@ test("disk and net subtabs render beside the system monitor", () => {
   };
 
   const tabs = renderSubtabs(state);
-  assert.match(tabs, /aria-label="System tab menu"/);
+  assert.match(tabs, /data-tab-id="system-tab"/);
+  assert.match(tabs, /data-action="subtab-select" data-id="system-tab"/);
+  assert.doesNotMatch(tabs, /aria-label="System tab menu"/);
   assert.match(tabs, />Disk<\/span>/);
   assert.match(tabs, />Net<\/span>/);
   const diskHtml = renderActivePanel(state);

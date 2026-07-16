@@ -270,3 +270,24 @@ pub fn normalized_video_bitrate(bitrate_kbps: Option<u32>) -> u32 {
 pub fn main_fill_bounds(width: u32, height: u32) -> (i32, i32, u32, u32) {
     (0, 0, width, height)
 }
+
+/// Keep WebKitGTK from starting the PipeWire GStreamer device provider when
+/// that provider is not explicitly configured by the user. The provider can
+/// crash WebKit's content process during device discovery; PulseAudio/V4L2
+/// capture and normal media playback remain available through their own
+/// GStreamer features.
+pub fn webkit_gstreamer_feature_rank(existing: Option<&str>) -> String {
+    let existing = existing.unwrap_or("").trim();
+    if existing
+        .split(',')
+        .filter_map(|entry| entry.split_once(':').map(|(name, _)| name.trim()))
+        .any(|name| name == "pipewiredeviceprovider")
+    {
+        return existing.to_string();
+    }
+    if existing.is_empty() {
+        "pipewiredeviceprovider:NONE".to_string()
+    } else {
+        format!("{existing},pipewiredeviceprovider:NONE")
+    }
+}

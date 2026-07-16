@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  collectAuriDevelopmentProcessesToStop,
   findExistingAuriDevelopmentProcess,
   parseProcessTable
 } from "../scripts/native-dev-utils.mjs";
@@ -67,4 +68,28 @@ test("development process detection recognizes the isolated auri-dev binary", ()
 `);
 
   assert.equal(findExistingAuriDevelopmentProcess(processes, { currentPid: 99999 })?.pid, 90200);
+});
+
+test("development replacement stops every process owned by the previous project launcher but preserves release and current processes", () => {
+  const processes = parseProcessTable(`
+100 1 npm run dev
+101 100 node scripts/native-dev.mjs
+102 101 node scripts/native-watch.mjs
+103 102 npm run dev:web
+104 103 node scripts/dev.mjs
+105 102 /workspace/auri/src-tauri/target/debug/auri-dev
+106 105 /usr/lib/webkit/WebKitWebProcess
+200 1 /workspace/auri/src-tauri/target/release/auri-desktop
+300 1 npm run dev
+301 300 node scripts/native-dev.mjs
+`);
+
+  assert.deepEqual(
+    collectAuriDevelopmentProcessesToStop(processes, {
+      currentPid: 301,
+      lockOwnerPid: 101,
+      projectRoot: "/workspace/auri"
+    }).map(({ pid }) => pid),
+    [101, 102, 103, 104, 105, 106]
+  );
 });

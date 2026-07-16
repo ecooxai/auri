@@ -1,6 +1,6 @@
 # Auri Agent Guide
 
-Current release: **v0.5** (package version `0.5.0`).
+Current release: **v0.7** (package version `0.7.0`).
 
 ## Common commands
 
@@ -57,7 +57,9 @@ This file is the implementation contract for contributors and coding agents work
 
 ## Development instance safety
 
-Use `npm run dev` (or its `npm run native:watch` alias) for normal native development. It has no `cargo-watch` dependency: the project-owned Node watcher starts the isolated frontend and its own `auri-dev` process group. Before an intentional manual relaunch, stop the previous `npm run dev` process tree first; coding agents must instead detect an already-running `npm run dev`/`auri-dev` instance and leave it running rather than relaunching it. The launcher also scans for an existing `target/debug/auri-desktop` or `target/debug/auri-dev` process and holds a project-specific lock; when either is present, exit successfully without opening another development window. Never match, stop, or replace a packaged app or any binary under `target/release`. Source changes use a trailing 10-second debounce; each additional change resets the timer, then the watcher terminates only the debug process group it owns before rebuilding and starting the replacement. The isolated frontend server keeps its temporary bundle current by watching JavaScript dependencies and recopying root HTML, CSS, favicon, and browser-overlay assets. `AURI_WATCH_DELAY` may override the delay with another non-negative number of seconds. `npm run tauri:dev` bypasses this guard and therefore requires the same manual existing-instance check before use.
+Use `npm run dev` (or its `npm run native:watch` alias) for normal native development. It has no `cargo-watch` dependency: the project-owned Node watcher starts the isolated frontend and its own `auri-dev` process group. Each invocation first stops every process owned by the previous project-specific development launcher, then starts a fresh watcher and debug app. The launcher must never match, stop, or replace a packaged app or any binary under `target/release`. Source changes use a trailing 10-second debounce; each additional change resets the timer, then the watcher terminates only the debug process group it owns before rebuilding and starting the replacement. The isolated frontend server keeps its temporary bundle current by watching JavaScript dependencies and recopying root HTML, CSS, favicon, and browser-overlay assets. `AURI_WATCH_DELAY` may override the delay with another non-negative number of seconds. `npm run tauri:dev` bypasses this guard and therefore requires a manual existing-instance check before use.
+
+After `npm run dev` has started successfully, do not run it again for ordinary source changes. Keep that watcher running and rely on its automatic rebuild/restart behavior unless it has actually exited or an explicit manual relaunch is required.
 
 ## Local file web app contract
 

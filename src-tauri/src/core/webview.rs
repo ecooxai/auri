@@ -1,5 +1,8 @@
 use super::{lifecycle, util};
 use serde::Serialize;
+use std::path::PathBuf;
+#[cfg(not(target_os = "linux"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
     Rect, WebviewBuilder, WebviewUrl,
@@ -7,18 +10,35 @@ use tauri::{
 
 const PREFIX: &str = "auri-web-";
 const STANDALONE_PREFIX: &str = "auri-tab-window-";
-const POPUP_PREFIX: &str = "auri-popup-";
 const OVERLAY_LABEL: &str = "auri-browser-overlay";
+#[cfg(not(target_os = "linux"))]
+const POPUP_PREFIX: &str = "auri-web-popup-";
+const POPUP_ERROR_EVENT: &str = "auri-web-popup-error";
+#[cfg(not(target_os = "linux"))]
+static POPUP_COUNTER: AtomicU64 = AtomicU64::new(1);
+#[cfg(target_os = "linux")]
+const LINUX_WEBVIEW_LAYER: &str = "auri-native-webview-layer";
+#[cfg(target_os = "linux")]
+const LINUX_WEBVIEW_BOUNDS_KEY: &str = "auri-native-webview-bounds";
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct LinuxWebviewBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
 /// Internal host intercepted by `on_navigation`; the injected page script
-/// navigates here to hand selections, images, and popup requests to Auri.
+/// navigates here to hand selections and images to Auri.
 const INTERNAL_HOST: &str = "auri.internal";
 /// Label shared by the main window and the child webview that hosts the UI.
 pub const MAIN_LABEL: &str = "main";
 
 /// Page script injected into every browser webview. It renders the AI context
-/// menu near the pointer for text selections and image clicks, and routes
-/// `window.open` / `target="_blank"` to real popup windows so OAuth-style
-/// logins work. `__PROMPTS__` is replaced with a JSON array of menu items.
+/// menu near the pointer for text selections and image clicks. Browser popup
+/// requests stay native so OAuth retains its opener and postMessage channel.
+/// `__PROMPTS__` is replaced with a JSON array of menu items.
 const PAGE_SCRIPT_TEMPLATE: &str = r#"(() => {
   if (window.__AURI_AI__) return; window.__AURI_AI__ = 1;
   const PROMPTS = __PROMPTS__;
@@ -29,22 +49,15 @@ const PAGE_SCRIPT_TEMPLATE: &str = r#"(() => {
       .join("&");
     try { window.location.assign(INTERNAL + path + "?" + query); } catch (error) {}
   };
-  const nativeOpen = window.open;
-  window.open = function (url) {
-    if (url) {
-      try { go("popup", { url: new URL(url, window.location.href).href }); } catch (error) {}
-      return null;
-    }
-    return nativeOpen ? nativeOpen.apply(window, arguments) : null;
+  // WebKitGTK reports no URI when a site calls window.open() first and assigns
+  // the returned popup location later. Wry rejects that empty create request.
+  // about:blank is the browser-defined default, so make it explicit while
+  // preserving the real WindowProxy, opener, target name, and feature string.
+  const nativeOpen = window.open.bind(window);
+  window.open = function (url, target, features) {
+    const targetUrl = url == null || String(url).trim() === "" ? "about:blank" : url;
+    return nativeOpen(targetUrl, target, features);
   };
-  document.addEventListener("click", (event) => {
-    const anchor = event.target && event.target.closest ? event.target.closest('a[target="_blank"]') : null;
-    if (anchor && anchor.href && /^https?:/.test(anchor.href)) {
-      event.preventDefault();
-      event.stopPropagation();
-      go("popup", { url: anchor.href });
-    }
-  }, true);
   let menu = null;
   const hideMenu = () => { if (menu) { menu.remove(); menu = null; } };
   const showMenu = (x, y, buildPayload) => {
@@ -162,42 +175,11 @@ const STANDALONE_TAB_SCRIPT: &str = r##"(() => {
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", install, { once: true }); else install();
 })();"##;
 
-fn open_popup(app: &AppHandle, url: &str) {
-    let Ok(parsed) = url.parse::<tauri::Url>() else {
-        return;
-    };
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return;
-    }
-    let handle = app.clone();
-    let label = format!(
-        "{POPUP_PREFIX}{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|value| value.as_millis())
-            .unwrap_or_default()
-    );
-    let _ = app.run_on_main_thread(move || {
-        let _ =
-            tauri::WebviewWindowBuilder::new(&handle, &label, tauri::WebviewUrl::External(parsed))
-                .title("Auri")
-                .inner_size(520.0, 680.0)
-                .focused(true)
-                .build();
-    });
-}
-
 /// Intercept navigations to the internal host. Returns `true` when the
-/// navigation was consumed (AI menu action or popup request).
+/// navigation was consumed by an Auri action.
 fn handle_internal_navigation(app: &AppHandle, id: &str, url: &tauri::Url) -> bool {
     if url.host_str() != Some(INTERNAL_HOST) {
         return false;
-    }
-    if url.path() == "/popup" {
-        if let Some((_, target)) = url.query_pairs().find(|(key, _)| key == "url") {
-            open_popup(app, &target);
-        }
-        return true;
     }
     if url.path() == "/tab-return" || url.path() == "/tab-close" {
         let event = if url.path() == "/tab-return" {
@@ -226,11 +208,6 @@ fn handle_internal_navigation(app: &AppHandle, id: &str, url: &tauri::Url) -> bo
     true
 }
 
-#[cfg(target_os = "linux")]
-static X11_WEBVIEW_WINDOWS: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, u64>>,
-> = std::sync::OnceLock::new();
-
 #[derive(Clone, Serialize)]
 struct WebNavigation {
     id: String,
@@ -255,6 +232,68 @@ fn standalone_label_for(id: &str) -> String {
     format!("{STANDALONE_PREFIX}{id}")
 }
 
+pub fn browser_profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let profile = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not resolve the browser profile directory: {error}"))?
+        .join("browser-profile");
+    std::fs::create_dir_all(&profile)
+        .map_err(|error| format!("Could not create the browser profile directory: {error}"))?;
+    Ok(profile)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn managed_popup_handler(
+    app: AppHandle,
+) -> impl Fn(
+    tauri::Url,
+    tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<tauri::Wry>
+       + Send
+       + 'static {
+    move |url, features| {
+        let popup_id = POPUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let label = format!("{POPUP_PREFIX}{popup_id}");
+        let profile = match browser_profile_dir(&app) {
+            Ok(profile) => profile,
+            Err(message) => {
+                let _ = app.emit(POPUP_ERROR_EVENT, &message);
+                return tauri::webview::NewWindowResponse::Deny;
+            }
+        };
+        let builder =
+            tauri::WebviewWindowBuilder::new(&app, &label, WebviewUrl::External(url.clone()))
+                .title(url.as_str())
+                .inner_size(720.0, 720.0)
+                .data_directory(profile)
+                .initialization_script(page_script(None))
+                .on_new_window(managed_popup_handler(app.clone()))
+                // This is not cosmetic: it creates a related browser view, preserving
+                // the opener, target name, cookies, and postMessage channel used by
+                // Google Identity and other OAuth popups.
+                .window_features(features)
+                .focused(true);
+
+        match builder.build() {
+            Ok(window) => {
+                if let Err(error) = install_linux_browser_support(&app, &label, window.as_ref()) {
+                    let _ = window.close();
+                    let message = format!("Could not configure the browser popup: {error}");
+                    let _ = app.emit(POPUP_ERROR_EVENT, &message);
+                    return tauri::webview::NewWindowResponse::Deny;
+                }
+                tauri::webview::NewWindowResponse::Create { window }
+            }
+            Err(error) => {
+                let message = format!("Could not open the browser popup: {error}");
+                let _ = app.emit(POPUP_ERROR_EVENT, &message);
+                tauri::webview::NewWindowResponse::Deny
+            }
+        }
+    }
+}
+
 pub fn show_standalone(app: &AppHandle, id: &str, url: &str, title: &str) -> Result<(), String> {
     let label = standalone_label_for(id);
     let parsed = parse_url(url)?;
@@ -268,30 +307,44 @@ pub fn show_standalone(app: &AppHandle, id: &str, url: &str, title: &str) -> Res
         window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
-    let event_app = app.clone();
-    let event_id = id.to_string();
+    let load_app = app.clone();
+    let load_id = id.to_string();
     let navigation_app = app.clone();
     let navigation_id = id.to_string();
-    tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
+    let builder = tauri::WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
         .title(title)
         .inner_size(920.0, 720.0)
-        .initialization_script(format!("{}\n{}", page_script(None), STANDALONE_TAB_SCRIPT))
+        .data_directory(browser_profile_dir(app)?)
+        .initialization_script(format!("{}\n{}", page_script(None), STANDALONE_TAB_SCRIPT));
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.on_new_window(managed_popup_handler(app.clone()));
+    builder
         .on_navigation(move |target| {
             if handle_internal_navigation(&navigation_app, &navigation_id, target) {
                 return false;
             }
-            let _ = event_app.emit(
+            true
+        })
+        .on_page_load(move |_, payload| {
+            if payload.event() != tauri::webview::PageLoadEvent::Finished
+                || payload.url().host_str() == Some(INTERNAL_HOST)
+            {
+                return;
+            }
+            let _ = load_app.emit(
                 "auri-web-navigation",
                 WebNavigation {
-                    id: event_id.clone(),
-                    url: target.to_string(),
+                    id: load_id.clone(),
+                    url: payload.url().to_string(),
                 },
             );
-            true
         })
         .focused(true)
         .build()
         .map_err(|error| format!("Could not create the standalone tab window: {error}"))?;
+    if let Some(webview) = app.get_webview(&label) {
+        install_linux_browser_support(app, id, &webview)?;
+    }
     Ok(())
 }
 
@@ -331,225 +384,393 @@ pub fn fit_main_webview(window: &tauri::Window) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn raise_x11_child_window(
+fn with_linux_webview<T, F>(webview: &tauri::Webview, action: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(webkit2gtk::WebView) -> Result<T, String> + Send + 'static,
+{
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    webview
+        .with_webview(move |platform| {
+            let _ = send.send(action(platform.inner()));
+        })
+        .map_err(|error| error.to_string())?;
+    receive
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| "Timed out while arranging the Linux webview layer.".to_string())?
+}
+
+#[cfg(target_os = "linux")]
+fn linux_related_view(
+    app: &AppHandle,
     window: &tauri::Window,
-    label: &str,
+    builder: WebviewBuilder<tauri::Wry>,
+    position: LogicalPosition<f64>,
+    size: LogicalSize<f64>,
+) -> Result<tauri::Webview, String> {
+    let main = app
+        .get_webview(MAIN_LABEL)
+        .ok_or_else(|| "The Linux main webview is unavailable.".to_string())?;
+    let window = window.clone();
+    with_linux_webview(&main, move |related| {
+        window
+            .add_child(builder.with_related_view(related), position, size)
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn find_linux_webview_layer(widget: &gtk::Widget) -> Option<gtk::Overlay> {
+    use gtk::prelude::*;
+    if widget.widget_name().as_str() == LINUX_WEBVIEW_LAYER {
+        if let Ok(layer) = widget.clone().downcast::<gtk::Overlay>() {
+            return Some(layer);
+        }
+    }
+    let container = widget.clone().downcast::<gtk::Container>().ok()?;
+    container
+        .children()
+        .into_iter()
+        .find_map(|child| find_linux_webview_layer(&child))
+}
+
+#[cfg(target_os = "linux")]
+fn connect_linux_media_permission_prompt(webview: &webkit2gtk::WebView) {
+    use gtk::prelude::*;
+    use webkit2gtk::{
+        PermissionRequestExt, UserMediaPermissionRequest, UserMediaPermissionRequestExt, WebViewExt,
+    };
+
+    webview.connect_permission_request(|webview, request| {
+        let Some(media) = request.dynamic_cast_ref::<UserMediaPermissionRequest>() else {
+            return false;
+        };
+        let audio = media.is_for_audio_device();
+        let video = media.is_for_video_device();
+        let capability = match (audio, video) {
+            (true, true) => "camera and microphone",
+            (true, false) => "microphone",
+            (false, true) => "camera",
+            (false, false) => "screen capture",
+        };
+        let origin = webview
+            .uri()
+            .and_then(|uri| uri.parse::<url::Url>().ok())
+            .and_then(|uri| uri.host_str().map(str::to_string))
+            .filter(|host| !host.is_empty())
+            .unwrap_or_else(|| "This page".to_string());
+        let parent = webview
+            .toplevel()
+            .and_then(|widget| widget.downcast::<gtk::Window>().ok());
+        let dialog = gtk::MessageDialog::new(
+            parent.as_ref(),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            gtk::MessageType::Question,
+            gtk::ButtonsType::None,
+            &format!("Allow {origin} to use your {capability}?"),
+        );
+        dialog.set_title("Website permission");
+        dialog.set_secondary_text(Some(
+            "Auri will pass your choice to WebKit. Linux capture services, device availability, and any system consent still apply.",
+        ));
+        dialog.add_buttons(&[
+            ("Don’t Allow", gtk::ResponseType::Cancel),
+            ("Allow", gtk::ResponseType::Accept),
+        ]);
+        dialog.set_default_response(gtk::ResponseType::Cancel);
+        let pending = request.clone();
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                PermissionRequestExt::allow(&pending);
+            } else {
+                PermissionRequestExt::deny(&pending);
+            }
+            dialog.close();
+        });
+        dialog.show_all();
+        true
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn connect_linux_process_recovery(app: &AppHandle, id: &str, webview: &webkit2gtk::WebView) {
+    use std::{cell::Cell, rc::Rc};
+    use webkit2gtk::{SettingsExt, WebProcessTerminationReason, WebViewExt};
+
+    let app = app.clone();
+    let id = id.to_string();
+    let recovered = Rc::new(Cell::new(false));
+    webview.connect_web_process_terminated(move |webview, reason| {
+        if reason != WebProcessTerminationReason::Crashed {
+            return;
+        }
+        if let Some(settings) = webview.settings() {
+            settings.set_enable_media_stream(false);
+        }
+        let can_reload = !recovered.replace(true);
+        let url = webview.uri().unwrap_or_default().to_string();
+        let message = if can_reload {
+            "The website process crashed. Auri switched the tab to its safe Linux webview settings and reloaded it."
+        } else {
+            "The website process crashed after its automatic recovery was already used. Reload the tab to try again."
+        };
+        let _ = app.emit(
+            "auri-web-process-recovered",
+            serde_json::json!({ "id": id, "url": url, "message": message }),
+        );
+        if can_reload {
+            let _ = webview.reload();
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_browser_context(webview: &webkit2gtk::WebView) -> Result<(), String> {
+    use webkit2gtk::{
+        CookieAcceptPolicy, CookieManagerExt, HardwareAccelerationPolicy, SettingsExt,
+        WebContextExt, WebViewExt, WebsiteDataManagerExt,
+    };
+
+    if let Some(settings) = webview.settings() {
+        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+    }
+
+    let context = webview
+        .context()
+        .ok_or_else(|| "The Linux browser context is unavailable.".to_string())?;
+    // Embedded OAuth depends on state crossing a top-level provider popup and
+    // its opener. WebKitGTK's tracking prevention can latch that redirect as
+    // third-party and discard the state cookie even after it returns to the
+    // first-party site. Auri is a general browser surface, so use the same
+    // compatibility policy expected by mainstream Linux browsers.
+    if let Some(manager) = context.website_data_manager() {
+        manager.set_itp_enabled(false);
+    }
+    let cookies = context
+        .cookie_manager()
+        .ok_or_else(|| "The Linux browser cookie manager is unavailable.".to_string())?;
+    cookies.set_accept_policy(CookieAcceptPolicy::Always);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_external_view(webview: &webkit2gtk::WebView) {
+    use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+
+    if let Some(settings) = webview.settings() {
+        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
+        // WebKitGTK 2.52 currently crashes in the installed PipeWire device
+        // provider when X and Google Identity probe capture devices. Disable
+        // capture only for external website views; Auri's own recorder remains
+        // on the application webview and keeps its native permission flow.
+        settings.set_enable_media_stream(false);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn connect_linux_popup_handler(app: &AppHandle, id: &str, webview: &webkit2gtk::WebView) {
+    use gtk::prelude::*;
+    use webkit2gtk::{WebView, WebViewExt};
+
+    let app = app.clone();
+    let id = id.to_string();
+    webview.connect_create(move |opener, _| {
+        let popup = WebView::with_related_view(opener);
+        if let Err(error) = configure_linux_browser_context(&popup) {
+            let _ = app.emit(POPUP_ERROR_EVENT, &error);
+            return None;
+        }
+        configure_linux_external_view(&popup);
+        connect_linux_media_permission_prompt(&popup);
+        connect_linux_process_recovery(&app, &id, &popup);
+        connect_linux_popup_handler(&app, &id, &popup);
+
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        window.set_title("Auri sign in");
+        window.set_default_size(720, 720);
+        window.add(&popup);
+        let popup_window = window.clone();
+        popup.connect_close(move |_| popup_window.close());
+        window.show_all();
+        Some(popup.upcast::<gtk::Widget>())
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_media_permission_prompt(webview: &tauri::Webview) -> Result<(), String> {
+    with_linux_webview(webview, |inner| {
+        connect_linux_media_permission_prompt(&inner);
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_linux_media_permission_prompt(_webview: &tauri::Webview) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_browser_support(
+    app: &AppHandle,
+    id: &str,
+    webview: &tauri::Webview,
+) -> Result<(), String> {
+    let app = app.clone();
+    let id = id.to_string();
+    with_linux_webview(webview, move |inner| {
+        configure_linux_browser_context(&inner)?;
+        configure_linux_external_view(&inner);
+        connect_linux_media_permission_prompt(&inner);
+        connect_linux_process_recovery(&app, &id, &inner);
+        connect_linux_popup_handler(&app, &id, &inner);
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_linux_browser_support(
+    _app: &AppHandle,
+    _id: &str,
+    _webview: &tauri::Webview,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Put the main WebKitGTK view at the base of one native overlay and every
+/// browser child above it. Tauri otherwise packs Linux children into a vertical
+/// box, which makes a website consume a second window-sized row instead of the
+/// active tab.
+#[cfg(target_os = "linux")]
+pub fn install_linux_webview_layer(main_webview: &tauri::Webview) -> Result<(), String> {
+    with_linux_webview(main_webview, |inner| {
+        use gtk::prelude::*;
+        configure_linux_browser_context(&inner)?;
+        if inner
+            .toplevel()
+            .and_then(|root| find_linux_webview_layer(&root))
+            .is_some()
+        {
+            return Ok(());
+        }
+        let parent = inner
+            .parent()
+            .and_then(|widget| widget.downcast::<gtk::Box>().ok())
+            .ok_or_else(|| "The Linux main webview container is unavailable.".to_string())?;
+        let layer = gtk::Overlay::new();
+        layer.set_widget_name(LINUX_WEBVIEW_LAYER);
+        layer.set_hexpand(true);
+        layer.set_vexpand(true);
+        layer.set_halign(gtk::Align::Fill);
+        layer.set_valign(gtk::Align::Fill);
+        layer.connect_get_child_position(|_, child| {
+            // This key is owned exclusively by this module, and the copied
+            // value is read synchronously before another bounds update can
+            // replace the object data.
+            let bounds = unsafe {
+                child
+                    .data::<LinuxWebviewBounds>(LINUX_WEBVIEW_BOUNDS_KEY)
+                    .map(|bounds| *bounds.as_ref())
+            }?;
+            Some(gtk::Rectangle::new(
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height,
+            ))
+        });
+        parent.remove(&inner);
+        layer.add(&inner);
+        parent.pack_start(&layer, true, true, 0);
+        layer.show_all();
+        Ok(())
+    })?;
+    install_linux_media_permission_prompt(main_webview)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn install_linux_webview_layer(_main_webview: &tauri::Webview) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn embed_linux_webview(
+    webview: &tauri::Webview,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
-    previous_root_children: Option<Vec<u64>>,
 ) -> Result<(), String> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use std::collections::HashSet;
-    use std::ptr;
-    use x11_dl::xlib::{Window as XWindow, XWindowAttributes, Xlib};
-
-    let parent = match window
-        .window_handle()
-        .map_err(|error| format!("Could not read the X11 window handle: {error}"))?
-        .as_raw()
-    {
-        RawWindowHandle::Xlib(handle) if handle.window != 0 => handle.window,
-        RawWindowHandle::Xcb(handle) => handle.window.get() as u64,
-        _ => return Ok(()),
-    };
-    let xlib = Xlib::open().map_err(|error| format!("Could not open Xlib: {error}"))?;
-    let display = unsafe { (xlib.XOpenDisplay)(ptr::null()) };
-    if display.is_null() {
-        return Ok(());
-    }
-    let scale = window.scale_factor().unwrap_or(1.0);
-    let target_x = (x.max(0.0) * scale).round() as i32;
-    let target_y = (y.max(0.0) * scale).round() as i32;
-    let target_width = (width.max(1.0) * scale).round() as i32;
-    let target_height = (height.max(1.0) * scale).round() as i32;
-    let root_window = unsafe { (xlib.XDefaultRootWindow)(display) };
-    let tracked_child = X11_WEBVIEW_WINDOWS
-        .get_or_init(Default::default)
-        .lock()
-        .ok()
-        .and_then(|windows| windows.get(label).copied());
-    let child = if let Some(child) = tracked_child {
-        Some(child)
-    } else {
-        let before: HashSet<u64> = previous_root_children
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        let after = query_x11_root_children(display, &xlib, root_window);
-        after
-            .into_iter()
-            .filter(|child| !before.contains(child))
-            .filter(|child| {
-                let mut attrs = unsafe { std::mem::zeroed::<XWindowAttributes>() };
-                let ok = unsafe { (xlib.XGetWindowAttributes)(display, *child, &mut attrs) };
-                ok != 0 && attrs.width > 0 && attrs.height > 0
-            })
-            .last()
-            .inspect(|child| {
-                if let Ok(mut windows) = X11_WEBVIEW_WINDOWS.get_or_init(Default::default).lock() {
-                    windows.insert(label.to_string(), *child);
-                }
-            })
-    };
-    if let Some(child) = child {
-        let mut origin_x = 0;
-        let mut origin_y = 0;
-        let mut translated_child: XWindow = 0;
-        let translated = unsafe {
-            (xlib.XTranslateCoordinates)(
-                display,
-                parent,
-                root_window,
-                0,
-                0,
-                &mut origin_x,
-                &mut origin_y,
-                &mut translated_child,
-            )
-        };
-        if translated != 0 {
-            unsafe {
-                (xlib.XMoveResizeWindow)(
-                    display,
-                    child,
-                    origin_x + target_x,
-                    origin_y + target_y,
-                    target_width as u32,
-                    target_height as u32,
-                );
-                (xlib.XRaiseWindow)(display, child);
-                (xlib.XFlush)(display);
+    with_linux_webview(webview, move |inner| {
+        use gtk::prelude::*;
+        let root = inner
+            .toplevel()
+            .ok_or_else(|| "The Linux webview window is unavailable.".to_string())?;
+        let layer = find_linux_webview_layer(&root)
+            .ok_or_else(|| "The Linux webview layer is unavailable.".to_string())?;
+        let already_embedded = inner
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk::Overlay>().ok())
+            .is_some_and(|parent| parent.widget_name().as_str() == LINUX_WEBVIEW_LAYER);
+        if !already_embedded {
+            if let Some(parent) = inner
+                .parent()
+                .and_then(|parent| parent.downcast::<gtk::Container>().ok())
+            {
+                parent.remove(&inner);
             }
+            layer.add_overlay(&inner);
         }
-    }
-    unsafe { (xlib.XCloseDisplay)(display) };
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn query_x11_root_children(
-    display: *mut x11_dl::xlib::_XDisplay,
-    xlib: &x11_dl::xlib::Xlib,
-    root_window: x11_dl::xlib::Window,
-) -> Vec<u64> {
-    let mut root: x11_dl::xlib::Window = 0;
-    let mut parent_return: x11_dl::xlib::Window = 0;
-    let mut children: *mut x11_dl::xlib::Window = std::ptr::null_mut();
-    let mut child_count: u32 = 0;
-    let queried = unsafe {
-        (xlib.XQueryTree)(
-            display,
-            root_window,
-            &mut root,
-            &mut parent_return,
-            &mut children,
-            &mut child_count,
-        )
-    };
-    if queried == 0 || children.is_null() {
-        return Vec::new();
-    }
-    let result = unsafe { std::slice::from_raw_parts(children, child_count as usize) }.to_vec();
-    unsafe { (xlib.XFree)(children.cast()) };
-    result
-}
-
-#[cfg(target_os = "linux")]
-fn capture_x11_root_children() -> Vec<u64> {
-    use std::ptr;
-    let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
-        return Vec::new();
-    };
-    let display = unsafe { (xlib.XOpenDisplay)(ptr::null()) };
-    if display.is_null() {
-        return Vec::new();
-    }
-    let root_window = unsafe { (xlib.XDefaultRootWindow)(display) };
-    let children = query_x11_root_children(display, &xlib, root_window);
-    unsafe { (xlib.XCloseDisplay)(display) };
-    children
+        // A local file viewer can finish painting after a later browser
+        // overlay is attached. Reassert the GTK overlay order whenever a
+        // child is embedded so menus remain above either websites or files.
+        layer.reorder_overlay(&inner, -1);
+        let bounds = LinuxWebviewBounds {
+            x: x.max(0.0).round() as i32,
+            y: y.max(0.0).round() as i32,
+            width: width.max(1.0).round() as i32,
+            height: height.max(1.0).round() as i32,
+        };
+        // The module-owned key above guarantees the matching read type in the
+        // overlay allocation callback.
+        unsafe { inner.set_data(LINUX_WEBVIEW_BOUNDS_KEY, bounds) };
+        inner.set_halign(gtk::Align::Start);
+        inner.set_valign(gtk::Align::Start);
+        inner.set_margin_start(0);
+        inner.set_margin_top(0);
+        inner.set_margin_end(0);
+        inner.set_margin_bottom(0);
+        inner.set_size_request(bounds.width, bounds.height);
+        inner.show_all();
+        layer.queue_resize();
+        Ok(())
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
-fn capture_x11_root_children() -> Vec<u64> {
-    Vec::new()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn raise_x11_child_window(
-    _window: &tauri::Window,
-    _label: &str,
+fn embed_linux_webview(
+    _webview: &tauri::Webview,
     _x: f64,
     _y: f64,
     _width: f64,
     _height: f64,
-    _previous_root_children: Option<Vec<u64>>,
 ) -> Result<(), String> {
     Ok(())
 }
 
-/// Embedded child webviews are unreliable on Linux (WebKitGTK renders in a
-/// separate X11 child window and Wayland offers no way to reposition it), so
-/// Linux defaults to a dedicated browser window. Set `AURI_EMBEDDED_WEBVIEW=1`
-/// to force the embedded child webview instead.
-#[cfg(target_os = "linux")]
-fn use_window_webview() -> bool {
-    std::env::var("AURI_EMBEDDED_WEBVIEW").ok().as_deref() != Some("1")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn use_window_webview() -> bool {
-    false
-}
-
-fn show_window_webview(
-    app: &AppHandle,
-    id: &str,
-    label: &str,
-    parsed: tauri::Url,
-    navigate: bool,
+fn set_embedded_webview_bounds(
+    webview: &tauri::Webview,
+    x: f64,
+    y: f64,
     width: f64,
     height: f64,
-    ai_prompts: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(label) {
-        if navigate {
-            if let Some(webview) = app.get_webview(label) {
-                webview
-                    .navigate(parsed)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-        window.show().map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    let event_app = app.clone();
-    let event_id = id.to_string();
-    let nav_app = app.clone();
-    tauri::WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
-        .title("Auri Browser")
-        .inner_size(width.max(760.0), height.max(560.0))
-        .initialization_script(page_script(ai_prompts))
-        .on_navigation(move |target| {
-            if handle_internal_navigation(&nav_app, &event_id, target) {
-                return false;
-            }
-            let _ = event_app.emit(
-                "auri-web-navigation",
-                WebNavigation {
-                    id: event_id.clone(),
-                    url: target.to_string(),
-                },
-            );
-            true
+    webview
+        .set_bounds(Rect {
+            position: LogicalPosition::new(x.max(0.0), y.max(0.0)).into(),
+            size: LogicalSize::new(width.max(1.0), height.max(1.0)).into(),
         })
-        .focused(true)
-        .build()
-        .map_err(|error| format!("Could not create the browser window: {error}"))?;
-    Ok(())
+        .map_err(|error| error.to_string())?;
+    embed_linux_webview(webview, x, y, width, height)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -568,17 +789,8 @@ pub fn show(
     let parsed = parse_url(url)?;
     for (existing_label, webview) in app.webviews() {
         if existing_label.starts_with(PREFIX) && existing_label != label {
-            // Window-hosted webviews (Linux fallback) must be hidden through
-            // their window; Webview::hide only supports embedded children.
-            if let Some(window) = app.get_webview_window(&existing_label) {
-                window.hide().map_err(|error| error.to_string())?;
-            } else {
-                webview.hide().map_err(|error| error.to_string())?;
-            }
+            webview.hide().map_err(|error| error.to_string())?;
         }
-    }
-    if use_window_webview() {
-        return show_window_webview(app, id, &label, parsed, navigate, width, height, ai_prompts);
     }
     let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
     let size = LogicalSize::new(width.max(1.0), height.max(1.0));
@@ -591,55 +803,49 @@ pub fn show(
                 .navigate(parsed)
                 .map_err(|error| error.to_string())?;
         }
-        webview
-            .set_bounds(Rect {
-                position: position.into(),
-                size: size.into(),
-            })
-            .map_err(|error| error.to_string())?;
+        set_embedded_webview_bounds(&webview, x, y, width, height)?;
         webview.show().map_err(|error| error.to_string())?;
-        raise_x11_child_window(&window, &label, x, y, width, height, None)?;
         return Ok(());
     }
-    let previous_root_children = capture_x11_root_children();
-    let event_app = app.clone();
-    let event_id = id.to_string();
+    let load_app = app.clone();
+    let load_id = id.to_string();
     let nav_app = app.clone();
     let nav_id = id.to_string();
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .initialization_script(page_script(ai_prompts))
-        .on_navigation(move |target| {
-            if handle_internal_navigation(&nav_app, &nav_id, target) {
-                return false;
-            }
-            let _ = event_app.emit(
-                "auri-web-navigation",
-                WebNavigation {
-                    id: event_id.clone(),
-                    url: target.to_string(),
-                },
-            );
-            true
-        });
+        .data_directory(browser_profile_dir(app)?)
+        .initialization_script(page_script(ai_prompts));
+    #[cfg(not(target_os = "linux"))]
+    let builder = builder.on_new_window(managed_popup_handler(app.clone()));
+    let builder = builder.on_navigation(move |target| {
+        if handle_internal_navigation(&nav_app, &nav_id, target) {
+            return false;
+        }
+        true
+    });
+    let builder = builder.on_page_load(move |_, payload| {
+        if payload.event() != tauri::webview::PageLoadEvent::Finished
+            || payload.url().host_str() == Some(INTERNAL_HOST)
+        {
+            return;
+        }
+        let _ = load_app.emit(
+            "auri-web-navigation",
+            WebNavigation {
+                id: load_id.clone(),
+                url: payload.url().to_string(),
+            },
+        );
+    });
+    #[cfg(target_os = "linux")]
+    let webview = linux_related_view(app, &window, builder, position, size)
+        .map_err(|error| format!("Could not create webview: {error}"))?;
+    #[cfg(not(target_os = "linux"))]
     let webview = window
         .add_child(builder, position, size)
         .map_err(|error| format!("Could not create webview: {error}"))?;
-    webview
-        .set_bounds(Rect {
-            position: position.into(),
-            size: size.into(),
-        })
-        .map_err(|error| error.to_string())?;
+    install_linux_browser_support(app, id, &webview)?;
+    set_embedded_webview_bounds(&webview, x, y, width, height)?;
     webview.show().map_err(|error| error.to_string())?;
-    raise_x11_child_window(
-        &window,
-        &label,
-        x,
-        y,
-        width,
-        height,
-        Some(previous_root_children),
-    )?;
     Ok(())
 }
 
@@ -668,13 +874,16 @@ pub fn show_overlay(
     .initialization_script(initialization)
     .transparent(true)
     .focused(true);
-    window
-        .add_child(
-            builder,
-            LogicalPosition::new(x.max(0.0), y.max(0.0)),
-            LogicalSize::new(width.max(1.0), height.max(1.0)),
-        )
+    let position = LogicalPosition::new(x.max(0.0), y.max(0.0));
+    let size = LogicalSize::new(width.max(1.0), height.max(1.0));
+    #[cfg(target_os = "linux")]
+    let webview = linux_related_view(app, &window, builder, position, size)
         .map_err(|error| format!("Could not create browser overlay: {error}"))?;
+    #[cfg(not(target_os = "linux"))]
+    let webview = window
+        .add_child(builder, position, size)
+        .map_err(|error| format!("Could not create browser overlay: {error}"))?;
+    set_embedded_webview_bounds(&webview, x, y, width, height)?;
     Ok(())
 }
 

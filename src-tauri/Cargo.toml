@@ -2,7 +2,7 @@
 autobins = false
 default-run = "auri-desktop"
 name = "auri"
-version = "0.6.0"
+version = "0.7.0"
 description = "A terminal-centered assistant workspace"
 authors = ["Auri contributors"]
 edition = "2021"
@@ -40,6 +40,8 @@ sha2 = "0.10"
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+webkit2gtk = { version = "2", features = ["v2_40"] }
 x11-dl = "2.21.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
