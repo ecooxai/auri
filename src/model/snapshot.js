@@ -127,7 +127,11 @@ function serializeTerminalBuffers(buffers) {
   for (const [subtabId, buffer] of Object.entries(buffers || {})) {
     terminals[subtabId] = {
       sessionId: String(buffer?.sessionId || ""),
-      text: bufferTail(buffer?.text)
+      text: bufferTail(buffer?.text),
+      // The grid size lets shared-PTY clients (TUI, browser) size and
+      // restore the emulator; 0 means unknown.
+      cols: Number(buffer?.cols) || 0,
+      rows: Number(buffer?.rows) || 0
     };
   }
   return terminals;

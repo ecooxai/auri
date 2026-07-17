@@ -191,6 +191,21 @@ mod server {
             app.listen(name, move |event| broadcast(name, event.payload()));
         }
 
+        // Browser sessions mirror the desktop window: every published app
+        // state snapshot streams out as an `app-state` SSE event.
+        thread::spawn(|| {
+            let mut last_seq = 0_u64;
+            loop {
+                match super::super::state_sync::wait_for_newer(last_seq, Duration::from_secs(5)) {
+                    Some((seq, json)) => {
+                        last_seq = seq;
+                        broadcast("app-state", &json);
+                    }
+                    None => continue,
+                }
+            }
+        });
+
         let accept_app = app.clone();
         thread::spawn(move || {
             for connection in listener.incoming() {
@@ -283,6 +298,41 @@ mod server {
                 write_response(&mut stream, "200 OK", "application/json", b"{\"app\":\"auri\"}");
             }
             ("GET", "/__auri__/events") => serve_events(stream),
+            ("GET", "/__auri__/state") => {
+                let reply = match super::super::state_sync::latest() {
+                    Some(json) => format!("{{\"ok\":true,\"result\":{json}}}"),
+                    None => json!({
+                        "ok": false,
+                        "error": "The desktop window has not published app state yet."
+                    })
+                    .to_string(),
+                };
+                write_response(&mut stream, "200 OK", "application/json", reply.as_bytes());
+            }
+            ("POST", "/__auri__/command") => {
+                let body = match read_body(&mut stream, head.content_length) {
+                    Ok(body) => body,
+                    Err(error) => {
+                        write_response(&mut stream, "400 Bad Request", "text/plain; charset=utf-8", error.as_bytes());
+                        return;
+                    }
+                };
+                let command = serde_json::from_slice::<Value>(&body)
+                    .ok()
+                    .and_then(|value| value.get("command").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_default();
+                // Quiet by design: emit only, no window focus — a browser
+                // click must not raise the desktop window.
+                let reply = if command.trim().is_empty() {
+                    json!({ "ok": false, "error": "Send a JSON body like {\"command\":\"tab new\"}." })
+                } else {
+                    match tauri::Emitter::emit(&app, "auri-command", command) {
+                        Ok(()) => json!({ "ok": true, "result": null }),
+                        Err(error) => json!({ "ok": false, "error": error.to_string() }),
+                    }
+                };
+                write_response(&mut stream, "200 OK", "application/json", reply.to_string().as_bytes());
+            }
             ("POST", path) if path.starts_with("/__auri__/invoke/") => {
                 let Some(command) = parse_invoke_command(path).map(str::to_string) else {
                     write_response(

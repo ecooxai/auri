@@ -467,6 +467,8 @@ impl LocalHost {
                                         // Local attach targets the subtab id directly.
                                         session_id: subtab.id.clone(),
                                         text: text.clone(),
+                                        cols: 0,
+                                        rows: 0,
                                     },
                                 );
                             }

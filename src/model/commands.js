@@ -165,6 +165,24 @@ export function parseCommand(input) {
   return { domain, action: action.toLowerCase(), args: tokens };
 }
 
+// Hosted web sessions mirror the desktop window's app state, so any command
+// that mutates mirrored state (workspaces, subtabs, terminal runs, web URLs,
+// settings, info) must execute in the desktop window — running it locally
+// would be clobbered by the next snapshot. Everything else (native reads,
+// per-frontend view state, local inputs) stays local.
+const MIRROR_FORWARDED_DOMAINS = new Set(["tab", "subtab", "terminal", "web", "settings", "info"]);
+
+export function mirrorForwardsCommand(input) {
+  let parsed;
+  try {
+    parsed = parseCommand(input);
+  } catch {
+    return false;
+  }
+  if (MIRROR_FORWARDED_DOMAINS.has(parsed.domain)) return true;
+  return parsed.domain === "folder" && parsed.action === "cd";
+}
+
 export function commandHelp() {
   const width = Math.max(...COMMANDS.map(([syntax]) => syntax.length));
   return COMMANDS.map(([syntax, description]) => `auri ${syntax.padEnd(width)}  ${description}`).join("\n");

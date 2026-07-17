@@ -18,4 +18,6 @@ pub mod screen;
 pub mod term;
 pub mod tui;
 #[allow(dead_code)]
+pub mod vt;
+#[allow(dead_code)]
 pub mod view_model;

@@ -16,6 +16,7 @@ const QUIET_PREFIX: &str = "__auri_quiet__:";
 const STATE_REQUEST: &str = "__auri_state__";
 const WATCH_REQUEST: &str = "__auri_watch__";
 const ATTACH_PREFIX: &str = "__auri_term_attach__:";
+const RESIZE_PREFIX: &str = "__auri_term_resize__:";
 const COPY_PREFIX: &str = "__auri_copy__:";
 const SERVE_UI_REQUEST: &str = "__auri_serve_ui__";
 const QUIT_REQUEST: &str = "__auri_quit__";
@@ -131,6 +132,15 @@ pub fn send_quiet_command(command: &str) -> Result<(), String> {
 /// Bring the GUI window to the front without running a command.
 pub fn focus_gui() -> Result<(), String> {
     expect_ok(round_trip(FOCUS_REQUEST, Duration::from_secs(5))?)
+}
+
+/// Resize a running PTY so the TUI's inline terminal panel gets a matching
+/// grid.
+pub fn send_term_resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    expect_ok(round_trip(
+        &format!("{RESIZE_PREFIX}{session_id}:{cols}:{rows}"),
+        Duration::from_secs(5),
+    )?)
 }
 
 /// Copy base64-encoded text to the system clipboard through the app.

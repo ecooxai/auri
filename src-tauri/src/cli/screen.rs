@@ -17,7 +17,6 @@ pub enum Mode {
     #[default]
     Normal,
     Command,
-    RunCommand,
     Search,
 }
 
@@ -28,6 +27,10 @@ pub struct UiState {
     pub status: String,
     pub connected: bool,
     pub standalone: bool,
+    /// Live terminal mode: keys go raw to the PTY, `term_lines` holds the
+    /// VT-emulated grid (cursor already drawn), Ctrl+B leaves.
+    pub term_mode: bool,
+    pub term_lines: Vec<String>,
     pub terminal_scroll: usize,
     pub process_scroll: usize,
     pub clipboard_scroll: usize,
@@ -156,18 +159,36 @@ impl<'a> RowBuilder<'a> {
     }
 }
 
+/// Workspace chip text: a 1-based index on the left, plus the title only when
+/// it says something ("Home"/"Space N" defaults collapse to the number — the
+/// folder name beside the chip already identifies the workspace).
+pub fn workspace_label(index: usize, title: &str) -> String {
+    let title = title.trim();
+    let is_default = title.is_empty()
+        || title == "Home"
+        || title
+            .strip_prefix("Space ")
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()));
+    if is_default {
+        index.to_string()
+    } else {
+        format!("{index} {title}")
+    }
+}
+
 fn workspace_row(snapshot: &SnapshotView, y: usize, width: usize, regions: &mut Vec<Region>) -> String {
     let mut row = RowBuilder::new(y, regions);
     row.push(" ");
-    for workspace in &snapshot.workspaces {
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
         if row.width >= width {
             break;
         }
         let folder = folder_name(&workspace.folder_path);
+        let name = workspace_label(index + 1, &workspace.title);
         let label = if workspace.active {
-            format!("{INVERSE}{BOLD} ▸ {} {DIM}{folder}{RESET}{INVERSE} {RESET}", workspace.title)
+            format!("{INVERSE}{BOLD} ▸ {name} {DIM}{folder}{RESET}{INVERSE} {RESET}")
         } else {
-            format!(" {} {DIM}{folder}{RESET} ", workspace.title)
+            format!(" {name} {DIM}{folder}{RESET} ")
         };
         row.push_clickable(&label, Action::SelectWorkspace(workspace.id.clone()));
         row.push(" ");
@@ -218,30 +239,40 @@ fn terminal_panel(
 ) -> Vec<String> {
     let workspace = snapshot.active_workspace();
     let subtab = snapshot.active_subtab();
-    let buffer = subtab.and_then(|subtab| snapshot.terminals.get(&subtab.id));
-    let all_lines: Vec<String> = buffer
-        .map(|buffer| ansi::sanitize_terminal_text(&buffer.text))
-        .unwrap_or_default();
     let body_height = height.saturating_sub(1);
-    let end = all_lines.len().saturating_sub(ui.terminal_scroll.min(all_lines.len()));
-    let start = end.saturating_sub(body_height);
-    let mut lines: Vec<String> = all_lines[start..end].to_vec();
-    while lines.len() < body_height {
-        lines.push(String::new());
-    }
     regions.push(Region { x: 0, y: top, width, height: body_height.max(1), action: Action::FocusTerminal });
 
     let cwd = workspace.map(|workspace| workspace.terminal_cwd.clone()).unwrap_or_default();
-    let running = workspace.is_some_and(|workspace| workspace.terminal_running);
-    let scrolled = if ui.terminal_scroll > 0 { format!("↑{} ", ui.terminal_scroll) } else { String::new() };
-    let prompt = match ui.mode {
-        Mode::RunCommand => format!("{BOLD}{cwd} ❯{RESET} {}▌", ui.input),
-        _ => format!(
-            "{BOLD}{cwd} ❯{RESET} {DIM}{scrolled}{}click or [r] to type · [a] attach · scroll wheel{RESET}",
-            if running { "(running…) " } else { "" }
-        ),
-    };
-    lines.push(prompt);
+    let mut lines: Vec<String>;
+    let hint;
+    if ui.term_mode && ui.terminal_scroll == 0 {
+        // Live VT grid: the emulator rows are already styled and sized.
+        lines = ui.term_lines.iter().take(body_height).cloned().collect();
+        while lines.len() < body_height {
+            lines.push(String::new());
+        }
+        hint = format!("{BOLD}{cwd}{RESET} {DIM}terminal — Ctrl+B normal mode · wheel scrolls history{RESET}");
+    } else {
+        let buffer = subtab.and_then(|subtab| snapshot.terminals.get(&subtab.id));
+        let all_lines: Vec<String> = buffer
+            .map(|buffer| ansi::sanitize_terminal_text(&buffer.text))
+            .unwrap_or_default();
+        let end = all_lines.len().saturating_sub(ui.terminal_scroll.min(all_lines.len()));
+        let start = end.saturating_sub(body_height);
+        lines = all_lines[start..end].to_vec();
+        while lines.len() < body_height {
+            lines.push(String::new());
+        }
+        hint = if ui.terminal_scroll > 0 {
+            format!(
+                "{BOLD}{cwd}{RESET} {DIM}↑{} history · wheel down returns to live{RESET}",
+                ui.terminal_scroll
+            )
+        } else {
+            format!("{BOLD}{cwd} ❯{RESET} {DIM}click or Enter to use the terminal · scroll wheel{RESET}")
+        };
+    }
+    lines.push(hint);
     lines
         .into_iter()
         .map(|line| ansi::fit_visible(&line, width))
@@ -482,7 +513,10 @@ fn status_row(ui: &UiState, width: usize) -> String {
     let text = match ui.mode {
         Mode::Command => format!(" :{}▌", ui.input),
         Mode::Search => format!(" /{}▌", ui.input),
-        Mode::RunCommand => format!(" run ❯ {}▌", ui.input),
+        Mode::Normal if ui.term_mode => format!(
+            " {}{INVERSE} TERMINAL {RESET}{DIM} keys go to the shell · Ctrl+B for normal mode{RESET}",
+            if ui.status.is_empty() { String::new() } else { format!("{} · ", ui.status) }
+        ),
         Mode::Normal => format!(
             " {}{DIM}click tabs · drag selects (auto-copies) · ↑↓ space · ←→ subtab · : cmd · q quit{RESET}",
             if ui.status.is_empty() { String::new() } else { format!("{} · ", ui.status) }

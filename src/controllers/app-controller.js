@@ -4,6 +4,7 @@ import { appSnapshotJson } from "../model/snapshot.js";
 import { normalizeSystemSnapshot, processPriorityIdentity, protocolForPort } from "../model/system.js";
 import { mergePolledFolderEntries } from "../model/folder.js";
 import { classifyTerminalInput } from "../model/presentation.js";
+import { mirrorForwardsCommand } from "../model/commands.js";
 import { MediaCapture, pickRecordingDevices } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
 import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl, webAiMenuItems, webAiMenuPayload, webAiPrompt } from "../model/browser.js";
@@ -221,6 +222,10 @@ export class AppController {
     this.stateSyncDelayMs = Number.isFinite(stateSyncDelayMs) ? stateSyncDelayMs : STATE_SYNC_DELAY_MS;
     this.stateSyncTimer = null;
     this.stateSyncSeq = 0;
+    // Hosted web mirror: the latest snapshot's terminal map (subtab id →
+    // shared PTY info) so new sessions can adopt the desktop window's PTYs.
+    this.mirrorTerminals = {};
+    this.mirrorUnlisten = null;
   }
 
   // The whole app state (including background terminal buffers) is mirrored as
@@ -242,7 +247,12 @@ export class AppController {
   terminalBufferSnapshots() {
     const buffers = {};
     for (const [subtabId, session] of this.terminalSessions) {
-      buffers[subtabId] = { sessionId: session.sessionId || "", text: session.bufferText?.() || "" };
+      buffers[subtabId] = {
+        sessionId: session.sessionId || "",
+        text: session.bufferText?.() || "",
+        cols: session.term?.cols || 0,
+        rows: session.term?.rows || 0
+      };
     }
     return buffers;
   }
@@ -366,6 +376,13 @@ export class AppController {
     });
     session.onCwdChange = (path) => this.handleTerminalCwdChange(target.workspace.id, target.subtab.id, path);
     session.onOutput = () => this.scheduleStateSync();
+    if (this.backend.isHostedWeb) {
+      session.adoptOnly = true;
+      const shared = this.mirrorTerminals?.[sessionKey];
+      if (shared?.sessionId) {
+        session.adopt(shared).catch((error) => this.reportError("Terminal mirror", error));
+      }
+    }
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
       this.reportError("Terminal", error);
       return false;
@@ -807,6 +824,40 @@ export class AppController {
     throw new Error(`${label} access is required. Allow it in System Settings and try again.`);
   }
 
+  // Hosted web mirror: subscribe to the desktop window's app-state stream and
+  // seed from the latest published snapshot so the browser, GUI, and TUI all
+  // render the same workspaces.
+  async setupMirrorMode() {
+    this.mirrorUnlisten = await this.backend.listen?.("app-state", (snapshot) => this.applyMirrorSnapshot(snapshot));
+    try {
+      const snapshot = await this.backend.fetchAppState();
+      if (snapshot) this.applyMirrorSnapshot(snapshot);
+    } catch (error) {
+      this.reportError("App state mirror", error);
+    }
+  }
+
+  applyMirrorSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") return;
+    this.mirrorTerminals = snapshot.terminals || {};
+    this.dispatch(
+      { type: "MIRROR_WORKSPACES_SYNC", payload: { snapshot } },
+      { preserveInput: true, render: this.configurationReady }
+    );
+    for (const key of ["theme", "fontSize"]) {
+      const value = snapshot.settings?.[key];
+      if (value !== undefined && value !== this.state.settings[key]) {
+        this.dispatch({ type: "SETTING_SET", payload: { key, value } }, { preserveInput: true, render: this.configurationReady });
+      }
+    }
+    for (const [subtabId, shared] of Object.entries(this.mirrorTerminals)) {
+      const session = this.terminalSessions.get(subtabId);
+      if (session?.adoptOnly && shared?.sessionId) {
+        session.adopt(shared).catch((error) => this.reportError("Terminal mirror", error));
+      }
+    }
+  }
+
   async initialize() {
     this.bindEvents();
     try {
@@ -896,6 +947,9 @@ export class AppController {
       if (!restoredWorkspaces) {
         this.state = reduceState(this.state, { type: "WORKDIR_SET", payload: { path: root } });
       }
+      // A hosted web session mirrors the desktop window's workspaces before
+      // the first render so the folder pane and terminals adopt shared state.
+      if (this.backend.isHostedWeb) await this.setupMirrorMode();
       let startupPath = activeWorkspace(this.state).folder.path || root;
       let entries;
       try {
@@ -2753,6 +2807,12 @@ export class AppController {
   }
 
   async runInternal(command, options = {}) {
+    // A hosted web session hands mirrored-state commands to the desktop
+    // window; the result arrives back as an app-state snapshot.
+    if (this.backend.isHostedWeb && mirrorForwardsCommand(command)) {
+      await this.backend.forwardCommand(command);
+      return { forwarded: true };
+    }
     return executeCommand(command, { ...this.context(), ...options });
   }
 
@@ -2974,6 +3034,9 @@ export class AppController {
 
   async persistConfiguration() {
     if (!this.backend.saveSettings) return;
+    // The desktop window owns the saved configuration; a hosted web session
+    // writing it too would race the owner with mirrored copies.
+    if (this.backend.isHostedWeb) return;
     await this.backend.saveSettings({
       settings: this.state.settings,
       models: this.state.models,

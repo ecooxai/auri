@@ -25,6 +25,7 @@ pub const WATCH_REQUEST: &str = "__auri_watch__";
 pub const QUIET_PREFIX: &str = "__auri_quiet__:";
 pub const ATTACH_PREFIX: &str = "__auri_term_attach__:";
 pub const COPY_PREFIX: &str = "__auri_copy__:";
+pub const RESIZE_PREFIX: &str = "__auri_term_resize__:";
 pub const SERVE_UI_REQUEST: &str = "__auri_serve_ui__";
 pub const QUIT_REQUEST: &str = "__auri_quit__";
 pub const APP_INFO_REQUEST: &str = "__auri_appinfo__";
@@ -41,6 +42,8 @@ pub enum IncomingRequest<'a> {
     StateWatch,
     /// Bidirectional raw byte bridge onto a running PTY session.
     TerminalAttach(&'a str),
+    /// Resize a running PTY (TUI inline terminal follows its panel size).
+    TerminalResize { session: &'a str, cols: u16, rows: u16 },
     /// Copy base64-encoded UTF-8 text to the system clipboard. Base64 keeps
     /// multi-line selections inside the line-framed protocol.
     CopyText(&'a str),
@@ -79,6 +82,18 @@ pub fn parse_request(input: &str) -> Result<IncomingRequest<'_>, String> {
             return Err("Terminal session id is empty.".to_string());
         }
         return Ok(IncomingRequest::TerminalAttach(session));
+    }
+    if let Some(spec) = request.strip_prefix(RESIZE_PREFIX) {
+        let mut parts = spec.trim().rsplitn(3, ':');
+        let rows = parts.next().and_then(|value| value.parse().ok());
+        let cols = parts.next().and_then(|value| value.parse().ok());
+        let session = parts.next().unwrap_or("").trim();
+        match (session.is_empty(), cols, rows) {
+            (false, Some(cols), Some(rows)) if cols > 0 && rows > 0 => {
+                return Ok(IncomingRequest::TerminalResize { session, cols, rows });
+            }
+            _ => return Err("Terminal resize needs <session>:<cols>:<rows>.".to_string()),
+        }
     }
     if let Some(encoded) = request.strip_prefix(COPY_PREFIX) {
         let encoded = encoded.trim();
@@ -331,6 +346,9 @@ fn handle_connection(mut stream: UnixStream, app: tauri::AppHandle) {
         },
         Ok(IncomingRequest::StateWatch) => stream_state(stream),
         Ok(IncomingRequest::TerminalAttach(session_id)) => attach_terminal(stream, session_id),
+        Ok(IncomingRequest::TerminalResize { session, cols, rows }) => {
+            respond_simple(stream, super::terminal::resize(session, cols, rows));
+        }
         Ok(IncomingRequest::CopyText(encoded)) => {
             let result = super::util::decode_base64(encoded)
                 .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))

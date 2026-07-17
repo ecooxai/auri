@@ -7,6 +7,36 @@ let terminalModulesPromise = null;
 // pushes never re-decode the whole record log (which would churn the WebKit
 // heap on every output burst).
 export const TERMINAL_TAIL_MAX_CHARS = 65536;
+// A freshly mounted terminal renders only this many trailing lines; the full
+// record history stays stored and scrolling to the top loads older chunks.
+export const TERMINAL_RENDER_TAIL_LINES = 100;
+
+export function countRecordLines(records) {
+  let lines = 0;
+  for (const record of records) {
+    if (record?.type !== "bytes" || !record.bytes) continue;
+    for (const byte of record.bytes) {
+      if (byte === 10) lines += 1;
+    }
+  }
+  return lines;
+}
+
+// The first record index whose replay covers at least `maxLines` trailing
+// newlines — everything before it stays stored but unrendered.
+export function replayStartIndex(records, maxLines) {
+  let lines = 0;
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record?.type === "bytes" && record.bytes) {
+      for (const byte of record.bytes) {
+        if (byte === 10) lines += 1;
+      }
+      if (lines >= maxLines) return index;
+    }
+  }
+  return 0;
+}
 
 const TERMINAL_TARGET_PATTERN = /(?:https?:\/\/|file:\/\/\/)[^\s<>"'`]+|(?:[A-Za-z]:[\\/]|~\/|\.{1,2}\/|\/)(?:\\[ \t]|[^\s<>"'`])+/gi;
 const TERMINAL_FILE_TOKEN_PATTERN = /(?:\\[ \t]|[^\s<>"'`()\[\]{},;])+/g;
@@ -247,6 +277,8 @@ export class TerminalSession {
     this.fitAddon = null;
     this.mountedElement = null;
     this.started = false;
+    this.adoptOnly = false;
+    this.pendingAdoptInput = "";
     this.output = [];
     this.outputBytes = 0;
     this.maxOutputBytes = 2097152;
@@ -260,6 +292,9 @@ export class TerminalSession {
     this.onOutput = null;
     this.bufferTail = "";
     this.tailDecoder = new TextDecoder();
+    this.renderLineBudget = TERMINAL_RENDER_TAIL_LINES;
+    this.renderedFromIndex = 0;
+    this.lastHistoryExpand = 0;
     this.renderQueue = Promise.resolve();
     this.assistantStreamAtLineStart = true;
     this.clipboardAbort = null;
@@ -453,7 +488,7 @@ export class TerminalSession {
       this.fitAddon?.fit();
       if (!this.started && this.backend.isNative) {
         await this.ensureStarted(this.cwd, this.term.cols, this.term.rows);
-      } else if (this.started) {
+      } else if (this.started && !this.adoptOnly) {
         this.backend.resizeTerminal(this.sessionId, this.term.cols, this.term.rows).catch(() => {});
       }
       return;
@@ -501,7 +536,14 @@ export class TerminalSession {
     this.installClipboardHandlers(element);
     this.fitAddon.fit();
     this.renderQueue = Promise.resolve();
-    for (const record of this.output) this.queueRender(record, generation);
+    // Replay only the trailing lines; older records stay stored and are
+    // loaded when the user scrolls to the very top.
+    this.renderLineBudget = TERMINAL_RENDER_TAIL_LINES;
+    this.renderedFromIndex = replayStartIndex(this.output, this.renderLineBudget);
+    for (const record of this.output.slice(this.renderedFromIndex)) this.queueRender(record, generation);
+    this.term.onScroll?.((viewportY) => {
+      if (viewportY === 0) this.expandHistory();
+    });
 
     this.term.onData((data) => {
       if (data.includes("\r") || data.includes("\n")) this.scheduleCwdRefresh();
@@ -511,7 +553,9 @@ export class TerminalSession {
     });
     element.addEventListener("mousedown", () => this.term?.focus());
     this.term.onResize(({ cols, rows }) => {
-      if (this.started) this.backend.resizeTerminal(this.sessionId, cols, rows).catch(() => {});
+      // Adopted sessions share the desktop window's PTY and must not fight
+      // it over the grid size.
+      if (this.started && !this.adoptOnly) this.backend.resizeTerminal(this.sessionId, cols, rows).catch(() => {});
     });
 
     if (!this.started && this.backend.isNative) {
@@ -798,9 +842,26 @@ export class TerminalSession {
     }, { signal });
   }
 
+  // Hosted web mirror: instead of starting an own PTY, join the desktop
+  // window's session from the snapshot. Input typed before adoption queues
+  // and flushes once the shared session id is known.
+  async adopt({ sessionId, text = "", cols = 0, rows = 0 } = {}) {
+    void cols; void rows; // the desktop window owns the shared PTY size
+    const id = String(sessionId || "");
+    if (!id || (this.started && this.sessionId === id)) return false;
+    this.sessionId = id;
+    this.started = true;
+    if (!this.output.length && text) this.appendRecord({ type: "bytes", bytes: encoder.encode(text) });
+    const pending = this.pendingAdoptInput;
+    this.pendingAdoptInput = "";
+    if (pending) await this.backend.writeTerminal(this.sessionId, encoder.encode(pending));
+    return true;
+  }
+
   async ensureStarted(cwd = this.cwd, cols = this.term?.cols || 80, rows = this.term?.rows || 24) {
     if (!this.backend.isNative) return false;
     if (this.started) return true;
+    if (this.adoptOnly) return false;
     if (!this.startPromise) {
       this.cwd = cwd || this.cwd;
       this.startPromise = this.backend.startTerminal(this.sessionId, this.cwd, cols, rows)
@@ -817,6 +878,10 @@ export class TerminalSession {
 
   async write(data) {
     if (!this.backend.isNative) return;
+    if (this.adoptOnly && !this.started) {
+      this.pendingAdoptInput += data;
+      return;
+    }
     await this.ensureStarted();
     await this.backend.writeTerminal(this.sessionId, encoder.encode(data));
   }
@@ -842,6 +907,33 @@ export class TerminalSession {
     return this.bufferTail;
   }
 
+  // Scrolled to the top with older history stored: double the rendered
+  // window and rebuild the emulator content, keeping the viewport near the
+  // seam so the newly loaded lines are what the user sees.
+  expandHistory() {
+    if (!this.term || this.renderedFromIndex <= 0) return false;
+    const now = Date.now();
+    if (now - this.lastHistoryExpand < 500) return false;
+    this.lastHistoryExpand = now;
+
+    this.renderLineBudget = Math.min(this.renderLineBudget * 2, 1000000);
+    const start = replayStartIndex(this.output, this.renderLineBudget);
+    if (start >= this.renderedFromIndex) return false;
+    const added = countRecordLines(this.output.slice(start, this.renderedFromIndex));
+    this.renderedFromIndex = start;
+
+    const generation = ++this.mountGeneration;
+    this.term.reset();
+    this.renderQueue = Promise.resolve();
+    for (const record of this.output.slice(start)) this.queueRender(record, generation);
+    this.renderQueue = this.renderQueue.then(() => {
+      if (generation !== this.mountGeneration || !this.term) return;
+      this.term.scrollToTop();
+      this.term.scrollLines(Math.max(0, added - 1));
+    });
+    return true;
+  }
+
   async stop() {
     this.mountGeneration += 1;
     clearTimeout(this.cwdRefreshTimer);
@@ -852,7 +944,9 @@ export class TerminalSession {
     this.term = null;
     this.mountedElement = null;
     for (const off of this.unlisten.splice(0)) off?.();
-    if (this.started && this.backend.isNative) await this.backend.stopTerminal(this.sessionId);
+    // Adopted sessions borrow the desktop window's PTY; only that window may
+    // end it.
+    if (this.started && this.backend.isNative && !this.adoptOnly) await this.backend.stopTerminal(this.sessionId);
     this.started = false;
   }
 

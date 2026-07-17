@@ -138,6 +138,8 @@ fn parse_terminals(value: &Value) -> HashMap<String, TerminalBufferView> {
                 TerminalBufferView {
                     session_id: text(buffer, "sessionId"),
                     text: text(buffer, "text"),
+                    cols: buffer.get("cols").and_then(Value::as_u64).unwrap_or(0) as u16,
+                    rows: buffer.get("rows").and_then(Value::as_u64).unwrap_or(0) as u16,
                 },
             );
         }

@@ -45,7 +45,11 @@ test("terminal input waits for the PTY instead of silently dropping keystrokes",
   assert.match(source, /async ensureStarted/);
   assert.match(source, /await this\.ensureStarted\(\)/);
   const writeMethod = source.slice(source.indexOf("async write(data)"), source.indexOf("async stop()"));
-  assert.doesNotMatch(writeMethod, /!this\.started/);
+  // Input typed before the PTY exists must either start it (ensureStarted)
+  // or queue for the adopted shared session — never be discarded.
+  const startGuards = writeMethod.match(/!this\.started/g) || [];
+  const adoptQueueGuards = writeMethod.match(/this\.adoptOnly && !this\.started[\s\S]{0,80}pendingAdoptInput \+= data/g) || [];
+  assert.equal(startGuards.length, adoptQueueGuards.length, "every not-started early path queues the keystrokes");
 });
 
 test("terminal remounts are generation guarded and clicking restores xterm focus", async () => {

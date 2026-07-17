@@ -318,10 +318,38 @@ export class Backend {
     return data.result ?? null;
   }
 
+  // Mirror plumbing for hosted web sessions: read the desktop window's
+  // published snapshot and hand mutating commands to it for execution.
+  async fetchAppState() {
+    if (!this.webBridge) throw new Error("The app-state mirror is only available in a hosted web session.");
+    const response = await fetch("/__auri__/state", { cache: "no-store" });
+    const data = response && typeof response.json === "function"
+      ? await response.json().catch(() => null)
+      : null;
+    if (!data || typeof data !== "object") throw new Error("The Auri web bridge returned an unreadable app state.");
+    if (!data.ok) throw new Error(data.error || "The desktop window has not published app state yet.");
+    return data.result ?? null;
+  }
+
+  async forwardCommand(command) {
+    if (!this.webBridge) throw new Error("Command forwarding is only available in a hosted web session.");
+    const response = await fetch("/__auri__/command", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: String(command ?? "") })
+    });
+    const data = response && typeof response.json === "function"
+      ? await response.json().catch(() => null)
+      : null;
+    if (!data || typeof data !== "object") throw new Error("The Auri web bridge returned an unreadable command response.");
+    if (!data.ok) throw new Error(data.error || `The desktop window could not run: ${command}`);
+    return data.result ?? null;
+  }
+
   openWebEventStream() {
     if (!this.webBridge || typeof EventSource === "undefined") return;
     const source = new EventSource("/__auri__/events");
-    for (const name of ["terminal-data", "terminal-exit"]) {
+    for (const name of ["terminal-data", "terminal-exit", "app-state"]) {
       source.addEventListener(name, (event) => {
         let payload = null;
         try { payload = JSON.parse(event.data); } catch { return; }
@@ -336,16 +364,24 @@ export class Backend {
   }
 
   // A web subtab in hosted web mode is a real browser tab: one named tab per
-  // subtab id, re-navigated when its URL changes.
+  // subtab id, re-navigated when its URL changes. A popup-blocked URL is
+  // remembered so mirror-driven re-renders do not retry (and re-error) it on
+  // every state push; a different URL clears the marker.
   openHostedWebTab(id, url) {
     const tabs = this.webBridge.tabs;
     const existing = tabs.get(id);
-    if (existing && !existing.tab.closed && existing.url === url) {
-      try { existing.tab.focus?.(); } catch {}
-      return { externalBrowser: true, url };
+    if (existing && existing.url === url) {
+      if (existing.blocked) return { externalBrowser: true, url, blocked: true };
+      if (existing.tab && !existing.tab.closed) {
+        try { existing.tab.focus?.(); } catch {}
+        return { externalBrowser: true, url };
+      }
     }
     const tab = window.open(url, `auri-web-${id}`);
-    if (!tab) throw new Error(`The browser blocked the pop-up for ${url}. Allow pop-ups for Auri to open web tabs.`);
+    if (!tab) {
+      tabs.set(id, { tab: null, url, blocked: true });
+      throw new Error(`The browser blocked the pop-up for ${url}. Allow pop-ups for Auri to open web tabs.`);
+    }
     tabs.set(id, { tab, url });
     return { externalBrowser: true, url };
   }
@@ -478,7 +514,7 @@ export class Backend {
   async closeWebview(id) {
     if (this.webBridge) {
       const existing = this.webBridge.tabs.get(id);
-      try { existing?.tab.close?.(); } catch {}
+      try { existing?.tab?.close?.(); } catch {}
       this.webBridge.tabs.delete(id);
       return;
     }

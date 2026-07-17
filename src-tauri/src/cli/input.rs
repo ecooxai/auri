@@ -150,6 +150,37 @@ pub fn parse_events(bytes: &[u8]) -> Vec<Event> {
     events
 }
 
+/// Split raw stdin bytes for terminal passthrough mode: SGR mouse reports
+/// are extracted as events for the TUI (tabs, wheel), every other byte —
+/// arrows, function keys, control characters — passes through untouched so
+/// the PTY sees exactly what the user typed.
+pub fn split_terminal_input(bytes: &[u8]) -> (Vec<Mouse>, Vec<u8>) {
+    let mut mice = Vec::new();
+    let mut raw = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') && bytes.get(index + 2) == Some(&b'<') {
+            let mut end = index + 3;
+            while end < bytes.len() && !(0x40..=0x7e).contains(&bytes[end]) {
+                end += 1;
+            }
+            if end < bytes.len() {
+                if let Some(mouse) = parse_mouse(&bytes[index + 2..=end]) {
+                    mice.push(mouse);
+                }
+                index = end + 1;
+                continue;
+            }
+            // Incomplete report at the chunk edge: drop it rather than leak
+            // half a control sequence into the shell.
+            break;
+        }
+        raw.push(bytes[index]);
+        index += 1;
+    }
+    (mice, raw)
+}
+
 pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
     parse_events(bytes)
         .into_iter()

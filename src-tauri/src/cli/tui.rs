@@ -1,13 +1,15 @@
 //! The `auri cli` event loop. Two backends share one UI: with a running GUI
 //! it mirrors the app over the command socket; without one it hosts local
-//! sessions itself (tmux-style, see `local`). Mouse: click tabs to focus,
-//! click monitor columns to sort, wheel to scroll, drag to select — a
-//! selection longer than three characters is copied after two seconds.
+//! sessions itself (tmux-style, see `local`). The terminal panel is a real
+//! VT-emulated terminal: focusing it sends keys raw to the PTY and Ctrl+B
+//! returns to normal mode. Mouse: click tabs to focus, click monitor columns
+//! to sort, wheel to scroll, drag to select — a selection longer than three
+//! characters is copied after two seconds.
 
-use super::input::{parse_events, Event as InputEvent, Key, Mouse, MouseKind};
+use super::input::{parse_events, split_terminal_input, Event as InputEvent, Key, Mouse, MouseKind};
 use super::screen::{self, Action, Frame, Mode, Selection, UiState};
 use super::view_model::SnapshotView;
-use super::{ansi, client, local, model, term};
+use super::{client, local, model, term, vt};
 use std::io::{BufRead, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -17,8 +19,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const DETACH_BYTE: u8 = 0x1d; // Ctrl+]
-const ATTACH_TAIL_LINES: usize = 24;
+const NORMAL_MODE_BYTE: u8 = 0x02; // Ctrl+B leaves the terminal, tmux-style.
+const TERM_SEED_LINES: usize = 100;
 const COPY_DELAY: Duration = Duration::from_secs(2);
 const COPY_MIN_CHARS: usize = 4;
 
@@ -27,7 +29,8 @@ pub enum Event {
     WatchDown(String),
     Input(Vec<u8>),
     StdinClosed,
-    AttachEnded,
+    TermBytes(Vec<u8>),
+    TermEnded,
     Refresh,
 }
 
@@ -36,13 +39,22 @@ enum Backend {
     Local(local::LocalHost),
 }
 
-enum AttachState {
+enum TermWriter {
     Remote(UnixStream),
-    Local {
-        subtab_id: String,
-        done: Arc<AtomicBool>,
-    },
+    Local(String),
 }
+
+/// The live inline terminal: a VT screen fed by the PTY byte stream.
+struct TermLive {
+    emu: vt::VtScreen,
+    writer: TermWriter,
+    stop: Arc<AtomicBool>,
+    session_id: String,
+    /// GUI grid to restore on exit so the desktop window keeps its layout.
+    restore: Option<(u16, u16)>,
+}
+
+use vt::tail_lines;
 
 fn spawn_watch_thread(sender: Sender<Event>) {
     thread::spawn(move || loop {
@@ -137,7 +149,9 @@ struct App {
     ui: UiState,
     frame_plain: Vec<String>,
     frame_regions: Vec<screen::Region>,
-    attach: Option<AttachState>,
+    term: Option<TermLive>,
+    /// Waiting for the app to start the PTY, then auto-enter terminal mode.
+    want_term: bool,
     size: (u16, u16),
     dirty: bool,
     quit: bool,
@@ -200,162 +214,200 @@ impl App {
 
     fn panel_area(&self) -> (u16, u16) {
         let width = self.size.0.max(20);
-        let height = self.size.1.max(6);
+        let height = self.size.1.max(8);
         (width, height.saturating_sub(5).max(4))
     }
 
-    fn start_attach(&mut self) {
+    /// The VT grid for the inline terminal: the panel body minus its hint row.
+    fn term_grid(&self) -> (u16, u16) {
+        let (cols, panel_rows) = self.panel_area();
+        (cols, panel_rows.saturating_sub(2).max(2))
+    }
+
+    fn enter_terminal_mode(&mut self) {
+        if self.term.is_some() {
+            return;
+        }
         let Some(subtab) = self
             .snapshot
             .active_subtab()
             .filter(|subtab| subtab.kind == "terminal")
             .cloned()
         else {
-            self.ui.status = "Select a terminal subtab to attach.".to_string();
-            self.dirty = true;
             return;
         };
-        let tail = self
-            .snapshot
-            .terminals
-            .get(&subtab.id)
-            .map(|buffer| ansi::sanitize_terminal_text(&buffer.text))
-            .unwrap_or_default();
+        let (cols, rows) = self.term_grid();
+        let buffer = self.snapshot.terminals.get(&subtab.id);
+        let seed = buffer.map(|buffer| buffer.text.clone()).unwrap_or_default();
 
-        let attach = match &mut self.backend {
+        let (writer, session_id, restore) = match &mut self.backend {
             Backend::Remote => {
-                let session_id = self
-                    .snapshot
-                    .terminals
-                    .get(&subtab.id)
-                    .map(|buffer| buffer.session_id.clone())
-                    .unwrap_or_default();
-                if session_id.is_empty() {
-                    self.ui.status =
-                        "Terminal has not started yet — run a command first.".to_string();
+                let Some(buffer) = buffer else {
+                    // The GUI starts the PTY lazily; nudge it with a shell
+                    // no-op once and auto-enter when the session appears.
+                    if !self.want_term {
+                        self.want_term = true;
+                        let _ = client::send_quiet_command("terminal run :");
+                        self.ui.status = "starting the terminal…".to_string();
+                    }
                     self.dirty = true;
                     return;
-                }
+                };
+                let session_id = buffer.session_id.clone();
+                let restore = (buffer.cols > 0 && buffer.rows > 0).then_some((buffer.cols, buffer.rows));
                 match client::open_terminal_attach(&session_id) {
                     Ok(stream) => {
-                        if let Ok(mut reader) = stream.try_clone() {
-                            let done = self.sender.clone();
-                            thread::spawn(move || {
-                                let mut stdout = std::io::stdout();
-                                let mut buffer = [0_u8; 8192];
-                                loop {
-                                    match reader.read(&mut buffer) {
-                                        Ok(0) | Err(_) => break,
-                                        Ok(count) => {
-                                            if stdout.write_all(&buffer[..count]).is_err() {
-                                                break;
-                                            }
-                                            let _ = stdout.flush();
-                                        }
-                                    }
-                                }
-                                let _ = done.send(Event::AttachEnded);
-                            });
-                        }
-                        AttachState::Remote(stream)
+                        let _ = client::send_term_resize(&session_id, cols, rows);
+                        (TermWriter::Remote(stream), session_id, restore)
                     }
                     Err(error) => {
-                        self.ui.status = format!("✗ attach: {error}");
+                        self.ui.status = format!("✗ terminal: {error}");
                         self.dirty = true;
                         return;
                     }
                 }
             }
             Backend::Local(host) => {
-                let receiver = match host.attach(&subtab.id) {
-                    Ok(receiver) => receiver,
-                    Err(error) => {
-                        self.ui.status = format!("✗ attach: {error}");
-                        self.dirty = true;
-                        return;
-                    }
-                };
-                // The local PTY gets the whole real terminal while attached.
-                host.resize_pty(&subtab.id, self.size.0, self.size.1);
-                let done = Arc::new(AtomicBool::new(false));
-                let thread_done = done.clone();
-                let notify = self.sender.clone();
-                thread::spawn(move || {
-                    let mut stdout = std::io::stdout();
-                    loop {
-                        match receiver.recv_timeout(Duration::from_millis(500)) {
-                            Ok(bytes) => {
-                                if stdout.write_all(&bytes).is_err() {
-                                    break;
-                                }
-                                let _ = stdout.flush();
-                            }
-                            Err(RecvTimeoutError::Timeout) => {
-                                if thread_done.load(Ordering::Relaxed) {
-                                    break;
-                                }
-                            }
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        }
-                    }
-                    let _ = notify.send(Event::AttachEnded);
-                });
-                AttachState::Local { subtab_id: subtab.id.clone(), done }
+                if let Err(error) = host.ensure_pty(&subtab.id) {
+                    self.ui.status = format!("✗ terminal: {error}");
+                    self.dirty = true;
+                    return;
+                }
+                host.resize_pty(&subtab.id, cols, rows);
+                (TermWriter::Local(subtab.id.clone()), subtab.id.clone(), None)
             }
         };
 
-        term::leave_ui_screen();
-        let mut stdout = std::io::stdout();
-        let start = tail.len().saturating_sub(ATTACH_TAIL_LINES);
-        for line in &tail[start..] {
-            let _ = stdout.write_all(line.as_bytes());
-            let _ = stdout.write_all(b"\r\n");
-        }
-        let _ = stdout.write_all(
-            b"\x1b[7m attached \xe2\x80\x94 Ctrl+] detaches \x1b[0m\r\n",
-        );
-        let _ = stdout.flush();
-        self.attach = Some(attach);
-    }
-
-    fn end_attach(&mut self, reason: &str) {
-        match self.attach.take() {
-            Some(AttachState::Remote(stream)) => {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-            Some(AttachState::Local { subtab_id, done }) => {
-                done.store(true, Ordering::Relaxed);
-                let (cols, rows) = self.panel_area();
-                if let Backend::Local(host) = &mut self.backend {
-                    host.set_panel_size(cols, rows);
-                    host.resize_pty(&subtab_id, cols, rows.saturating_sub(1));
+        let stop = Arc::new(AtomicBool::new(false));
+        match &writer {
+            TermWriter::Remote(stream) => {
+                if let Ok(mut reader) = stream.try_clone() {
+                    let events = self.sender.clone();
+                    thread::spawn(move || {
+                        let mut chunk = [0_u8; 8192];
+                        loop {
+                            match reader.read(&mut chunk) {
+                                Ok(0) | Err(_) => break,
+                                Ok(count) => {
+                                    if events.send(Event::TermBytes(chunk[..count].to_vec())).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        let _ = events.send(Event::TermEnded);
+                    });
                 }
             }
-            None => {}
+            TermWriter::Local(subtab_id) => {
+                let receiver = match self.backend {
+                    Backend::Local(ref mut host) => host.attach(subtab_id),
+                    Backend::Remote => unreachable!("local writer implies local backend"),
+                };
+                match receiver {
+                    Ok(receiver) => {
+                        let events = self.sender.clone();
+                        let thread_stop = stop.clone();
+                        thread::spawn(move || {
+                            loop {
+                                match receiver.recv_timeout(Duration::from_millis(500)) {
+                                    Ok(bytes) => {
+                                        if events.send(Event::TermBytes(bytes)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(RecvTimeoutError::Timeout) => {
+                                        if thread_stop.load(Ordering::Relaxed) {
+                                            break;
+                                        }
+                                    }
+                                    Err(RecvTimeoutError::Disconnected) => break,
+                                }
+                            }
+                            let _ = events.send(Event::TermEnded);
+                        });
+                    }
+                    Err(error) => {
+                        self.ui.status = format!("✗ terminal: {error}");
+                        self.dirty = true;
+                        return;
+                    }
+                }
+            }
         }
-        term::enter_ui_screen();
+
+        let mut emu = vt::VtScreen::new(cols as usize, rows as usize);
+        emu.feed_str(tail_lines(&seed, TERM_SEED_LINES));
+        self.term = Some(TermLive { emu, writer, stop, session_id, restore });
+        self.want_term = false;
+        self.ui.term_mode = true;
+        self.ui.terminal_scroll = 0;
+        self.ui.status.clear();
+        self.dirty = true;
+    }
+
+    fn exit_terminal_mode(&mut self, reason: &str) {
+        let Some(live) = self.term.take() else {
+            self.want_term = false;
+            return;
+        };
+        live.stop.store(true, Ordering::Relaxed);
+        match live.writer {
+            TermWriter::Remote(stream) => {
+                let _ = stream.shutdown(Shutdown::Both);
+                if let Some((cols, rows)) = live.restore {
+                    let _ = client::send_term_resize(&live.session_id, cols, rows);
+                }
+            }
+            TermWriter::Local(_) => {}
+        }
+        self.want_term = false;
+        self.ui.term_mode = false;
+        self.ui.term_lines.clear();
         self.ui.status = reason.to_string();
         self.rebuild_local_snapshot();
         self.dirty = true;
     }
 
-    fn handle_attached_input(&mut self, bytes: &[u8]) {
-        let detach_at = bytes.iter().position(|byte| *byte == DETACH_BYTE);
-        let payload = &bytes[..detach_at.unwrap_or(bytes.len())];
-        match self.attach.as_mut() {
-            Some(AttachState::Remote(stream)) => {
-                let _ = stream.write_all(payload);
-            }
-            Some(AttachState::Local { subtab_id, .. }) => {
-                let subtab_id = subtab_id.clone();
-                if let Backend::Local(host) = &mut self.backend {
-                    let _ = host.write_pty(&subtab_id, payload);
+    fn write_terminal(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let Some(live) = self.term.as_mut() else { return };
+        match &mut live.writer {
+            TermWriter::Remote(stream) => {
+                if stream.write_all(bytes).is_err() {
+                    self.exit_terminal_mode("terminal connection closed");
                 }
             }
-            None => {}
+            TermWriter::Local(subtab_id) => {
+                let subtab_id = subtab_id.clone();
+                if let Backend::Local(host) = &mut self.backend {
+                    if let Err(error) = host.write_pty(&subtab_id, bytes) {
+                        self.exit_terminal_mode(&format!("✗ {error}"));
+                    }
+                }
+            }
         }
-        if detach_at.is_some() {
-            self.end_attach("detached");
+    }
+
+    /// Terminal mode input: mouse reports stay with the TUI (tabs, wheel,
+    /// selection); every other byte goes raw to the PTY. Ctrl+B leaves.
+    fn handle_terminal_input(&mut self, bytes: &[u8]) {
+        let (mice, raw) = split_terminal_input(bytes);
+        if let Some(position) = raw.iter().position(|byte| *byte == NORMAL_MODE_BYTE) {
+            self.write_terminal(&raw[..position]);
+            self.exit_terminal_mode("");
+        } else {
+            // Typing snaps the view back to the live screen.
+            if !raw.is_empty() && self.ui.terminal_scroll > 0 {
+                self.ui.terminal_scroll = 0;
+                self.dirty = true;
+            }
+            self.write_terminal(&raw);
+        }
+        for mouse in mice {
+            self.handle_mouse(mouse);
         }
     }
 
@@ -368,6 +420,10 @@ impl App {
     }
 
     fn run_click_action(&mut self, action: Action) {
+        // Leaving the terminal panel by clicking elsewhere exits raw mode.
+        if self.term.is_some() && !matches!(action, Action::FocusTerminal) {
+            self.exit_terminal_mode("");
+        }
         match action {
             Action::SelectWorkspace(id) => self.send(&format!("tab select {id}")),
             Action::SelectSubtab(id) => {
@@ -379,16 +435,31 @@ impl App {
                     host.reload_clipboard();
                     self.rebuild_local_snapshot();
                 }
+                self.enter_terminal_mode_if_terminal();
             }
             Action::SortBy(key) => self.send(&format!("system sort {key}")),
-            Action::FocusTerminal => {
-                self.ui.mode = Mode::RunCommand;
-                self.ui.input.clear();
-                self.dirty = true;
-            }
+            Action::FocusTerminal => self.enter_terminal_mode(),
             Action::SelectProcess(pid) => self.send(&format!("system select {pid}")),
             Action::CopyClipboardItem(id) => self.send(&format!("clipboard copy-item {id}")),
             Action::SystemArea | Action::ClipboardArea => {}
+        }
+    }
+
+    /// Selecting a terminal subtab drops straight into typing, like the GUI.
+    /// Remote selection lands with the next snapshot, so flag the intent and
+    /// let the snapshot handler complete it.
+    fn enter_terminal_mode_if_terminal(&mut self) {
+        match self.backend {
+            Backend::Local(_) => {
+                if self
+                    .snapshot
+                    .active_subtab()
+                    .is_some_and(|subtab| subtab.kind == "terminal")
+                {
+                    self.enter_terminal_mode();
+                }
+            }
+            Backend::Remote => self.want_term = true,
         }
     }
 
@@ -503,14 +574,6 @@ impl App {
                             self.send(input.trim());
                         }
                     }
-                    Mode::RunCommand => {
-                        if !input.trim().is_empty() {
-                            self.ui.terminal_scroll = 0;
-                            self.send(&format!("terminal run {input}"));
-                            // Stay ready for the next command, like a prompt.
-                            self.ui.mode = Mode::RunCommand;
-                        }
-                    }
                     Mode::Search => {
                         self.send(&format!("system search {input}"));
                     }
@@ -564,12 +627,9 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Key::Char('r') | Key::Enter if panel == "terminal" => {
-                self.ui.mode = Mode::RunCommand;
-                self.ui.input.clear();
-                self.dirty = true;
+            Key::Char('r') | Key::Char('i') | Key::Char('a') | Key::Enter if panel == "terminal" => {
+                self.enter_terminal_mode();
             }
-            Key::Char('a') if panel == "terminal" => self.start_attach(),
             Key::PageUp if panel == "terminal" => {
                 self.handle_wheel(Mouse { kind: MouseKind::WheelUp, x: 0, y: 6 }, true);
             }
@@ -599,8 +659,8 @@ impl App {
     }
 
     fn handle_input(&mut self, bytes: Vec<u8>) {
-        if self.attach.is_some() {
-            self.handle_attached_input(&bytes);
+        if self.term.is_some() && self.ui.mode == Mode::Normal {
+            self.handle_terminal_input(&bytes);
             return;
         }
         for event in parse_events(&bytes) {
@@ -625,6 +685,16 @@ impl App {
                 }
                 self.ui.connected = true;
                 self.snapshot = *snapshot;
+                if self.want_term && self.term.is_none() {
+                    match self.snapshot.active_subtab() {
+                        Some(subtab) if subtab.kind == "terminal" => {
+                            if self.snapshot.terminals.contains_key(&subtab.id) {
+                                self.enter_terminal_mode();
+                            }
+                        }
+                        _ => self.want_term = false,
+                    }
+                }
                 self.dirty = true;
             }
             Event::WatchDown(reason) => {
@@ -637,9 +707,15 @@ impl App {
             }
             Event::Input(bytes) => self.handle_input(bytes),
             Event::StdinClosed => self.quit = true,
-            Event::AttachEnded => {
-                if self.attach.is_some() {
-                    self.end_attach("terminal session ended");
+            Event::TermBytes(bytes) => {
+                if let Some(live) = self.term.as_mut() {
+                    live.emu.feed(&bytes);
+                    self.dirty = true;
+                }
+            }
+            Event::TermEnded => {
+                if self.term.is_some() {
+                    self.exit_terminal_mode("terminal session ended");
                 }
             }
         }
@@ -657,9 +733,22 @@ impl App {
         if size != self.size {
             self.size = size;
             let (cols, rows) = self.panel_area();
-            if self.attach.is_none() {
-                if let Backend::Local(host) = &mut self.backend {
-                    host.set_panel_size(cols, rows.saturating_sub(1));
+            if let Backend::Local(host) = &mut self.backend {
+                host.set_panel_size(cols, rows.saturating_sub(1));
+            }
+            let (term_cols, term_rows) = self.term_grid();
+            if let Some(live) = self.term.as_mut() {
+                live.emu.resize(term_cols as usize, term_rows as usize);
+                match &live.writer {
+                    TermWriter::Remote(_) => {
+                        let _ = client::send_term_resize(&live.session_id, term_cols, term_rows);
+                    }
+                    TermWriter::Local(subtab_id) => {
+                        let subtab_id = subtab_id.clone();
+                        if let Backend::Local(host) = &mut self.backend {
+                            host.resize_pty(&subtab_id, term_cols, term_rows);
+                        }
+                    }
                 }
             }
             self.dirty = true;
@@ -667,9 +756,17 @@ impl App {
     }
 
     fn draw(&mut self) {
-        if !self.dirty || self.attach.is_some() || self.quit {
+        if !self.dirty || self.quit {
             return;
         }
+        self.ui.term_mode = self.term.is_some();
+        self.ui.term_lines = match self.term.as_ref() {
+            Some(live) if self.ui.terminal_scroll == 0 => {
+                let cursor = live.emu.cursor_visible.then(|| live.emu.cursor());
+                live.emu.styled_lines(cursor)
+            }
+            _ => Vec::new(),
+        };
         let Frame { text, plain, regions } = screen::render_frame(&self.snapshot, &self.ui, self.size);
         term::draw_frame(&text);
         self.frame_plain = plain;
@@ -697,8 +794,8 @@ fn event_loop(receiver: &Receiver<Event>, mut app: App) {
         app.tick();
         app.draw();
     }
-    if app.attach.is_some() {
-        app.end_attach("");
+    if app.term.is_some() {
+        app.exit_terminal_mode("");
     }
 }
 
@@ -725,7 +822,8 @@ pub fn run() -> Result<(), String> {
         },
         frame_plain: Vec::new(),
         frame_regions: Vec::new(),
-        attach: None,
+        term: None,
+        want_term: false,
         size: term::terminal_size(),
         dirty: true,
         quit: false,

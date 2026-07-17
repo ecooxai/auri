@@ -151,6 +151,50 @@ export function reduceState(state, event) {
       const tabs = items.map(workspaceFromSession);
       return { ...state, tabs, activeTabId: tabs[0].id };
     }
+    // Hosted web mirror: reshape the local workspace tree to the desktop
+    // window's published snapshot. Snapshot ids win; local-only panel state
+    // (folder entries, viewer, drafts) survives for ids that persist.
+    case "MIRROR_WORKSPACES_SYNC": {
+      const snapshot = event.payload?.snapshot;
+      const mirrored = Array.isArray(snapshot?.workspaces) ? snapshot.workspaces : [];
+      if (!mirrored.length) return state;
+      const existingTabs = new Map(state.tabs.map((tab) => [tab.id, tab]));
+      const tabs = mirrored.map((workspace) => {
+        const current = existingTabs.get(workspace.id);
+        const existingSubtabs = new Map((current?.subtabs || []).map((subtab) => [subtab.id, subtab]));
+        const subtabs = (Array.isArray(workspace.subtabs) ? workspace.subtabs : []).map((subtab) => {
+          const local = existingSubtabs.get(subtab.id) || createSubtab(subtab.type, { id: subtab.id });
+          return {
+            ...local,
+            type: subtab.type,
+            title: subtab.title || local.title,
+            ...(subtab.type === "terminal" ? { cwd: subtab.cwd || local.cwd || "~" } : {}),
+            ...(subtab.type === "webview" ? { url: subtab.url ?? local.url } : {})
+          };
+        });
+        const base = current || createWorkspace(workspace.title || "Home");
+        return {
+          ...base,
+          id: workspace.id,
+          title: workspace.title || base.title,
+          activeSubtabId: subtabs.some((subtab) => subtab.id === workspace.activeSubtabId)
+            ? workspace.activeSubtabId
+            : subtabs[0]?.id || base.activeSubtabId,
+          subtabs: subtabs.length ? subtabs : base.subtabs,
+          folder: { ...base.folder, path: workspace.folderPath || base.folder.path },
+          terminal: {
+            ...base.terminal,
+            cwd: workspace.terminal?.cwd || base.terminal.cwd,
+            running: Boolean(workspace.terminal?.running),
+            commandHistory: Array.isArray(workspace.terminal?.commandHistory)
+              ? workspace.terminal.commandHistory
+              : base.terminal.commandHistory
+          }
+        };
+      });
+      const activeTabId = tabs.some((tab) => tab.id === snapshot.activeTabId) ? snapshot.activeTabId : tabs[0].id;
+      return { ...state, tabs, activeTabId };
+    }
     case "TAB_NEW": {
       const workspace = createWorkspace(event.payload?.title || `Space ${state.tabs.length + 1}`);
       return { ...state, tabs: [...state.tabs, workspace], activeTabId: workspace.id };

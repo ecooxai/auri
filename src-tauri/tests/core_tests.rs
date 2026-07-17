@@ -28,6 +28,9 @@ mod term_bridge;
 #[path = "../src/core/util.rs"]
 mod util;
 
+#[path = "../src/cli/vt.rs"]
+mod vt;
+
 #[path = "../src/core/webserver.rs"]
 mod webserver;
 
@@ -162,6 +165,17 @@ fn state_and_attach_ipc_requests_parse_into_dedicated_variants() {
 }
 
 #[test]
+fn terminal_resize_ipc_requests_parse_session_and_grid() {
+    assert_eq!(
+        ipc::parse_request("__auri_term_resize__:terminal-1-ab:120:32").unwrap(),
+        ipc::IncomingRequest::TerminalResize { session: "terminal-1-ab", cols: 120, rows: 32 }
+    );
+    assert!(ipc::parse_request("__auri_term_resize__:only-session").is_err());
+    assert!(ipc::parse_request("__auri_term_resize__:s:0:10").is_err());
+    assert!(ipc::parse_request("__auri_term_resize__::80:24").is_err());
+}
+
+#[test]
 fn lifecycle_ipc_requests_parse_into_dedicated_variants() {
     assert_eq!(
         ipc::parse_request(ipc::SERVE_UI_REQUEST).unwrap(),
@@ -235,6 +249,128 @@ fn web_invoke_paths_extract_safe_command_names() {
     assert_eq!(webserver::parse_invoke_command("/__auri__/invoke/"), None);
     assert_eq!(webserver::parse_invoke_command("/__auri__/invoke/Bad-Name!"), None);
     assert_eq!(webserver::parse_invoke_command("/src/main.js"), None);
+}
+
+#[test]
+fn vt_screen_renders_plain_lines_with_wrap_and_scroll() {
+    let mut screen = vt::VtScreen::new(10, 3);
+    screen.feed_str("one\r\ntwo\r\nthree\r\nfour");
+    let lines = screen.plain_lines();
+    assert_eq!(lines, vec!["two", "three", "four"]);
+    assert_eq!(screen.cursor(), (4, 2));
+
+    // Wrapping past the last column continues on the next row.
+    let mut screen = vt::VtScreen::new(4, 2);
+    screen.feed_str("abcdef");
+    assert_eq!(screen.plain_lines(), vec!["abcd", "ef"]);
+}
+
+#[test]
+fn vt_screen_honors_cursor_addressing_like_top_redraws() {
+    let mut screen = vt::VtScreen::new(20, 4);
+    screen.feed_str("aaaa\r\nbbbb\r\ncccc\r\ndddd");
+    // Home, clear-to-end-of-line, overwrite: how top refreshes a header.
+    screen.feed_str("\x1b[H\x1b[KProcesses: 42");
+    let lines = screen.plain_lines();
+    assert_eq!(lines[0], "Processes: 42");
+    assert_eq!(lines[1], "bbbb");
+    // Absolute positioning row 3 column 2.
+    screen.feed_str("\x1b[3;2HX");
+    assert_eq!(screen.plain_lines()[2], "cXcc");
+    // Clear the whole screen.
+    screen.feed_str("\x1b[2J\x1b[H");
+    assert!(screen.plain_lines().iter().all(|line| line.is_empty()));
+}
+
+#[test]
+fn vt_screen_keeps_sgr_styles_and_survives_split_escapes() {
+    let mut screen = vt::VtScreen::new(20, 2);
+    screen.feed_str("\x1b[31mred");
+    let styled = screen.styled_lines(None);
+    assert!(styled[0].contains("\u{1b}[31m"), "row keeps the color: {}", styled[0]);
+    assert!(styled[0].contains("red"));
+
+    // An escape split across two feeds must not leak or corrupt.
+    let mut screen = vt::VtScreen::new(20, 2);
+    screen.feed_str("\x1b[3");
+    screen.feed_str("2mgreen");
+    assert_eq!(screen.plain_lines()[0], "green");
+    assert!(screen.styled_lines(None)[0].contains("\u{1b}[32m"));
+}
+
+#[test]
+fn vt_screen_supports_alt_screen_round_trip_and_resize() {
+    let mut screen = vt::VtScreen::new(10, 3);
+    screen.feed_str("shell$");
+    screen.feed_str("\x1b[?1049h\x1b[Hvim");
+    assert_eq!(screen.plain_lines()[0], "vim");
+    screen.feed_str("\x1b[?1049l");
+    assert_eq!(screen.plain_lines()[0], "shell$");
+
+    screen.resize(6, 2);
+    assert_eq!(screen.plain_lines().len(), 2);
+    screen.feed_str("\r\nok");
+    assert_eq!(screen.plain_lines()[1], "ok");
+}
+
+#[test]
+fn vt_screen_scroll_region_and_reverse_index_behave() {
+    let mut screen = vt::VtScreen::new(8, 4);
+    screen.feed_str("a\r\nb\r\nc\r\nd");
+    // Restrict scrolling to rows 2..3, then scroll up inside it.
+    screen.feed_str("\x1b[2;3r\x1b[3;1H\ne");
+    let lines = screen.plain_lines();
+    assert_eq!(lines[0], "a", "rows outside the region stay put");
+    assert_eq!(lines[3], "d");
+    // Reverse index at the top of the region scrolls the region down.
+    screen.feed_str("\x1b[2;1H\x1bM");
+    assert_eq!(screen.plain_lines()[0], "a");
+}
+
+#[test]
+fn terminal_seed_takes_only_the_last_lines() {
+    let text = (1..=250).map(|line| format!("line {line}\n")).collect::<String>();
+    let tail = vt::tail_lines(&text, 100);
+    assert!(tail.starts_with("line 151\n"), "keeps exactly the last 100 lines");
+    assert!(tail.ends_with("line 250\n"));
+    assert_eq!(vt::tail_lines("short", 100), "short");
+}
+
+#[test]
+fn terminal_mode_frame_renders_the_live_vt_grid_and_mode_hint() {
+    let mut snapshot = sample_snapshot();
+    snapshot.active_subtab_id = "sub-term".to_string();
+    snapshot.workspaces[0].active_subtab_id = "sub-term".to_string();
+    snapshot.workspaces[0].subtabs[0].active = true;
+    snapshot.workspaces[0].subtabs[1].active = false;
+    let ui = screen::UiState {
+        term_mode: true,
+        term_lines: vec!["top - 12:00 up".to_string(), "PID USER".to_string()],
+        ..screen::UiState::default()
+    };
+    let frame = screen::render_frame(&snapshot, &ui, (80, 12));
+    assert!(frame.plain.iter().any(|row| row.contains("top - 12:00 up")), "live grid renders");
+    assert!(frame.plain.iter().any(|row| row.contains("Ctrl+B")), "the exit hint is visible");
+    assert!(
+        frame.plain.iter().any(|row| row.contains("TERMINAL")),
+        "the status row shows terminal mode"
+    );
+    // No second echoed input line: the run-command prompt is gone.
+    assert!(!frame.plain.iter().any(|row| row.contains("run ❯")));
+}
+
+#[test]
+fn terminal_input_splits_mouse_reports_from_raw_passthrough_bytes() {
+    // A mouse click sequence embedded between typed characters: the mouse
+    // event is parsed for the TUI, the rest passes through untouched.
+    let bytes = b"ab\x1b[<0;5;6Mcd\x1b[A";
+    let (mice, raw) = input::split_terminal_input(bytes);
+    assert_eq!(mice.len(), 1);
+    assert_eq!((mice[0].x, mice[0].y), (4, 5));
+    assert_eq!(raw, b"abcd\x1b[A".to_vec(), "non-mouse bytes pass through in order");
+    let (no_mice, untouched) = input::split_terminal_input(b"plain \x1b[A arrows");
+    assert!(no_mice.is_empty());
+    assert_eq!(untouched, b"plain \x1b[A arrows".to_vec());
 }
 
 #[test]
@@ -412,7 +548,10 @@ fn screen_frame_mirrors_workspaces_subtabs_and_the_system_monitor() {
     let ui = screen::UiState::default();
     let frame = screen::render_frame(&snapshot, &ui, (100, 30));
 
-    assert!(frame.text.contains("Home"), "workspace list renders");
+    assert!(
+        frame.plain.iter().any(|row| row.contains("1 projects")),
+        "workspace list renders as number + folder"
+    );
     assert!(frame.text.contains("System"), "subtab bar renders");
     assert!(frame.text.contains("node"), "process table renders");
     assert!(frame.text.contains("42"), "pid renders");
@@ -504,6 +643,18 @@ fn sample_snapshot() -> view_model::SnapshotView {
 }
 
 #[test]
+fn workspace_labels_use_left_index_numbers_instead_of_space_names() {
+    // Default titles ("Home", "Space N") collapse to just the number; the
+    // folder name next to it carries the meaning. Custom titles stay.
+    assert_eq!(screen::workspace_label(1, "Home"), "1");
+    assert_eq!(screen::workspace_label(2, "Space 2"), "2");
+    assert_eq!(screen::workspace_label(1, "Space 12"), "1");
+    assert_eq!(screen::workspace_label(3, ""), "3");
+    assert_eq!(screen::workspace_label(2, "Notes"), "2 Notes");
+    assert_eq!(screen::workspace_label(2, "Space station"), "2 Space station");
+}
+
+#[test]
 fn frame_puts_workspaces_with_folder_names_above_the_subtab_bar_and_exposes_click_regions() {
     let snapshot = sample_snapshot();
     let ui = screen::UiState::default();
@@ -512,18 +663,21 @@ fn frame_puts_workspaces_with_folder_names_above_the_subtab_bar_and_exposes_clic
     let workspace_row = frame
         .plain
         .iter()
-        .position(|row| row.contains("Home") && row.contains("tem"))
-        .expect("workspace chips show the space name with its folder name");
+        .position(|row| row.contains("1 tem") && row.contains("2 demo"))
+        .expect("workspace chips show an index number with the folder name");
     let subtab_row = frame
         .plain
         .iter()
         .position(|row| row.contains("Terminal") && row.contains("System"))
         .expect("subtab bar renders");
     assert!(workspace_row < subtab_row, "workspaces sit above the subtab bar");
-    assert!(frame.plain[workspace_row].contains("Space 2"), "workspaces lay out horizontally");
+    assert!(
+        !frame.plain[workspace_row].contains("Space 2") && !frame.plain[workspace_row].contains("Home"),
+        "default space names stay out of the tab bar"
+    );
 
     let click = |x: usize, y: usize| screen::hit_test(&frame.regions, x, y).cloned();
-    let workspace_x = frame.plain[workspace_row].find("Space 2").unwrap();
+    let workspace_x = frame.plain[workspace_row].find("2 demo").unwrap();
     assert_eq!(
         click(workspace_x + 1, workspace_row),
         Some(screen::Action::SelectWorkspace("tab-2".to_string()))
@@ -563,6 +717,8 @@ fn terminal_panel_regions_cover_the_buffer_area_for_click_focus_and_selection() 
         view_model::TerminalBufferView {
             session_id: "session-1".to_string(),
             text: (1..=40).map(|line| format!("line {line}\r\n")).collect(),
+            cols: 0,
+            rows: 0,
         },
     );
     let ui = screen::UiState::default();

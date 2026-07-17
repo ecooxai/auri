@@ -43,6 +43,10 @@ pub struct SubtabView {
 pub struct TerminalBufferView {
     pub session_id: String,
     pub text: String,
+    /// The GUI emulator grid, when known (0 = unknown); the TUI restores it
+    /// after resizing the shared PTY for its own panel.
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Default)]
