@@ -179,6 +179,12 @@ fn terminal_stop(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn sync_app_state(json: String) -> Result<(), String> {
+    core::state_sync::publish(json);
+    Ok(())
+}
+
+#[tauri::command]
 fn capture_screenshot() -> Result<files::BinaryFile, String> {
     capture::screenshot()
 }
@@ -769,6 +775,7 @@ pub fn run() {
             terminal_busy,
             terminal_resize,
             terminal_stop,
+            sync_app_state,
             window_start_dragging,
             window_set_visible_on_all_workspaces,
             capture_screenshot,

@@ -439,6 +439,13 @@ export function reduceState(state, event) {
       const processPage = clampSystemProcessPage(state.system.processPage, systemProcessesForPage(state, snapshot), state.system.filter);
       return { ...state, system: { ...state.system, status: "ready", error: null, snapshot, processPage } };
     }
+    case "SYSTEM_SNAPSHOT_TRIM": {
+      // A backgrounded monitor keeps only the light metrics in memory; the
+      // process and GPU lists are re-fetched when the monitor is refocused.
+      const snapshot = state.system.snapshot;
+      if (!snapshot || !(snapshot.processes?.length || snapshot.gpus?.length)) return state;
+      return { ...state, system: { ...state.system, snapshot: { ...snapshot, processes: [], gpus: [] } } };
+    }
     case "SYSTEM_SORT_SET": {
       const sortBy = event.payload.sortBy || "cpu";
       const repeatedPriority = sortBy === "priority" && state.system.sortBy === "priority";

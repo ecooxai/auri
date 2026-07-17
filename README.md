@@ -346,6 +346,22 @@ auri info show
 
 Paths or values containing spaces should be quoted. Shell command tails and AI prompt tails preserve their original punctuation and quoting.
 
+## Terminal UI (`auri cli`)
+
+`auri cli` opens an interactive terminal UI that mirrors the running desktop app. Both frontends render the same app state: the GUI publishes a JSON snapshot of every workspace, subtab, terminal buffer, and the system monitor into the native layer after each change, and the TUI watches that stream over the per-instance Unix socket. Selecting a workspace or subtab in one frontend selects it in the other.
+
+- `↑/↓` (or `k/j`) select the workspace, `←/→` or `Tab` select the subtab — the GUI follows.
+- The terminal panel shows the shared terminal buffer. `r` runs a one-line command through `auri terminal run`; `a` attaches the full PTY session raw into your terminal (interactive programs work; `Ctrl+]` detaches; the terminal size follows the GUI window).
+- The System panel mirrors CPU/RAM/NET/DISK metrics and the sorted, filtered process table. `s` cycles the sort, `/` edits the shared search filter, `R` refreshes.
+- `:` runs any Auri command from the registry, `g` focuses the GUI window, `q` quits.
+- Web, viewer, media, and settings subtabs stay selected and in sync but render in the GUI window; the TUI says so instead of pretending.
+
+`auri cli` requires a running Auri app — it is a live mirror, not a second instance. TUI-issued commands use a quiet socket form that does not steal focus to the GUI window.
+
+## Background tabs live as state, not DOM
+
+Only the focused subtab renders. A background terminal releases its emulator and DOM entirely and lives on as its recorded output (the PTY keeps running and the record keeps growing); refocusing replays the record into a fresh emulator. A background web tab writes its state to disk and drops its WebKit content process after a ~2 s grace period, and is recreated from that state on focus. Leaving the System monitor drops the heavy process list from memory and re-fetches it on return. The same recorded state feeds the JSON snapshot that the CLI/TUI mirrors.
+
 ## Error handling
 
 Expected failures are shown both near the current interaction and in the Info subtab. Network errors, missing API keys, unsupported media capabilities, file access failures, malformed assistant output, and native capability failures should never silently disappear. A fallback message belongs in Info whenever content cannot be rendered in its intended panel.

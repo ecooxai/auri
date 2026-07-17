@@ -93,6 +93,7 @@ pub fn start(
                             data: buffer[..count].to_vec(),
                         },
                     );
+                    super::term_bridge::forward(&session_id, &buffer[..count]);
                 }
             }
         }
@@ -105,9 +106,17 @@ pub fn start(
         if let Ok(mut sessions) = SESSIONS.lock() {
             sessions.remove(&session_id);
         }
+        super::term_bridge::clear(&session_id);
     });
 
     Ok(())
+}
+
+pub fn exists(session_id: &str) -> bool {
+    SESSIONS
+        .lock()
+        .map(|sessions| sessions.contains_key(session_id))
+        .unwrap_or(false)
 }
 
 pub fn write(session_id: &str, data: &[u8]) -> Result<(), String> {

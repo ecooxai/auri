@@ -1,5 +1,6 @@
 import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
+import { appSnapshotJson } from "../model/snapshot.js";
 import { normalizeSystemSnapshot, processPriorityIdentity, protocolForPort } from "../model/system.js";
 import { mergePolledFolderEntries } from "../model/folder.js";
 import { classifyTerminalInput } from "../model/presentation.js";
@@ -47,7 +48,14 @@ function scheduleFrame(callback) {
 
 // A web tab left in the background this long has its native webview written to
 // disk and destroyed so its WebKit content process stops consuming memory.
-const WEBVIEW_SLEEP_DELAY_MS = 30_000;
+// Short grace period: an unfocused web tab drops its WebKit content process
+// almost immediately (state persists to disk), while still surviving an
+// accidental tab flip without a reload.
+const WEBVIEW_SLEEP_DELAY_MS = 2_000;
+
+// Cadence for mirroring the app-state JSON into the native layer for the
+// external CLI/TUI. Terminal output can be chatty, so pushes are throttled.
+const STATE_SYNC_DELAY_MS = 200;
 
 function isMacNavigationText(value) {
   return [...String(value ?? "")].some((character) => {
@@ -100,6 +108,10 @@ function systemSnapshotAgeMs(snapshot) {
 
 const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "WORKDIR_SET", "FOLDER_PATH_SET", "TERMINAL_COMMAND_REMEMBER"]);
 
+// Events that can move focus off the System monitor; leaving it drops the
+// heavy process list from state until the monitor is refocused.
+const SUBTAB_SWITCH_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "SUBTAB_NEW", "SUBTAB_SELECT", "SUBTAB_CLOSE"]);
+
 function attachmentPreviewUrl(file, kind) {
   if (kind === "file" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
   try {
@@ -137,7 +149,7 @@ function requestMediaPreview(item, index = 0) {
 }
 
 export class AppController {
-  constructor({ view, backend, terminalSessionFactory, webviewSleepDelayMs }) {
+  constructor({ view, backend, terminalSessionFactory, webviewSleepDelayMs, stateSyncDelayMs }) {
     this.view = view;
     this.backend = backend;
     this.state = createInitialState();
@@ -206,6 +218,44 @@ export class AppController {
     this.pendingOpenFiles = [];
     this.pendingOpenFilesDrain = null;
     this.pendingOpenFilesDrainRequested = false;
+    this.stateSyncDelayMs = Number.isFinite(stateSyncDelayMs) ? stateSyncDelayMs : STATE_SYNC_DELAY_MS;
+    this.stateSyncTimer = null;
+    this.stateSyncSeq = 0;
+  }
+
+  // The whole app state (including background terminal buffers) is mirrored as
+  // one JSON line into the native layer, where the external CLI/TUI reads and
+  // watches it. Trailing throttle: at most one push per window, never lost.
+  scheduleStateSync() {
+    if (!this.native || !this.backend.syncAppState) return;
+    if (this.stateSyncTimer) return;
+    this.stateSyncTimer = setTimeout(() => {
+      this.stateSyncTimer = null;
+      this.pushStateSnapshot().catch((error) => {
+        // Not reportError: a failing push must not dispatch and reschedule itself.
+        console.error("Could not sync app state", error);
+      });
+    }, this.stateSyncDelayMs);
+    this.stateSyncTimer.unref?.();
+  }
+
+  terminalBufferSnapshots() {
+    const buffers = {};
+    for (const [subtabId, session] of this.terminalSessions) {
+      buffers[subtabId] = { sessionId: session.sessionId || "", text: session.bufferText?.() || "" };
+    }
+    return buffers;
+  }
+
+  async pushStateSnapshot() {
+    if (!this.native || !this.backend.syncAppState) return false;
+    this.stateSyncSeq += 1;
+    const json = appSnapshotJson(this.state, {
+      seq: this.stateSyncSeq,
+      terminalBuffers: this.terminalBufferSnapshots()
+    });
+    await this.backend.syncAppState(json);
+    return true;
   }
 
   context() {
@@ -310,6 +360,7 @@ export class AppController {
       releasePreview: (preview) => this.backend.releaseFileView?.(preview?.url)
     });
     session.onCwdChange = (path) => this.handleTerminalCwdChange(target.workspace.id, target.subtab.id, path);
+    session.onOutput = () => this.scheduleStateSync();
     session.initializePromise = Promise.resolve(session.initialize()).catch((error) => {
       this.reportError("Terminal", error);
       return false;
@@ -452,6 +503,9 @@ export class AppController {
         this.forgetNativeWebview(id);
       }
     }
+    if (SUBTAB_SWITCH_EVENTS.has(event.type) && !this.isSystemMonitorActive()) {
+      this.state = reduceState(this.state, { type: "SYSTEM_SNAPSHOT_TRIM" });
+    }
     const targetWorkspaceId = event.payload?.workspaceId || this.state.activeTabId;
     const shouldFocusTerminal = Boolean(
       options.focusTerminal
@@ -465,6 +519,7 @@ export class AppController {
     if (this.configurationReady && WORKSPACE_PERSIST_EVENTS.has(event.type)) {
       this.persistConfiguration().catch((error) => this.reportError("Workspace save", error));
     }
+    this.scheduleStateSync();
   }
 
   render(options = {}) {
@@ -484,12 +539,23 @@ export class AppController {
         });
       }
     }
+    this.sleepBackgroundTerminals();
     scheduleFrame(() => this.syncNativeWebview().catch((error) => this.reportError("Webview", error)));
     scheduleFrame(() => this.syncRecorderUi());
     this.syncSystemMonitorPolling();
     const snapshotFresh = systemSnapshotAgeMs(this.state.system?.snapshot) < 4000;
     if (this.backend.systemSnapshot && this.isSystemMonitorActive() && this.state.system.status === "idle" && !snapshotFresh) {
       scheduleFrame(() => this.refreshSystemMonitor().catch((error) => this.reportError("System", error)));
+    }
+  }
+
+  // Background terminals must not keep an emulator alive: their state stays
+  // in the session's recorded output (and the JSON snapshot) until refocused.
+  sleepBackgroundTerminals() {
+    const active = activeSubtab(this.state);
+    const focusedId = active?.type === "terminal" ? active.id : null;
+    for (const [id, session] of this.terminalSessions) {
+      if (id !== focusedId) session.sleep?.();
     }
   }
 
@@ -507,6 +573,7 @@ export class AppController {
       this.dispatch(event, { preserveInput: true });
     } else {
       this.state = reduceState(this.state, event);
+      this.scheduleStateSync();
     }
   }
 
@@ -569,7 +636,13 @@ export class AppController {
     if (!Object.keys(rules).length || !this.backend.systemSnapshot) return [];
     const snapshot = normalizeSystemSnapshot(await this.backend.systemSnapshot({ includeGpus: Boolean(this.state.system.gpuMode) }));
     this.applySystemMonitorEvent({ type: "SYSTEM_SNAPSHOT_SET", payload: { snapshot } }, { render: false });
-    return this.applySavedProcessPriorities(snapshot);
+    const results = await this.applySavedProcessPriorities(snapshot);
+    // Enforcement works from its local snapshot; state only keeps the heavy
+    // process list while the monitor is actually on screen.
+    if (!this.isSystemMonitorActive()) {
+      this.applySystemMonitorEvent({ type: "SYSTEM_SNAPSHOT_TRIM" }, { render: false });
+    }
+    return results;
   }
 
   async applySavedProcessPriorities(snapshot) {
@@ -845,6 +918,7 @@ export class AppController {
       this.startClipboardPolling();
       this.startFolderPolling();
       this.startProcessPriorityEnforcement();
+      this.scheduleStateSync();
       await this.drainPendingOpenFiles();
     } catch (error) {
       this.reportError("Startup", error);

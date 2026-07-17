@@ -45,6 +45,10 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 sha2 = "0.10"
 raw-window-handle = "0.6"
 
+# Raw-mode terminal control (termios/ioctl) for the `auri cli` TUI.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 webkit2gtk = { version = "2", features = ["v2_40"] }

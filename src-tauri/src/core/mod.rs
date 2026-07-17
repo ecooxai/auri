@@ -6,7 +6,9 @@ pub mod ipc;
 pub mod lifecycle;
 pub mod permissions;
 pub mod shell;
+pub mod state_sync;
 pub mod system;
+pub mod term_bridge;
 pub mod util;
 pub mod workspace;
 

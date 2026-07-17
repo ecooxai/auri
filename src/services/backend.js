@@ -295,6 +295,8 @@ export class Backend {
     return listen(eventName, (event) => handler(event.payload));
   }
 
+  async syncAppState(json) { return this.call("sync_app_state", { json }); }
+
   async startTerminal(sessionId, cwd, cols, rows) { return this.call("terminal_start", { sessionId, cwd, cols, rows }); }
   async writeTerminal(sessionId, data) { return this.call("terminal_write", { sessionId, data: Array.from(data) }); }
   async getTerminalCwd(sessionId) { return this.call("terminal_cwd", { sessionId }); }

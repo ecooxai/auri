@@ -35,6 +35,56 @@ test("AppView preserves the same terminal emulator host for each workspace", () 
   assert.equal(replacement, first);
 });
 
+test("AppView drops background terminal hosts so slept terminals leave the DOM", async () => {
+  const { createInitialState, reduceState } = await import("../src/model/state.js");
+  let state = createInitialState();
+  const firstTerminalId = state.tabs[0].subtabs.find((subtab) => subtab.type === "terminal").id;
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "terminal" } });
+  const secondTerminalId = state.tabs[0].activeSubtabId;
+
+  const view = new AppView({ querySelector: () => null });
+  view.terminalHosts.set(firstTerminalId, terminalHost(firstTerminalId));
+  view.terminalHosts.set(secondTerminalId, terminalHost(secondTerminalId));
+  view.pruneTerminalHosts(state);
+
+  assert.equal(view.terminalHosts.has(firstTerminalId), false);
+  assert.equal(view.terminalHosts.has(secondTerminalId), true);
+
+  state = reduceState(state, { type: "SUBTAB_NEW", payload: { type: "system" } });
+  view.pruneTerminalHosts(state);
+  assert.equal(view.terminalHosts.size, 0);
+});
+
+test("TerminalSession.sleep disposes the emulator but keeps recorded output growing for replay", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const encoder = new TextEncoder();
+  const session = new TerminalSession({ isNative: false }, {});
+  session.remember({ type: "bytes", bytes: encoder.encode("hello ") });
+
+  let disposed = 0;
+  session.term = { dispose() { disposed += 1; } };
+  session.fitAddon = {};
+  session.mountedElement = {};
+
+  assert.equal(session.sleep(), true);
+  assert.equal(disposed, 1);
+  assert.equal(session.term, null);
+  assert.equal(session.fitAddon, null);
+  assert.equal(session.mountedElement, null);
+
+  session.appendRecord({ type: "bytes", bytes: encoder.encode("world") });
+  assert.equal(session.bufferText(), "hello world");
+  assert.equal(session.sleep(), false);
+});
+
+test("AppController sleeps every terminal session except the focused one on render", async () => {
+  const source = await readFile("src/controllers/app-controller.js", "utf8");
+  assert.match(source, /sleepBackgroundTerminals\(\)/);
+  const method = source.match(/sleepBackgroundTerminals\(\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+  assert.match(method, /session\.sleep\?\.\(\)/);
+  assert.match(method, /type === "terminal"/);
+});
+
 test("TerminalSession reuses an already-mounted emulator and applies the configured scrollback", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.match(source, /this\.mountedElement === element/);

@@ -65,10 +65,15 @@ export class AppView {
     return preserved;
   }
 
+  // Only the focused terminal keeps a live emulator host. Background
+  // terminals are slept by the controller and live on as recorded output, so
+  // their detached DOM must not be retained here.
   pruneTerminalHosts(state) {
-    const terminalIds = new Set(state.tabs.flatMap((tab) => tab.subtabs.filter((subtab) => subtab.type === "terminal").map((subtab) => subtab.id)));
+    const tab = activeWorkspace(state);
+    const active = tab.subtabs.find((item) => item.id === tab.activeSubtabId);
+    const keepId = active?.type === "terminal" ? active.id : null;
     for (const terminalId of this.terminalHosts.keys()) {
-      if (!terminalIds.has(terminalId)) this.terminalHosts.delete(terminalId);
+      if (terminalId !== keepId) this.terminalHosts.delete(terminalId);
     }
   }
 

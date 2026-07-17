@@ -101,6 +101,12 @@ auri help                                                                      S
 
 When a command accepts paths, prompts, shell syntax, URLs, or secrets, test quoting, whitespace, empty optional values, and malformed input. Preserve raw shell and AI tails where their punctuation is semantically meaningful.
 
+## State snapshot and CLI mirror
+
+- Background subtabs must live as serializable state, never as retained DOM: background terminals sleep (`TerminalSession.sleep()` — PTY and output records stay, emulator and DOM go), background web tabs sleep to disk and drop their WebKit process after a short grace, and leaving the System monitor trims the process list from state.
+- After every state change the controller mirrors the full app state as one JSON line (`src/model/snapshot.js` → `sync_app_state`). The command socket serves it: `__auri_state__` (one-shot), `__auri_watch__` (stream), `__auri_quiet__:<command>` (execute without focusing the GUI), `__auri_term_attach__:<sessionId>` (raw PTY bridge).
+- `auri cli` is a TUI client of that snapshot and socket. It renders state and sends registry commands; it must never reimplement command behavior or fake a panel it cannot render (say "renders in the GUI window" instead).
+
 ## MVC boundaries
 
 - `src/model`: no DOM, network, filesystem, Tauri, or browser globals.

@@ -252,6 +252,7 @@ export class TerminalSession {
     this.cwdMarkerBuffer = "";
     this.cwdRefreshTimer = null;
     this.onCwdChange = null;
+    this.onOutput = null;
     this.renderQueue = Promise.resolve();
     this.assistantStreamAtLineStart = true;
     this.clipboardAbort = null;
@@ -334,6 +335,7 @@ export class TerminalSession {
   appendRecord(record) {
     this.remember(record);
     if (this.term) this.queueRender(record, this.mountGeneration);
+    this.onOutput?.();
   }
 
   queueRender(record, generation) {
@@ -804,6 +806,32 @@ export class TerminalSession {
     if (!this.backend.isNative) return;
     await this.ensureStarted();
     await this.backend.writeTerminal(this.sessionId, encoder.encode(data));
+  }
+
+  // Background terminals live as recorded output only: the emulator and its
+  // DOM are released while the PTY keeps running and appendRecord keeps
+  // capturing output, so a later mount() replays the exact same state.
+  sleep() {
+    if (!this.term) return false;
+    this.mountGeneration += 1;
+    this.clipboardAbort?.abort();
+    this.clipboardAbort = null;
+    this.dismissPreview();
+    this.term.dispose();
+    this.term = null;
+    this.fitAddon = null;
+    this.mountedElement = null;
+    this.renderQueue = Promise.resolve();
+    return true;
+  }
+
+  bufferText() {
+    const decoder = new TextDecoder();
+    let text = "";
+    for (const record of this.output) {
+      if (record.type === "bytes") text += decoder.decode(record.bytes, { stream: true });
+    }
+    return text + decoder.decode();
   }
 
   async stop() {

@@ -4,6 +4,24 @@ mod ipc;
 #[path = "../src/core/lifecycle.rs"]
 mod lifecycle;
 
+#[path = "../src/cli/ansi.rs"]
+mod ansi;
+
+#[path = "../src/cli/input.rs"]
+mod input;
+
+#[path = "../src/cli/view_model.rs"]
+mod view_model;
+
+#[path = "../src/cli/screen.rs"]
+mod screen;
+
+#[path = "../src/core/state_sync.rs"]
+mod state_sync;
+
+#[path = "../src/core/term_bridge.rs"]
+mod term_bridge;
+
 #[path = "../src/core/util.rs"]
 mod util;
 
@@ -108,6 +126,224 @@ fn focus_only_ipc_requests_are_not_dispatched_as_commands() {
         ipc::IncomingRequest::Command("tab new Work")
     );
     assert!(ipc::parse_request("   ").is_err());
+}
+
+#[test]
+fn state_and_attach_ipc_requests_parse_into_dedicated_variants() {
+    assert_eq!(
+        ipc::parse_request(ipc::STATE_REQUEST).unwrap(),
+        ipc::IncomingRequest::StateGet
+    );
+    assert_eq!(
+        ipc::parse_request(ipc::WATCH_REQUEST).unwrap(),
+        ipc::IncomingRequest::StateWatch
+    );
+    assert_eq!(
+        ipc::parse_request("__auri_quiet__:system refresh").unwrap(),
+        ipc::IncomingRequest::QuietCommand("system refresh")
+    );
+    assert_eq!(
+        ipc::parse_request("__auri_term_attach__:terminal-17-abc").unwrap(),
+        ipc::IncomingRequest::TerminalAttach("terminal-17-abc")
+    );
+    assert!(ipc::parse_request("__auri_quiet__:").is_err());
+    assert!(ipc::parse_request("__auri_term_attach__:").is_err());
+}
+
+#[test]
+fn state_sync_store_publishes_serves_and_wakes_watchers() {
+    assert_eq!(state_sync::latest(), None);
+    assert_eq!(
+        state_sync::wait_for_newer(0, std::time::Duration::from_millis(10)),
+        None
+    );
+
+    state_sync::publish("{\"seq\":1}".to_string());
+    let (first_seq, first_json) = state_sync::wait_for_newer(0, std::time::Duration::from_millis(10))
+        .expect("published state is immediately available");
+    assert_eq!(first_json, "{\"seq\":1}");
+    assert_eq!(state_sync::latest(), Some("{\"seq\":1}".to_string()));
+
+    assert_eq!(
+        state_sync::wait_for_newer(first_seq, std::time::Duration::from_millis(30)),
+        None,
+        "watching past the newest sequence times out quietly"
+    );
+
+    let handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        state_sync::publish("{\"seq\":2}".to_string());
+    });
+    let woken = state_sync::wait_for_newer(first_seq, std::time::Duration::from_secs(2))
+        .expect("a later publish wakes the watcher");
+    assert_eq!(woken.1, "{\"seq\":2}");
+    assert!(woken.0 > first_seq);
+    handle.join().unwrap();
+}
+
+#[test]
+fn terminal_text_sanitizer_keeps_colors_and_drops_cursor_control() {
+    // SGR color runs survive; cursor addressing, screen clears, and OSC titles vanish.
+    let lines = ansi::sanitize_terminal_text(
+        "\u{1b}[2J\u{1b}[H\u{1b}]0;title\u{7}\u{1b}[31mred\u{1b}[0m plain\r\nnext\tcol",
+    );
+    assert_eq!(lines, vec!["\u{1b}[31mred\u{1b}[0m plain", "next    col"]);
+
+    // A lone carriage return rewinds the line, like a progress bar does.
+    assert_eq!(
+        ansi::sanitize_terminal_text("progress 10%\rprogress 90%"),
+        vec!["progress 90%"]
+    );
+}
+
+#[test]
+fn visible_width_and_clipping_ignore_color_sequences() {
+    assert_eq!(ansi::visible_width("\u{1b}[32mabc\u{1b}[0m"), 3);
+    let clipped = ansi::clip_visible("\u{1b}[32mabcdef\u{1b}[0m", 4);
+    assert_eq!(ansi::visible_width(&clipped), 4);
+    assert!(clipped.starts_with("\u{1b}[32m"));
+    assert!(clipped.ends_with("\u{1b}[0m"), "clipping must reset styles: {clipped:?}");
+}
+
+#[test]
+fn key_parser_decodes_characters_arrows_and_control_bytes() {
+    use input::Key;
+    assert_eq!(
+        input::parse_keys(b"a"),
+        vec![Key::Char('a')]
+    );
+    assert_eq!(
+        input::parse_keys(b"\x1b[A\x1b[B\x1b[C\x1b[D"),
+        vec![Key::Up, Key::Down, Key::Right, Key::Left]
+    );
+    assert_eq!(
+        input::parse_keys(b"\r\x7f\t"),
+        vec![Key::Enter, Key::Backspace, Key::Tab]
+    );
+    assert_eq!(input::parse_keys(b"\x03"), vec![Key::CtrlC]);
+    assert_eq!(input::parse_keys(b"\x1b"), vec![Key::Escape]);
+    assert_eq!(
+        input::parse_keys(b"\x1b[5~\x1b[6~"),
+        vec![Key::PageUp, Key::PageDown]
+    );
+}
+
+#[test]
+fn screen_formats_bytes_and_rates_for_the_monitor() {
+    assert_eq!(screen::format_bytes(0), "0 B");
+    assert_eq!(screen::format_bytes(2_048), "2.0 KB");
+    assert_eq!(screen::format_bytes(3_500_000), "3.3 MB");
+    assert_eq!(screen::format_bytes(7_000_000_000), "6.5 GB");
+    assert_eq!(screen::format_rate(Some(2_048.0)), "2.0 KB/s");
+    assert_eq!(screen::format_rate(None), "—");
+}
+
+#[test]
+fn screen_frame_mirrors_workspaces_subtabs_and_the_system_monitor() {
+    let snapshot = view_model::SnapshotView {
+        seq: 4,
+        active_tab_id: "tab-1".to_string(),
+        active_subtab_id: "sub-2".to_string(),
+        workspaces: vec![view_model::WorkspaceView {
+            id: "tab-1".to_string(),
+            title: "Home".to_string(),
+            active: true,
+            active_subtab_id: "sub-2".to_string(),
+            folder_path: "~/projects".to_string(),
+            terminal_cwd: "~/projects".to_string(),
+            terminal_running: false,
+            subtabs: vec![
+                view_model::SubtabView {
+                    id: "sub-1".to_string(),
+                    kind: "terminal".to_string(),
+                    title: "Terminal".to_string(),
+                    active: false,
+                    cwd: Some("~/projects".to_string()),
+                    url: None,
+                },
+                view_model::SubtabView {
+                    id: "sub-2".to_string(),
+                    kind: "system".to_string(),
+                    title: "System".to_string(),
+                    active: true,
+                    cwd: None,
+                    url: None,
+                },
+            ],
+        }],
+        terminals: std::collections::HashMap::new(),
+        system: view_model::SystemView {
+            status: "ready".to_string(),
+            sort_by: "cpu".to_string(),
+            sort_direction: "desc".to_string(),
+            filter: String::new(),
+            process_count: 1,
+            metrics: Some(view_model::MetricsView {
+                hostname: "mini".to_string(),
+                os: "macOS".to_string(),
+                cpu_brand: "Apple M4".to_string(),
+                cpu_cores: 10,
+                cpu_usage_percent: Some(12.5),
+                memory_used_bytes: 8_000_000_000,
+                memory_total_bytes: 16_000_000_000,
+                download_bytes_per_second: Some(1_024.0),
+                upload_bytes_per_second: Some(512.0),
+                disk_used_bytes: 500_000_000_000,
+                disk_total_bytes: 1_000_000_000_000,
+                disk_read_bytes_per_second: Some(0.0),
+                disk_write_bytes_per_second: Some(0.0),
+            }),
+            processes: vec![view_model::ProcessView {
+                pid: 42,
+                name: "node".to_string(),
+                cpu_percent: 12.0,
+                memory_bytes: 123_000_000,
+                download_bytes_per_second: 0.0,
+                upload_bytes_per_second: 0.0,
+                read_bytes_per_second: 0.0,
+                write_bytes_per_second: 0.0,
+                ports: vec![3000],
+                priority: Some(0),
+            }],
+        },
+        info: view_model::InfoView { unread: 0, items: vec![] },
+        clipboard_count: 2,
+    };
+    let ui = screen::UiState::default();
+    let frame = screen::render_frame(&snapshot, &ui, (100, 30));
+
+    assert!(frame.contains("Home"), "workspace list renders");
+    assert!(frame.contains("System"), "subtab bar renders");
+    assert!(frame.contains("node"), "process table renders");
+    assert!(frame.contains("42"), "pid renders");
+    assert!(frame.contains("Apple M4"), "cpu metric renders");
+    assert!(frame.contains("12.5"), "cpu usage renders");
+    for line in frame.split("\r\n") {
+        assert!(
+            ansi::visible_width(line) <= 100,
+            "every frame line stays within the terminal width"
+        );
+    }
+}
+
+#[test]
+fn terminal_taps_forward_bytes_and_prune_dropped_receivers() {
+    let receiver = term_bridge::attach("session-a");
+    term_bridge::forward("session-a", b"hello");
+    assert_eq!(receiver.recv().unwrap(), b"hello".to_vec());
+    assert_eq!(term_bridge::tap_count("session-a"), 1);
+
+    drop(receiver);
+    term_bridge::forward("session-a", b"more");
+    assert_eq!(term_bridge::tap_count("session-a"), 0, "dead taps are pruned on forward");
+
+    let survivor = term_bridge::attach("session-a");
+    term_bridge::clear("session-a");
+    assert_eq!(term_bridge::tap_count("session-a"), 0);
+    assert!(
+        survivor.recv().is_err(),
+        "clearing a session disconnects its attached watchers"
+    );
 }
 
 #[test]
