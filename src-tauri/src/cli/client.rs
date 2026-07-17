@@ -16,6 +16,10 @@ const QUIET_PREFIX: &str = "__auri_quiet__:";
 const STATE_REQUEST: &str = "__auri_state__";
 const WATCH_REQUEST: &str = "__auri_watch__";
 const ATTACH_PREFIX: &str = "__auri_term_attach__:";
+const COPY_PREFIX: &str = "__auri_copy__:";
+const SERVE_UI_REQUEST: &str = "__auri_serve_ui__";
+const QUIT_REQUEST: &str = "__auri_quit__";
+const APP_INFO_REQUEST: &str = "__auri_appinfo__";
 
 fn config_directory() -> Result<PathBuf, String> {
     let home = env::var_os("HOME")
@@ -127,6 +131,67 @@ pub fn send_quiet_command(command: &str) -> Result<(), String> {
 /// Bring the GUI window to the front without running a command.
 pub fn focus_gui() -> Result<(), String> {
     expect_ok(round_trip(FOCUS_REQUEST, Duration::from_secs(5))?)
+}
+
+/// Copy base64-encoded text to the system clipboard through the app.
+pub fn send_copy_base64(encoded: &str) -> Result<(), String> {
+    expect_ok(round_trip(&format!("{COPY_PREFIX}{encoded}"), Duration::from_secs(5))?)
+}
+
+/// Ask the running app to host the UI web server; returns the served URL.
+pub fn send_serve_ui() -> Result<String, String> {
+    let response = round_trip(SERVE_UI_REQUEST, Duration::from_secs(10))?;
+    if let Some(url) = response.strip_prefix("ok:") {
+        return Ok(url.trim().to_string());
+    }
+    Err(response
+        .strip_prefix("error:")
+        .unwrap_or(&response)
+        .to_string())
+}
+
+/// Ask the running app to quit (`auri stop`).
+pub fn send_quit() -> Result<(), String> {
+    expect_ok(round_trip(QUIT_REQUEST, Duration::from_secs(5))?)
+}
+
+pub struct AppInfo {
+    pub pid: u32,
+    pub exe: String,
+    pub socket: PathBuf,
+}
+
+/// The running instance's pid, executable, and socket path (`auri restart`).
+pub fn fetch_app_info() -> Result<AppInfo, String> {
+    let (mut stream, socket) = connect_to_running_instance()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(APP_INFO_REQUEST.as_bytes())
+        .map_err(|error| error.to_string())?;
+    stream
+        .shutdown(Shutdown::Write)
+        .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| error.to_string())?;
+    let response = response.trim();
+    if let Some(error) = response.strip_prefix("error:") {
+        return Err(error.to_string());
+    }
+    let value: serde_json::Value = serde_json::from_str(response)
+        .map_err(|error| format!("Unexpected app info reply: {error}"))?;
+    Ok(AppInfo {
+        pid: value.get("pid").and_then(|pid| pid.as_u64()).unwrap_or(0) as u32,
+        exe: value
+            .get("exe")
+            .and_then(|exe| exe.as_str())
+            .unwrap_or("")
+            .to_string(),
+        socket,
+    })
 }
 
 pub fn fetch_state() -> Result<String, String> {

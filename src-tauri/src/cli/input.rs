@@ -1,4 +1,5 @@
-//! Keyboard byte-stream decoding for the raw-mode TUI. Std-only so the
+//! Keyboard and mouse byte-stream decoding for the raw-mode TUI. Mouse
+//! events use SGR reporting (`\x1b[<b;x;yM`). Std-only so the
 //! dependency-light Rust test harness can cover it.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,18 +18,65 @@ pub enum Key {
     CtrlC,
 }
 
-/// Decode a chunk of raw stdin bytes into keys. Unrecognised escape
-/// sequences and stray control bytes are dropped; a lone ESC byte is the
-/// Escape key.
-pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
-    let mut keys = Vec::new();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    Release,
+    Drag,
+    WheelUp,
+    WheelDown,
+}
+
+/// One mouse event with 0-based screen coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mouse {
+    pub kind: MouseKind,
+    pub x: u16,
+    pub y: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    Key(Key),
+    Mouse(Mouse),
+}
+
+fn parse_mouse(sequence: &[u8]) -> Option<Mouse> {
+    // sequence looks like b"<0;5;3M" — SGR mouse report parameters.
+    let body = sequence.strip_prefix(b"<")?;
+    let final_byte = *body.last()?;
+    let text = std::str::from_utf8(&body[..body.len() - 1]).ok()?;
+    let mut parts = text.split(';');
+    let button: u16 = parts.next()?.parse().ok()?;
+    let x: u16 = parts.next()?.parse().ok()?;
+    let y: u16 = parts.next()?.parse().ok()?;
+    let kind = match (button, final_byte) {
+        (64, _) => MouseKind::WheelUp,
+        (65, _) => MouseKind::WheelDown,
+        (_, b'm') => MouseKind::Release,
+        (button, b'M') if button & 32 != 0 => MouseKind::Drag,
+        (button, b'M') if button & 3 != 3 => MouseKind::Press,
+        _ => return None,
+    };
+    Some(Mouse {
+        kind,
+        x: x.saturating_sub(1),
+        y: y.saturating_sub(1),
+    })
+}
+
+/// Decode a chunk of raw stdin bytes into key and mouse events.
+/// Unrecognised escape sequences and stray control bytes are dropped; a lone
+/// ESC byte is the Escape key.
+pub fn parse_events(bytes: &[u8]) -> Vec<Event> {
+    let mut events = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
         match byte {
             0x1b => {
                 if index + 1 >= bytes.len() {
-                    keys.push(Key::Escape);
+                    events.push(Event::Key(Key::Escape));
                     index += 1;
                     continue;
                 }
@@ -38,13 +86,19 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
                         end += 1;
                     }
                     if end < bytes.len() {
-                        match &bytes[index + 2..=end] {
-                            b"A" => keys.push(Key::Up),
-                            b"B" => keys.push(Key::Down),
-                            b"C" => keys.push(Key::Right),
-                            b"D" => keys.push(Key::Left),
-                            b"5~" => keys.push(Key::PageUp),
-                            b"6~" => keys.push(Key::PageDown),
+                        let sequence = &bytes[index + 2..=end];
+                        match sequence {
+                            b"A" => events.push(Event::Key(Key::Up)),
+                            b"B" => events.push(Event::Key(Key::Down)),
+                            b"C" => events.push(Event::Key(Key::Right)),
+                            b"D" => events.push(Event::Key(Key::Left)),
+                            b"5~" => events.push(Event::Key(Key::PageUp)),
+                            b"6~" => events.push(Event::Key(Key::PageDown)),
+                            sequence if sequence.starts_with(b"<") => {
+                                if let Some(mouse) = parse_mouse(sequence) {
+                                    events.push(Event::Mouse(mouse));
+                                }
+                            }
                             _ => {}
                         }
                         index = end + 1;
@@ -53,23 +107,23 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
                     }
                     continue;
                 }
-                keys.push(Key::Escape);
+                events.push(Event::Key(Key::Escape));
                 index += 2;
             }
             b'\r' | b'\n' => {
-                keys.push(Key::Enter);
+                events.push(Event::Key(Key::Enter));
                 index += 1;
             }
             0x7f | 0x08 => {
-                keys.push(Key::Backspace);
+                events.push(Event::Key(Key::Backspace));
                 index += 1;
             }
             b'\t' => {
-                keys.push(Key::Tab);
+                events.push(Event::Key(Key::Tab));
                 index += 1;
             }
             0x03 => {
-                keys.push(Key::CtrlC);
+                events.push(Event::Key(Key::CtrlC));
                 index += 1;
             }
             byte if byte < 0x20 => {
@@ -86,12 +140,22 @@ pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
                 let end = (index + width).min(bytes.len());
                 if let Ok(text) = std::str::from_utf8(&bytes[index..end]) {
                     if let Some(character) = text.chars().next() {
-                        keys.push(Key::Char(character));
+                        events.push(Event::Key(Key::Char(character)));
                     }
                 }
                 index = end;
             }
         }
     }
-    keys
+    events
+}
+
+pub fn parse_keys(bytes: &[u8]) -> Vec<Key> {
+    parse_events(bytes)
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Key(key) => Some(key),
+            Event::Mouse(_) => None,
+        })
+        .collect()
 }

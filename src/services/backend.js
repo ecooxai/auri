@@ -263,6 +263,7 @@ async function blobToBase64(blob) {
 export class Backend {
   constructor() {
     this.invoke = tauriInvoke();
+    this.webBridge = null;
     this.fileViewResources = new Map();
     this.fileServerInfo = null;
     this.fileServerPromise = null;
@@ -276,12 +277,83 @@ export class Backend {
     return Boolean(this.invoke);
   }
 
+  get isHostedWeb() {
+    return Boolean(this.webBridge);
+  }
+
   async call(command, payload = {}) {
     if (!this.invoke) throw new Error("This action needs the native Tauri build.");
     return this.invoke(command, payload);
   }
 
+  // Hosted web mode: the page is served by the Auri app's local web server
+  // (port 8899). Native invokes route over its HTTP bridge and terminal
+  // events arrive over SSE, so the same UI works in a plain browser.
+  async connectHostedWebBridge() {
+    if (this.invoke || typeof window === "undefined" || typeof fetch !== "function") return false;
+    let response;
+    try {
+      response = await fetch("/__auri__/ping", { cache: "no-store" });
+    } catch {
+      return false;
+    }
+    if (!response?.ok) return false;
+    this.webBridge = { listeners: new Map(), tabs: new Map(), source: null };
+    this.invoke = (command, payload = {}) => this.webInvoke(command, payload);
+    this.openWebEventStream();
+    return true;
+  }
+
+  async webInvoke(command, payload = {}) {
+    const response = await fetch(`/__auri__/invoke/${encodeURIComponent(command)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload ?? {})
+    });
+    const data = response && typeof response.json === "function"
+      ? await response.json().catch(() => null)
+      : null;
+    if (!data || typeof data !== "object") throw new Error(`The Auri web bridge returned an unreadable ${command} response.`);
+    if (!data.ok) throw new Error(data.error || `The ${command} bridge call failed.`);
+    return data.result ?? null;
+  }
+
+  openWebEventStream() {
+    if (!this.webBridge || typeof EventSource === "undefined") return;
+    const source = new EventSource("/__auri__/events");
+    for (const name of ["terminal-data", "terminal-exit"]) {
+      source.addEventListener(name, (event) => {
+        let payload = null;
+        try { payload = JSON.parse(event.data); } catch { return; }
+        this.dispatchWebEvent(name, payload);
+      });
+    }
+    this.webBridge.source = source;
+  }
+
+  dispatchWebEvent(name, payload) {
+    for (const handler of [...(this.webBridge?.listeners.get(name) || [])]) handler(payload);
+  }
+
+  // A web subtab in hosted web mode is a real browser tab: one named tab per
+  // subtab id, re-navigated when its URL changes.
+  openHostedWebTab(id, url) {
+    const tabs = this.webBridge.tabs;
+    const existing = tabs.get(id);
+    if (existing && !existing.tab.closed && existing.url === url) {
+      try { existing.tab.focus?.(); } catch {}
+      return { externalBrowser: true, url };
+    }
+    const tab = window.open(url, `auri-web-${id}`);
+    if (!tab) throw new Error(`The browser blocked the pop-up for ${url}. Allow pop-ups for Auri to open web tabs.`);
+    tabs.set(id, { tab, url });
+    return { externalBrowser: true, url };
+  }
+
   async listenForCommands(handler) {
+    // External `auri …` commands stay with the desktop window; a hosted web
+    // session executing them too would run every command twice.
+    if (this.webBridge) return null;
     if (typeof window === "undefined") return null;
     const listen = window.__TAURI__?.event?.listen;
     if (!listen) return null;
@@ -289,13 +361,37 @@ export class Backend {
   }
 
   async listen(eventName, handler) {
+    if (this.webBridge) {
+      const handlers = this.webBridge.listeners.get(eventName) || [];
+      handlers.push(handler);
+      this.webBridge.listeners.set(eventName, handlers);
+      return () => {
+        const current = this.webBridge?.listeners.get(eventName) || [];
+        const index = current.indexOf(handler);
+        if (index >= 0) current.splice(index, 1);
+      };
+    }
     if (typeof window === "undefined") return null;
     const listen = window.__TAURI__?.event?.listen;
     if (!listen) return null;
     return listen(eventName, (event) => handler(event.payload));
   }
 
-  async syncAppState(json) { return this.call("sync_app_state", { json }); }
+  async syncAppState(json) {
+    // The desktop window owns the published app-state mirror; a hosted web
+    // session must not overwrite it.
+    if (this.webBridge) return { hostedWeb: true };
+    return this.call("sync_app_state", { json });
+  }
+
+  async serveUi() {
+    if (this.webBridge) {
+      const url = typeof window !== "undefined" && window.location ? window.location.origin : "http://127.0.0.1:8899";
+      return { url, alreadyHosted: true };
+    }
+    if (!this.invoke) throw new Error("Serving the browser UI needs the native Auri app.");
+    return this.call("serve_ui");
+  }
 
   async startTerminal(sessionId, cwd, cols, rows) { return this.call("terminal_start", { sessionId, cwd, cols, rows }); }
   async writeTerminal(sessionId, data) { return this.call("terminal_write", { sessionId, data: Array.from(data) }); }
@@ -304,9 +400,19 @@ export class Backend {
   async resizeTerminal(sessionId, cols, rows) { return this.call("terminal_resize", { sessionId, cols, rows }); }
   async stopTerminal(sessionId) { return this.call("terminal_stop", { sessionId }); }
 
-  async startWindowDragging() { return this.call("window_start_dragging"); }
+  async startWindowDragging() {
+    // A hosted web session has no desktop window to drag.
+    if (this.webBridge) return;
+    return this.call("window_start_dragging");
+  }
 
   async exitApp() {
+    if (this.webBridge) {
+      // Exit closes the browser tab; only `auri stop` or the desktop app
+      // itself may quit the shared backend.
+      if (typeof window !== "undefined") window.close?.();
+      return { ok: true, hostedWeb: true };
+    }
     if (!this.invoke) {
       if (typeof window !== "undefined") window.close?.();
       return { ok: true };
@@ -315,46 +421,49 @@ export class Backend {
   }
 
   async setVisibleOnAllWorkspaces(enabled) {
+    if (this.webBridge) return { supported: false, enabled: Boolean(enabled), mode: "hosted-web" };
     if (!this.invoke) return { supported: false, enabled: Boolean(enabled), mode: "browser-preview" };
     return this.call("window_set_visible_on_all_workspaces", { enabled: Boolean(enabled) });
   }
 
   async showWebview(id, url, bounds, navigate = false, aiPrompts = null) {
+    if (this.webBridge) return this.openHostedWebTab(id, url);
     return this.call("webview_show", { id, url, navigate, aiPrompts, ...bounds });
   }
 
   async hideWebviews() {
-    if (!this.invoke) return;
+    if (!this.invoke || this.webBridge) return;
     return this.call("webview_hide_all");
   }
 
   async showBrowserOverlay(payload, bounds, focus = true) {
-    if (!this.invoke) return;
+    if (!this.invoke || this.webBridge) return;
     return this.call("webview_overlay_show", { payload: JSON.stringify(payload), focus, ...bounds });
   }
 
   async hideBrowserOverlay() {
-    if (!this.invoke) return;
+    if (!this.invoke || this.webBridge) return;
     return this.call("webview_overlay_hide");
   }
 
   async updateBrowserOverlayZoom(value) {
-    if (!this.invoke) return;
+    if (!this.invoke || this.webBridge) return;
     return this.call("webview_overlay_update_zoom", { value });
   }
 
   async webviewAction(id, action, value = null) {
+    if (this.webBridge) throw new Error("This page is open as a separate browser tab — use that tab's own controls.");
     if (!this.invoke) throw new Error("Website navigation needs the native Tauri build.");
     return this.call("webview_action", { id, action, value });
   }
 
   async sleepWebview(id, url) {
-    if (!this.invoke) return null;
+    if (!this.invoke || this.webBridge) return null;
     return this.call("webview_sleep", { id, url });
   }
 
   async wakeWebview(id) {
-    if (!this.invoke) return null;
+    if (!this.invoke || this.webBridge) return null;
     return this.call("webview_wake", { id });
   }
 
@@ -367,21 +476,29 @@ export class Backend {
   }
 
   async closeWebview(id) {
+    if (this.webBridge) {
+      const existing = this.webBridge.tabs.get(id);
+      try { existing?.tab.close?.(); } catch {}
+      this.webBridge.tabs.delete(id);
+      return;
+    }
     if (!this.invoke) return;
     return this.call("webview_close", { id });
   }
 
   async showStandaloneTab(id, url, title) {
+    if (this.webBridge) return this.openHostedWebTab(`standalone-${id}`, url);
     if (!this.invoke) throw new Error("Standalone tab windows need the native Auri build.");
     return this.call("tab_window_show", { id, url, title });
   }
 
   async reloadStandaloneTab(id) {
-    if (!this.invoke) return;
+    if (!this.invoke || this.webBridge) return;
     return this.call("tab_window_reload", { id });
   }
 
   async closeStandaloneTab(id) {
+    if (this.webBridge) return this.closeWebview(`standalone-${id}`);
     if (!this.invoke) return;
     return this.call("tab_window_close", { id });
   }

@@ -1,12 +1,12 @@
-//! Pure frame rendering for the TUI: app-state snapshot in, ANSI frame out.
-//! No terminal I/O here, so the dependency-light Rust test harness can prove
-//! layout behaviour. Mirrors the GUI: vertical workspaces on the left,
-//! horizontal subtabs on top, the active panel in the centre.
+//! Pure frame rendering for the TUI: app-state snapshot in, ANSI frame plus
+//! clickable regions and a plain-text grid out. No terminal I/O here, so the
+//! dependency-light Rust test harness can prove layout behaviour. Mirrors
+//! the GUI: workspaces (with their folder names) laid out horizontally on
+//! top, the subtab bar beneath them, the active panel below.
 
 use super::ansi;
 use super::view_model::{SnapshotView, SubtabView, SystemView};
 
-const SIDEBAR_WIDTH: usize = 16;
 const INVERSE: &str = "\u{1b}[7m";
 const DIM: &str = "\u{1b}[2m";
 const BOLD: &str = "\u{1b}[1m";
@@ -27,6 +27,70 @@ pub struct UiState {
     pub input: String,
     pub status: String,
     pub connected: bool,
+    pub standalone: bool,
+    pub terminal_scroll: usize,
+    pub process_scroll: usize,
+    pub clipboard_scroll: usize,
+    pub selection: Option<Selection>,
+}
+
+/// A drag selection between two 0-based (x, y) grid points, in screen order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub start: (usize, usize),
+    pub end: (usize, usize),
+}
+
+/// What a click at some screen cell should do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    SelectWorkspace(String),
+    SelectSubtab(String),
+    SortBy(String),
+    FocusTerminal,
+    SelectProcess(i64),
+    CopyClipboardItem(String),
+    SystemArea,
+    ClipboardArea,
+}
+
+#[derive(Debug, Clone)]
+pub struct Region {
+    pub x: usize,
+    pub y: usize,
+    pub width: usize,
+    pub height: usize,
+    pub action: Action,
+}
+
+pub struct Frame {
+    pub text: String,
+    pub plain: Vec<String>,
+    pub regions: Vec<Region>,
+}
+
+pub fn hit_test<'a>(regions: &'a [Region], x: usize, y: usize) -> Option<&'a Action> {
+    regions
+        .iter()
+        .find(|region| {
+            y >= region.y && y < region.y + region.height && x >= region.x && x < region.x + region.width
+        })
+        .map(|region| &region.action)
+}
+
+/// Text covered by a selection over the plain grid. The end cell is
+/// inclusive; rows are trimmed and joined with newlines.
+pub fn selection_text(plain: &[String], a: (usize, usize), b: (usize, usize)) -> String {
+    let (start, end) = if (a.1, a.0) <= (b.1, b.0) { (a, b) } else { (b, a) };
+    let mut lines = Vec::new();
+    for y in start.1..=end.1.min(plain.len().saturating_sub(1)) {
+        let row: Vec<char> = plain.get(y).map(|row| row.chars().collect()).unwrap_or_default();
+        let from = if y == start.1 { start.0.min(row.len()) } else { 0 };
+        let to = if y == end.1 { (end.0 + 1).min(row.len()) } else { row.len() };
+        let text: String = row[from.min(to)..to].iter().collect();
+        lines.push(text.trim_end().to_string());
+    }
+    lines.join("\n").trim_end().to_string()
 }
 
 pub fn format_bytes(bytes: u64) -> String {
@@ -55,76 +119,125 @@ pub fn format_rate(rate: Option<f64>) -> String {
     }
 }
 
-fn subtab_label(subtab: &SubtabView) -> String {
-    if subtab.active {
-        format!("{INVERSE} {} {RESET}", subtab.title)
-    } else {
-        format!(" {} ", subtab.title)
+fn folder_name(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "~" {
+        return "~".to_string();
+    }
+    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
+}
+
+/// One row builder that tracks styled text, its visible width, and regions.
+struct RowBuilder<'a> {
+    styled: String,
+    width: usize,
+    y: usize,
+    regions: &'a mut Vec<Region>,
+}
+
+impl<'a> RowBuilder<'a> {
+    fn new(y: usize, regions: &'a mut Vec<Region>) -> Self {
+        RowBuilder { styled: String::new(), width: 0, y, regions }
+    }
+
+    fn push(&mut self, text: &str) {
+        self.styled.push_str(text);
+        self.width += ansi::visible_width(text);
+    }
+
+    fn push_clickable(&mut self, text: &str, action: Action) {
+        let width = ansi::visible_width(text);
+        self.regions.push(Region { x: self.width, y: self.y, width, height: 1, action });
+        self.push(text);
+    }
+
+    fn finish(self, width: usize) -> String {
+        ansi::fit_visible(&self.styled, width)
     }
 }
 
+fn workspace_row(snapshot: &SnapshotView, y: usize, width: usize, regions: &mut Vec<Region>) -> String {
+    let mut row = RowBuilder::new(y, regions);
+    row.push(" ");
+    for workspace in &snapshot.workspaces {
+        if row.width >= width {
+            break;
+        }
+        let folder = folder_name(&workspace.folder_path);
+        let label = if workspace.active {
+            format!("{INVERSE}{BOLD} ▸ {} {DIM}{folder}{RESET}{INVERSE} {RESET}", workspace.title)
+        } else {
+            format!(" {} {DIM}{folder}{RESET} ", workspace.title)
+        };
+        row.push_clickable(&label, Action::SelectWorkspace(workspace.id.clone()));
+        row.push(" ");
+    }
+    row.finish(width)
+}
+
+fn subtab_row(snapshot: &SnapshotView, y: usize, width: usize, regions: &mut Vec<Region>) -> String {
+    let mut row = RowBuilder::new(y, regions);
+    row.push("   ");
+    if let Some(workspace) = snapshot.active_workspace() {
+        for subtab in &workspace.subtabs {
+            if row.width >= width {
+                break;
+            }
+            let label = if subtab.active {
+                format!("{INVERSE} {} {RESET}", subtab.title)
+            } else {
+                format!("{DIM} {} {RESET}", subtab.title)
+            };
+            row.push_clickable(&label, Action::SelectSubtab(subtab.id.clone()));
+            row.push(" ");
+        }
+    }
+    row.finish(width)
+}
+
 fn title_row(snapshot: &SnapshotView, ui: &UiState, width: usize) -> String {
+    let mode = if ui.standalone { "standalone" } else { "GUI mirror" };
     let host = snapshot
         .system
         .metrics
         .as_ref()
-        .map(|metrics| format!("{} · {}", metrics.hostname, metrics.os))
+        .map(|metrics| format!(" · {} {}", metrics.hostname, metrics.os))
         .unwrap_or_default();
-    let connection = if ui.connected { host } else { "reconnecting…".to_string() };
-    let text = format!(" Auri  {DIM}{connection}{RESET}");
-    format!("{BOLD}{}{RESET}", ansi::fit_visible(&text, width))
+    let connection = if ui.connected { format!("{mode}{host}") } else { "reconnecting…".to_string() };
+    let text = format!(" {BOLD}Auri{RESET}  {DIM}{connection}{RESET}");
+    ansi::fit_visible(&text, width)
 }
 
-fn subtab_row(snapshot: &SnapshotView, width: usize) -> String {
-    let labels = snapshot
-        .active_workspace()
-        .map(|workspace| {
-            workspace
-                .subtabs
-                .iter()
-                .map(subtab_label)
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-    let indent = " ".repeat(SIDEBAR_WIDTH + 1);
-    ansi::fit_visible(&format!("{indent}{labels}"), width)
-}
-
-fn sidebar_line(snapshot: &SnapshotView, row: usize) -> String {
-    if let Some(workspace) = snapshot.workspaces.get(row) {
-        let marker = if workspace.active { "▸" } else { " " };
-        let style = if workspace.active { BOLD } else { DIM };
-        return format!("{style}{marker} {}{RESET}", workspace.title);
-    }
-    let below = row.saturating_sub(snapshot.workspaces.len());
-    match below {
-        1 => format!("{DIM}Info  {}{RESET}", snapshot.info.unread),
-        2 => format!("{DIM}Clip  {}{RESET}", snapshot.clipboard_count),
-        _ => String::new(),
-    }
-}
-
-fn terminal_panel(snapshot: &SnapshotView, ui: &UiState, width: usize, height: usize) -> Vec<String> {
+fn terminal_panel(
+    snapshot: &SnapshotView,
+    ui: &UiState,
+    top: usize,
+    width: usize,
+    height: usize,
+    regions: &mut Vec<Region>,
+) -> Vec<String> {
     let workspace = snapshot.active_workspace();
     let subtab = snapshot.active_subtab();
     let buffer = subtab.and_then(|subtab| snapshot.terminals.get(&subtab.id));
-    let mut lines: Vec<String> = buffer
+    let all_lines: Vec<String> = buffer
         .map(|buffer| ansi::sanitize_terminal_text(&buffer.text))
         .unwrap_or_default();
     let body_height = height.saturating_sub(1);
-    if lines.len() > body_height {
-        lines = lines.split_off(lines.len() - body_height);
-    }
+    let end = all_lines.len().saturating_sub(ui.terminal_scroll.min(all_lines.len()));
+    let start = end.saturating_sub(body_height);
+    let mut lines: Vec<String> = all_lines[start..end].to_vec();
     while lines.len() < body_height {
         lines.push(String::new());
     }
+    regions.push(Region { x: 0, y: top, width, height: body_height.max(1), action: Action::FocusTerminal });
+
     let cwd = workspace.map(|workspace| workspace.terminal_cwd.clone()).unwrap_or_default();
     let running = workspace.is_some_and(|workspace| workspace.terminal_running);
+    let scrolled = if ui.terminal_scroll > 0 { format!("↑{} ", ui.terminal_scroll) } else { String::new() };
     let prompt = match ui.mode {
         Mode::RunCommand => format!("{BOLD}{cwd} ❯{RESET} {}▌", ui.input),
         _ => format!(
-            "{BOLD}{cwd} ❯{RESET} {DIM}{}[r] run · [a] attach full terminal · [:] command{RESET}",
+            "{BOLD}{cwd} ❯{RESET} {DIM}{scrolled}{}click or [r] to type · [a] attach · scroll wheel{RESET}",
             if running { "(running…) " } else { "" }
         ),
     };
@@ -171,7 +284,24 @@ fn system_metric_lines(system: &SystemView, width: usize) -> Vec<String> {
         .collect()
 }
 
-fn system_panel(snapshot: &SnapshotView, ui: &UiState, width: usize, height: usize) -> Vec<String> {
+const PROCESS_COLUMNS: [(&str, &str, usize); 7] = [
+    ("PID", "pid", 6),
+    ("NAME", "name", 0), // flexible
+    ("CPU%", "cpu", 6),
+    ("RAM", "ram", 9),
+    ("NET", "net", 11),
+    ("DISK", "disk", 11),
+    ("PORT", "port", 9),
+];
+
+fn system_panel(
+    snapshot: &SnapshotView,
+    ui: &UiState,
+    top: usize,
+    width: usize,
+    height: usize,
+    regions: &mut Vec<Region>,
+) -> Vec<String> {
     let system = &snapshot.system;
     let mut lines = system_metric_lines(system, width);
     let sort_line = format!(
@@ -182,22 +312,37 @@ fn system_panel(snapshot: &SnapshotView, ui: &UiState, width: usize, height: usi
         if system.filter.is_empty() { "—" } else { &system.filter },
         match ui.mode {
             Mode::Search => format!(" · search: {}▌", ui.input),
-            _ => " · [s] sort · [/] search · [R] refresh".to_string(),
+            _ => " · click a column to sort · [/] search · [R] refresh".to_string(),
         }
     );
     lines.push(ansi::fit_visible(&sort_line, width));
-    let name_width = width.saturating_sub(6 + 7 + 10 + 12 + 12 + 10 + 6).max(8);
-    lines.push(ansi::fit_visible(
-        &format!(
-            "{INVERSE}{:>6} {:<name_width$} {:>6} {:>9} {:>11} {:>11} {:>9}{RESET}",
-            "PID", "NAME", "CPU%", "RAM", "NET", "DISK", "PORT"
-        ),
-        width,
-    ));
-    for process in &system.processes {
-        if lines.len() >= height {
-            break;
+
+    let fixed: usize = PROCESS_COLUMNS.iter().map(|(_, _, w)| *w).sum::<usize>() + PROCESS_COLUMNS.len() - 1;
+    let name_width = width.saturating_sub(fixed).max(8);
+    let header_y = top + lines.len();
+    let mut header = RowBuilder::new(header_y, regions);
+    for (index, (label, sort_key, column_width)) in PROCESS_COLUMNS.iter().enumerate() {
+        let cell_width = if *column_width == 0 { name_width } else { *column_width };
+        let cell = if *column_width == 0 {
+            format!("{INVERSE}{label:<cell_width$}{RESET}")
+        } else {
+            format!("{INVERSE}{label:>cell_width$}{RESET}")
+        };
+        header.push_clickable(&cell, Action::SortBy(sort_key.to_string()));
+        if index + 1 < PROCESS_COLUMNS.len() {
+            header.push(&format!("{INVERSE} {RESET}"));
         }
+    }
+    lines.push(header.finish(width));
+
+    let visible = snapshot
+        .system
+        .processes
+        .iter()
+        .skip(ui.process_scroll)
+        .take(height.saturating_sub(lines.len()));
+    for process in visible {
+        let y = top + lines.len();
         let net = process.download_bytes_per_second + process.upload_bytes_per_second;
         let disk = process.read_bytes_per_second + process.write_bytes_per_second;
         let ports = process
@@ -206,31 +351,74 @@ fn system_panel(snapshot: &SnapshotView, ui: &UiState, width: usize, height: usi
             .map(|port| port.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        lines.push(ansi::fit_visible(
-            &format!(
-                "{:>6} {} {:>6.1} {:>9} {:>11} {:>11} {:>9}",
-                process.pid,
-                ansi::fit_visible(&process.name, name_width),
-                process.cpu_percent,
-                format_bytes(process.memory_bytes),
-                format_rate(Some(net)),
-                format_rate(Some(disk)),
-                ansi::clip_visible(&ports, 9)
-            ),
-            width,
-        ));
+        let selected = snapshot.system.processes.is_empty() == false
+            && Some(process.pid) == snapshot_selected_pid(snapshot);
+        let style = if selected { INVERSE } else { "" };
+        let row_text = format!(
+            "{style}{:>6} {} {:>6.1} {:>9} {:>11} {:>11} {:>9}{RESET}",
+            process.pid,
+            ansi::fit_visible(&process.name, name_width),
+            process.cpu_percent,
+            format_bytes(process.memory_bytes),
+            format_rate(Some(net)),
+            format_rate(Some(disk)),
+            ansi::clip_visible(&ports, 9)
+        );
+        regions.push(Region { x: 0, y, width, height: 1, action: Action::SelectProcess(process.pid) });
+        lines.push(ansi::fit_visible(&row_text, width));
+        if lines.len() >= height {
+            break;
+        }
     }
+    regions.push(Region { x: 0, y: top, width, height: height.max(1), action: Action::SystemArea });
     lines.truncate(height);
-    while lines.len() < height {
-        lines.push(" ".repeat(width));
+    lines
+}
+
+fn snapshot_selected_pid(snapshot: &SnapshotView) -> Option<i64> {
+    snapshot.system.selected_pid
+}
+
+fn clipboard_panel(
+    snapshot: &SnapshotView,
+    ui: &UiState,
+    top: usize,
+    width: usize,
+    height: usize,
+    regions: &mut Vec<Region>,
+) -> Vec<String> {
+    let mut lines = vec![ansi::fit_visible(
+        &format!(
+            "{BOLD}Clipboard{RESET}  {DIM}{} item{} · click an item to copy it{RESET}",
+            snapshot.clipboard_count,
+            if snapshot.clipboard_count == 1 { "" } else { "s" }
+        ),
+        width,
+    )];
+    if snapshot.clipboard_items.is_empty() {
+        lines.push(ansi::fit_visible(&format!("{DIM}Clipboard history is empty.{RESET}"), width));
     }
+    for item in snapshot.clipboard_items.iter().skip(ui.clipboard_scroll) {
+        if lines.len() >= height {
+            break;
+        }
+        let y = top + lines.len();
+        let pin = if item.pinned { "★" } else { " " };
+        let kind = if item.kind == "image" { "▣" } else { "≡" };
+        let preview = item.preview.split(['\n', '\r']).next().unwrap_or("");
+        let row = format!("{pin} {DIM}{kind}{RESET} {preview}");
+        regions.push(Region { x: 0, y, width, height: 1, action: Action::CopyClipboardItem(item.id.clone()) });
+        lines.push(ansi::fit_visible(&row, width));
+    }
+    regions.push(Region { x: 0, y: top, width, height: height.max(1), action: Action::ClipboardArea });
+    lines.truncate(height);
     lines
 }
 
 fn info_panel(snapshot: &SnapshotView, width: usize, height: usize) -> Vec<String> {
     let mut lines = Vec::new();
     if snapshot.info.items.is_empty() {
-        lines.push(ansi::fit_visible(&format!("{DIM}No notifications.{RESET}"), width));
+        lines.push(ansi::fit_visible(&format!("{DIM}No notifications. [c] clears.{RESET}"), width));
     }
     for item in &snapshot.info.items {
         if lines.len() >= height {
@@ -267,11 +455,19 @@ fn placeholder_panel(subtab: Option<&SubtabView>, width: usize) -> Vec<String> {
     ]
 }
 
-fn panel_lines(snapshot: &SnapshotView, ui: &UiState, width: usize, height: usize) -> Vec<String> {
+fn panel_lines(
+    snapshot: &SnapshotView,
+    ui: &UiState,
+    top: usize,
+    width: usize,
+    height: usize,
+    regions: &mut Vec<Region>,
+) -> Vec<String> {
     let kind = snapshot.active_subtab().map(|subtab| subtab.kind.clone()).unwrap_or_default();
     let mut lines = match kind.as_str() {
-        "terminal" => terminal_panel(snapshot, ui, width, height),
-        "system" | "disk" | "net" => system_panel(snapshot, ui, width, height),
+        "terminal" => terminal_panel(snapshot, ui, top, width, height, regions),
+        "system" | "disk" | "net" => system_panel(snapshot, ui, top, width, height, regions),
+        "clipboard" => clipboard_panel(snapshot, ui, top, width, height, regions),
         "info" => info_panel(snapshot, width, height),
         _ => placeholder_panel(snapshot.active_subtab(), width),
     };
@@ -288,31 +484,84 @@ fn status_row(ui: &UiState, width: usize) -> String {
         Mode::Search => format!(" /{}▌", ui.input),
         Mode::RunCommand => format!(" run ❯ {}▌", ui.input),
         Mode::Normal => format!(
-            " {}{DIM}↑↓ workspace · ←→/⇥ subtab · q quit{RESET}",
+            " {}{DIM}click tabs · drag selects (auto-copies) · ↑↓ space · ←→ subtab · : cmd · q quit{RESET}",
             if ui.status.is_empty() { String::new() } else { format!("{} · ", ui.status) }
         ),
     };
     ansi::fit_visible(&text, width)
 }
 
-/// Render the whole frame as `\r\n`-joined rows of exactly the terminal
-/// width. The caller homes the cursor and writes the result.
-pub fn render_frame(snapshot: &SnapshotView, ui: &UiState, size: (u16, u16)) -> String {
+/// Overlay the selection highlight by re-rendering the affected rows from
+/// their plain text with an inverse span (colors on those rows give way to
+/// the highlight).
+fn apply_selection(rows: &mut [String], plain: &[String], selection: &Selection, width: usize) {
+    let (start, end) = if (selection.start.1, selection.start.0) <= (selection.end.1, selection.end.0) {
+        (selection.start, selection.end)
+    } else {
+        (selection.end, selection.start)
+    };
+    for y in start.1..=end.1.min(rows.len().saturating_sub(1)) {
+        let row: Vec<char> = plain.get(y).map(|row| row.chars().collect()).unwrap_or_default();
+        let from = if y == start.1 { start.0.min(row.len()) } else { 0 };
+        let to = if y == end.1 { (end.0 + 1).min(row.len()) } else { row.len() };
+        if from >= to {
+            continue;
+        }
+        let before: String = row[..from].iter().collect();
+        let selected: String = row[from..to].iter().collect();
+        let after: String = row[to..].iter().collect();
+        rows[y] = ansi::fit_visible(&format!("{before}{INVERSE}{selected}{RESET}{after}"), width);
+    }
+}
+
+/// Render the whole frame: styled rows, a plain grid for selection, and
+/// clickable regions. The caller homes the cursor and writes `text`.
+pub fn render_frame(snapshot: &SnapshotView, ui: &UiState, size: (u16, u16)) -> Frame {
     let width = (size.0 as usize).max(20);
     let height = (size.1 as usize).max(6);
-    let panel_width = width.saturating_sub(SIDEBAR_WIDTH + 3);
-    let body_height = height.saturating_sub(4);
+    let panel_top = 4;
+    let body_height = height.saturating_sub(panel_top + 1);
 
+    let mut regions = Vec::new();
     let mut rows = Vec::with_capacity(height);
     rows.push(title_row(snapshot, ui, width));
-    rows.push(subtab_row(snapshot, width));
+    rows.push(workspace_row(snapshot, 1, width, &mut regions));
+    rows.push(subtab_row(snapshot, 2, width, &mut regions));
     rows.push(ansi::fit_visible(&format!("{DIM}{}{RESET}", "─".repeat(width)), width));
-    let panel = panel_lines(snapshot, ui, panel_width, body_height);
-    for row in 0..body_height {
-        let sidebar = ansi::fit_visible(&sidebar_line(snapshot, row), SIDEBAR_WIDTH);
-        let content = panel.get(row).cloned().unwrap_or_default();
-        rows.push(ansi::fit_visible(&format!("{sidebar} {DIM}│{RESET} {content}"), width));
-    }
+    rows.extend(panel_lines(snapshot, ui, panel_top, width, body_height, &mut regions));
     rows.push(status_row(ui, width));
-    rows.join("\r\n")
+
+    let plain: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            let mut text = String::new();
+            let mut rest = row.as_str();
+            while let Some(position) = rest.find('\u{1b}') {
+                text.push_str(&rest[..position]);
+                let (_, remaining) = split_escape(&rest[position..]);
+                rest = remaining;
+            }
+            text.push_str(rest);
+            text
+        })
+        .collect();
+
+    let mut styled = rows;
+    if let Some(selection) = ui.selection.as_ref() {
+        apply_selection(&mut styled, &plain, selection, width);
+    }
+    Frame { text: styled.join("\r\n"), plain, regions }
+}
+
+fn split_escape(text: &str) -> (&str, &str) {
+    debug_assert!(text.starts_with('\u{1b}'));
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b'[' {
+        for (index, byte) in bytes.iter().enumerate().skip(2) {
+            if (0x40..=0x7e).contains(byte) {
+                return text.split_at(index + 1);
+            }
+        }
+    }
+    text.split_at(2.min(text.len()))
 }

@@ -9,7 +9,10 @@ pub mod ansi;
 pub mod client;
 #[allow(dead_code)]
 pub mod input;
+pub mod local;
 pub mod model;
+#[allow(dead_code)]
+pub mod session_state;
 #[allow(dead_code)]
 pub mod screen;
 pub mod term;

@@ -185,6 +185,12 @@ fn sync_app_state(json: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn serve_ui(app: tauri::AppHandle) -> Result<Value, String> {
+    let url = core::webserver::ensure_started(app)?;
+    Ok(serde_json::json!({ "url": url, "port": core::webserver::UI_PORT }))
+}
+
+#[tauri::command]
 fn capture_screenshot() -> Result<files::BinaryFile, String> {
     capture::screenshot()
 }
@@ -776,6 +782,7 @@ pub fn run() {
             terminal_resize,
             terminal_stop,
             sync_app_state,
+            serve_ui,
             window_start_dragging,
             window_set_visible_on_all_workspaces,
             capture_screenshot,

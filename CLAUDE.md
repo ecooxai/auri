@@ -96,6 +96,7 @@ auri system tunnel start <port> [--install]                              Start a
 auri system tunnel stop <port>                                           Stop the Cloudflare HTTPS tunnel for a process port.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
+auri browser                                                                   Serve this UI at http://127.0.0.1:8899 and open it in the default web browser.
 auri help                                                                      Show all available commands.
 ```
 
@@ -104,8 +105,10 @@ When a command accepts paths, prompts, shell syntax, URLs, or secrets, test quot
 ## State snapshot and CLI mirror
 
 - Background subtabs must live as serializable state, never as retained DOM: background terminals sleep (`TerminalSession.sleep()` — PTY and output records stay, emulator and DOM go), background web tabs sleep to disk and drop their WebKit process after a short grace, and leaving the System monitor trims the process list from state.
-- After every state change the controller mirrors the full app state as one JSON line (`src/model/snapshot.js` → `sync_app_state`). The command socket serves it: `__auri_state__` (one-shot), `__auri_watch__` (stream), `__auri_quiet__:<command>` (execute without focusing the GUI), `__auri_term_attach__:<sessionId>` (raw PTY bridge).
-- `auri cli` is a TUI client of that snapshot and socket. It renders state and sends registry commands; it must never reimplement command behavior or fake a panel it cannot render (say "renders in the GUI window" instead).
+- After every state change the controller mirrors the full app state as one JSON line (`src/model/snapshot.js` → `sync_app_state`). The command socket serves it: `__auri_state__` (one-shot), `__auri_watch__` (stream), `__auri_quiet__:<command>` (execute without focusing the GUI), `__auri_term_attach__:<sessionId>` (raw PTY bridge), `__auri_copy__:<base64>` (clipboard copy), `__auri_serve_ui__` (start the browser UI server, replies `ok:<url>`), `__auri_quit__` (stop the app), `__auri_appinfo__` (pid + executable, for `auri restart`).
+- `auri cli` (or bare `auri`) is a TUI client of that snapshot and socket. It renders state and sends registry commands; it must never reimplement command behavior or fake a panel it cannot render (say "renders in the GUI window" instead). Without a running app it hosts real local sessions itself, tmux-style (`src-tauri/src/cli/local.rs` + `session_state.rs`), reusing the same tauri-free core modules — real PTYs, monitor, and clipboard, honestly labeled standalone.
+- The browser UI (`auri browser`, `core/webserver.rs`) serves the same frontend at `http://127.0.0.1:8899`: static assets plus `POST /__auri__/invoke/<command>` routed to the same tauri command functions and `GET /__auri__/events` (SSE) for terminal events. Loopback binding with `Host`-header validation only. The hosted web session is a second frontend: it never publishes `sync_app_state`, never receives external `auri-command` events, and opens web subtabs as plain browser tabs instead of embedded webviews.
+- CLI lifecycle: `auri stop` quits the running app, `auri restart` relaunches its executable and re-enters the TUI, bare `auri` opens the TUI.
 
 ## MVC boundaries
 

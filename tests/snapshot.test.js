@@ -86,6 +86,30 @@ test("snapshot json is a single line and round-trips", () => {
   assert.equal(parsed.terminals.any.text, "line1\r\nline2[31mred[0m");
 });
 
+test("snapshot lists clipboard items with the 100+50 preview rule and image metadata", () => {
+  let state = createInitialState();
+  const long = `${"a".repeat(120)}${"b".repeat(120)}`;
+  state = reduceState(state, {
+    type: "CLIPBOARD_SET",
+    payload: {
+      items: [
+        { id: "c1", kind: "text", text: long, pinned: true, createdAt: 1 },
+        { id: "c2", kind: "image", path: "/tmp/shot.png", width: 800, height: 600, byteSize: 2048, createdAt: 2 }
+      ]
+    }
+  });
+  const snapshot = serializeAppSnapshot(state);
+  assert.equal(snapshot.clipboard.count, 2);
+  const [text, image] = snapshot.clipboard.items;
+  assert.equal(text.id, "c1");
+  assert.equal(text.pinned, true);
+  assert.ok(text.preview.length < 160, "long text is truncated for the snapshot");
+  assert.ok(text.preview.startsWith("a".repeat(100)));
+  assert.ok(text.preview.endsWith("b".repeat(50)));
+  assert.equal(image.kind, "image");
+  assert.match(image.preview, /PNG · 800×600/);
+});
+
 test("snapshot carries recent info items and clipboard count without full payloads", () => {
   let state = createInitialState();
   for (let index = 0; index < 40; index += 1) {

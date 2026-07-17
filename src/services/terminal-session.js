@@ -3,6 +3,11 @@ import { terminalAssistantSegments } from "../model/assistant.js";
 const encoder = new TextEncoder();
 let terminalModulesPromise = null;
 
+// Rolling decoded tail kept for state snapshots. Matches the snapshot cap so
+// pushes never re-decode the whole record log (which would churn the WebKit
+// heap on every output burst).
+export const TERMINAL_TAIL_MAX_CHARS = 65536;
+
 const TERMINAL_TARGET_PATTERN = /(?:https?:\/\/|file:\/\/\/)[^\s<>"'`]+|(?:[A-Za-z]:[\\/]|~\/|\.{1,2}\/|\/)(?:\\[ \t]|[^\s<>"'`])+/gi;
 const TERMINAL_FILE_TOKEN_PATTERN = /(?:\\[ \t]|[^\s<>"'`()\[\]{},;])+/g;
 const TERMINAL_TRAILING_PUNCTUATION = /[),.;:!?\]}]+$/;
@@ -253,6 +258,8 @@ export class TerminalSession {
     this.cwdRefreshTimer = null;
     this.onCwdChange = null;
     this.onOutput = null;
+    this.bufferTail = "";
+    this.tailDecoder = new TextDecoder();
     this.renderQueue = Promise.resolve();
     this.assistantStreamAtLineStart = true;
     this.clipboardAbort = null;
@@ -329,6 +336,12 @@ export class TerminalSession {
     this.outputBytes += this.recordByteLength(record);
     while (this.outputBytes > this.maxOutputBytes && this.output.length > 1) {
       this.outputBytes -= this.recordByteLength(this.output.shift());
+    }
+    if (record.type === "bytes") {
+      this.bufferTail += this.tailDecoder.decode(record.bytes, { stream: true });
+      if (this.bufferTail.length > TERMINAL_TAIL_MAX_CHARS) {
+        this.bufferTail = this.bufferTail.slice(-TERMINAL_TAIL_MAX_CHARS);
+      }
     }
   }
 
@@ -826,12 +839,7 @@ export class TerminalSession {
   }
 
   bufferText() {
-    const decoder = new TextDecoder();
-    let text = "";
-    for (const record of this.output) {
-      if (record.type === "bytes") text += decoder.decode(record.bytes, { stream: true });
-    }
-    return text + decoder.decode();
+    return this.bufferTail;
   }
 
   async stop() {

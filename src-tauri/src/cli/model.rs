@@ -3,8 +3,8 @@
 //! or older GUI never crashes the TUI.
 
 use super::view_model::{
-    InfoItemView, InfoView, MetricsView, ProcessView, SnapshotView, SubtabView, SystemView,
-    TerminalBufferView, WorkspaceView,
+    ClipboardItemView, InfoItemView, InfoView, MetricsView, ProcessView, SnapshotView, SubtabView,
+    SystemView, TerminalBufferView, WorkspaceView,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -106,6 +106,7 @@ fn parse_system(value: &Value) -> SystemView {
         sort_by: text(&system, "sortBy"),
         sort_direction: text(&system, "sortDirection"),
         filter: text(&system, "filter"),
+        selected_pid: system.get("selectedPid").and_then(Value::as_i64),
         process_count: number(&system, "processCount") as usize,
         metrics: parse_metrics(&system),
         processes: items(&system, "processes").into_iter().map(parse_process).collect(),
@@ -159,5 +160,19 @@ pub fn parse_snapshot(json: &str) -> Result<SnapshotView, String> {
             .get("clipboard")
             .map(|clipboard| number(clipboard, "count") as usize)
             .unwrap_or(0),
+        clipboard_items: value
+            .get("clipboard")
+            .map(|clipboard| {
+                items(clipboard, "items")
+                    .into_iter()
+                    .map(|item| ClipboardItemView {
+                        id: text(item, "id"),
+                        kind: text(item, "kind"),
+                        pinned: boolean(item, "pinned"),
+                        preview: text(item, "preview"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }

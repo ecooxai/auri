@@ -684,6 +684,14 @@ export async function executeCommand(input, context) {
       return { ok: true };
     }
 
+    if (domain === "browser") {
+      if (action !== "open") throw new Error(`Unknown browser action: ${action}`);
+      if (!actions.openBrowserUi) throw new Error("The browser UI needs the native Auri app.");
+      const info = await actions.openBrowserUi();
+      appendOutput(dispatch, { stdout: `Auri UI: ${info?.url || "http://127.0.0.1:8899"}\n` });
+      return info || { ok: true };
+    }
+
     if (domain === "settings" && action === "open") {
       openSubtab("settings", context);
       return { ok: true };

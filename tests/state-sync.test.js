@@ -119,3 +119,24 @@ test("TerminalSession notifies the output hook when new bytes are recorded", asy
   session.appendRecord({ type: "bytes", bytes: new TextEncoder().encode("data") });
   assert.equal(notified, 1);
 });
+
+test("TerminalSession keeps an incrementally decoded tail instead of re-decoding all records", async () => {
+  const { TerminalSession, TERMINAL_TAIL_MAX_CHARS } = await import("../src/services/terminal-session.js");
+  const encoder = new TextEncoder();
+  const session = new TerminalSession({ isNative: false }, {});
+
+  session.appendRecord({ type: "bytes", bytes: encoder.encode("first ") });
+  session.appendRecord({ type: "bytes", bytes: encoder.encode("second") });
+  assert.equal(session.bufferText(), "first second");
+
+  // A multi-byte character split across two records must decode correctly.
+  const euro = encoder.encode("€");
+  session.appendRecord({ type: "bytes", bytes: euro.slice(0, 1) });
+  session.appendRecord({ type: "bytes", bytes: euro.slice(1) });
+  assert.equal(session.bufferText().endsWith("second€"), true);
+
+  // The tail stays bounded no matter how much output arrives.
+  session.appendRecord({ type: "bytes", bytes: encoder.encode("x".repeat(TERMINAL_TAIL_MAX_CHARS + 500)) });
+  assert.equal(session.bufferText().length, TERMINAL_TAIL_MAX_CHARS);
+  assert.equal(session.bufferText().endsWith("x"), true);
+});

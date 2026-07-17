@@ -113,6 +113,7 @@ auri system tunnel start <port> [--install]                              Start a
 auri system tunnel stop <port>                                           Stop the Cloudflare HTTPS tunnel for a process port.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
+auri browser                                                                   Serve this UI at http://127.0.0.1:8899 and open it in the default web browser.
 auri help                                                                      Show all available commands.
 ```
 

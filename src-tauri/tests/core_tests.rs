@@ -16,6 +16,9 @@ mod view_model;
 #[path = "../src/cli/screen.rs"]
 mod screen;
 
+#[path = "../src/cli/session_state.rs"]
+mod session_state;
+
 #[path = "../src/core/state_sync.rs"]
 mod state_sync;
 
@@ -24,6 +27,9 @@ mod term_bridge;
 
 #[path = "../src/core/util.rs"]
 mod util;
+
+#[path = "../src/core/webserver.rs"]
+mod webserver;
 
 #[path = "../src/core/webview_sleep.rs"]
 mod webview_sleep;
@@ -148,6 +154,98 @@ fn state_and_attach_ipc_requests_parse_into_dedicated_variants() {
     );
     assert!(ipc::parse_request("__auri_quiet__:").is_err());
     assert!(ipc::parse_request("__auri_term_attach__:").is_err());
+    assert_eq!(
+        ipc::parse_request("__auri_copy__:aGVsbG8=").unwrap(),
+        ipc::IncomingRequest::CopyText("aGVsbG8=")
+    );
+    assert!(ipc::parse_request("__auri_copy__:").is_err());
+}
+
+#[test]
+fn lifecycle_ipc_requests_parse_into_dedicated_variants() {
+    assert_eq!(
+        ipc::parse_request(ipc::SERVE_UI_REQUEST).unwrap(),
+        ipc::IncomingRequest::ServeUi
+    );
+    assert_eq!(
+        ipc::parse_request(ipc::QUIT_REQUEST).unwrap(),
+        ipc::IncomingRequest::Quit
+    );
+    assert_eq!(
+        ipc::parse_request(ipc::APP_INFO_REQUEST).unwrap(),
+        ipc::IncomingRequest::AppInfo
+    );
+}
+
+#[test]
+fn web_request_heads_parse_method_path_and_host() {
+    let head = webserver::parse_http_head(
+        "POST /__auri__/invoke/system_snapshot HTTP/1.1\r\nHost: 127.0.0.1:8899\r\nContent-Length: 42\r\nAccept: */*\r\n\r\n",
+    )
+    .unwrap();
+    assert_eq!(head.method, "POST");
+    assert_eq!(head.path, "/__auri__/invoke/system_snapshot");
+    assert_eq!(head.host, "127.0.0.1:8899");
+    assert_eq!(head.content_length, 42);
+
+    let plain = webserver::parse_http_head("GET /src/main.js?v=3 HTTP/1.1\r\nhost: localhost:8899\r\n\r\n").unwrap();
+    assert_eq!(plain.method, "GET");
+    assert_eq!(plain.path, "/src/main.js?v=3");
+    assert_eq!(plain.host, "localhost:8899");
+    assert_eq!(plain.content_length, 0);
+
+    assert!(webserver::parse_http_head("").is_err());
+    assert!(webserver::parse_http_head("GARBAGE\r\n\r\n").is_err());
+}
+
+#[test]
+fn web_server_rejects_non_local_hosts_to_stop_dns_rebinding() {
+    assert!(webserver::host_is_local("127.0.0.1:8899"));
+    assert!(webserver::host_is_local("localhost:8899"));
+    assert!(webserver::host_is_local("localhost"));
+    assert!(webserver::host_is_local("[::1]:8899"));
+    assert!(!webserver::host_is_local("evil.example:8899"));
+    assert!(!webserver::host_is_local("127.0.0.1.evil.example"));
+    assert!(!webserver::host_is_local(""));
+}
+
+#[test]
+fn web_asset_paths_stay_inside_the_ui_root() {
+    assert_eq!(webserver::sanitize_asset_path("/").as_deref(), Some("index.html"));
+    assert_eq!(
+        webserver::sanitize_asset_path("/src/main.js?v=3").as_deref(),
+        Some("src/main.js")
+    );
+    assert_eq!(
+        webserver::sanitize_asset_path("/styles%20v2.css").as_deref(),
+        Some("styles v2.css")
+    );
+    assert_eq!(webserver::sanitize_asset_path("/a/../../etc/passwd"), None);
+    assert_eq!(webserver::sanitize_asset_path("/..%2F..%2Fetc/passwd"), None);
+    assert_eq!(webserver::sanitize_asset_path("/.git/config"), None);
+    assert_eq!(webserver::sanitize_asset_path("relative"), None);
+}
+
+#[test]
+fn web_invoke_paths_extract_safe_command_names() {
+    assert_eq!(
+        webserver::parse_invoke_command("/__auri__/invoke/system_snapshot"),
+        Some("system_snapshot")
+    );
+    assert_eq!(webserver::parse_invoke_command("/__auri__/invoke/"), None);
+    assert_eq!(webserver::parse_invoke_command("/__auri__/invoke/Bad-Name!"), None);
+    assert_eq!(webserver::parse_invoke_command("/src/main.js"), None);
+}
+
+#[test]
+fn web_content_types_cover_ui_assets() {
+    assert_eq!(webserver::content_type_for("index.html"), "text/html; charset=utf-8");
+    assert_eq!(webserver::content_type_for("src/main.js"), "text/javascript; charset=utf-8");
+    assert_eq!(webserver::content_type_for("styles.css"), "text/css; charset=utf-8");
+    assert_eq!(webserver::content_type_for("data.json"), "application/json");
+    assert_eq!(webserver::content_type_for("icon.svg"), "image/svg+xml");
+    assert_eq!(webserver::content_type_for("photo.png"), "image/png");
+    assert_eq!(webserver::content_type_for("unknown.bin"), "application/octet-stream");
 }
 
 #[test]
@@ -277,6 +375,7 @@ fn screen_frame_mirrors_workspaces_subtabs_and_the_system_monitor() {
             sort_by: "cpu".to_string(),
             sort_direction: "desc".to_string(),
             filter: String::new(),
+            selected_pid: None,
             process_count: 1,
             metrics: Some(view_model::MetricsView {
                 hostname: "mini".to_string(),
@@ -308,22 +407,287 @@ fn screen_frame_mirrors_workspaces_subtabs_and_the_system_monitor() {
         },
         info: view_model::InfoView { unread: 0, items: vec![] },
         clipboard_count: 2,
+        clipboard_items: vec![],
     };
     let ui = screen::UiState::default();
     let frame = screen::render_frame(&snapshot, &ui, (100, 30));
 
-    assert!(frame.contains("Home"), "workspace list renders");
-    assert!(frame.contains("System"), "subtab bar renders");
-    assert!(frame.contains("node"), "process table renders");
-    assert!(frame.contains("42"), "pid renders");
-    assert!(frame.contains("Apple M4"), "cpu metric renders");
-    assert!(frame.contains("12.5"), "cpu usage renders");
-    for line in frame.split("\r\n") {
+    assert!(frame.text.contains("Home"), "workspace list renders");
+    assert!(frame.text.contains("System"), "subtab bar renders");
+    assert!(frame.text.contains("node"), "process table renders");
+    assert!(frame.text.contains("42"), "pid renders");
+    assert!(frame.text.contains("Apple M4"), "cpu metric renders");
+    assert!(frame.text.contains("12.5"), "cpu usage renders");
+    for line in frame.text.split("\r\n") {
         assert!(
             ansi::visible_width(line) <= 100,
             "every frame line stays within the terminal width"
         );
     }
+}
+
+#[test]
+fn mouse_reports_decode_press_release_drag_and_wheel() {
+    use input::{Event, Key, Mouse, MouseKind};
+    let events = input::parse_events(b"\x1b[<0;5;3M\x1b[<0;9;3m\x1b[<32;6;4M\x1b[<64;2;2M\x1b[<65;2;2Mq");
+    assert_eq!(
+        events,
+        vec![
+            Event::Mouse(Mouse { kind: MouseKind::Press, x: 4, y: 2 }),
+            Event::Mouse(Mouse { kind: MouseKind::Release, x: 8, y: 2 }),
+            Event::Mouse(Mouse { kind: MouseKind::Drag, x: 5, y: 3 }),
+            Event::Mouse(Mouse { kind: MouseKind::WheelUp, x: 1, y: 1 }),
+            Event::Mouse(Mouse { kind: MouseKind::WheelDown, x: 1, y: 1 }),
+            Event::Key(Key::Char('q')),
+        ]
+    );
+}
+
+fn sample_snapshot() -> view_model::SnapshotView {
+    let mut snapshot = view_model::SnapshotView {
+        seq: 1,
+        active_tab_id: "tab-1".to_string(),
+        active_subtab_id: "sub-sys".to_string(),
+        ..Default::default()
+    };
+    snapshot.workspaces = vec![
+        view_model::WorkspaceView {
+            id: "tab-1".to_string(),
+            title: "Home".to_string(),
+            active: true,
+            active_subtab_id: "sub-sys".to_string(),
+            folder_path: "/Users/eco/project/tem".to_string(),
+            terminal_cwd: "~/project/tem".to_string(),
+            terminal_running: false,
+            subtabs: vec![
+                view_model::SubtabView {
+                    id: "sub-term".to_string(),
+                    kind: "terminal".to_string(),
+                    title: "Terminal".to_string(),
+                    active: false,
+                    cwd: Some("~".to_string()),
+                    url: None,
+                },
+                view_model::SubtabView {
+                    id: "sub-sys".to_string(),
+                    kind: "system".to_string(),
+                    title: "System".to_string(),
+                    active: true,
+                    cwd: None,
+                    url: None,
+                },
+            ],
+        },
+        view_model::WorkspaceView {
+            id: "tab-2".to_string(),
+            title: "Space 2".to_string(),
+            active: false,
+            folder_path: "/tmp/demo".to_string(),
+            ..Default::default()
+        },
+    ];
+    snapshot.system.processes = vec![view_model::ProcessView {
+        pid: 42,
+        name: "node".to_string(),
+        ports: vec![3000],
+        ..Default::default()
+    }];
+    snapshot.system.process_count = 1;
+    snapshot.clipboard_items = vec![view_model::ClipboardItemView {
+        id: "clip-9".to_string(),
+        kind: "text".to_string(),
+        pinned: false,
+        preview: "copied text".to_string(),
+    }];
+    snapshot.clipboard_count = 1;
+    snapshot
+}
+
+#[test]
+fn frame_puts_workspaces_with_folder_names_above_the_subtab_bar_and_exposes_click_regions() {
+    let snapshot = sample_snapshot();
+    let ui = screen::UiState::default();
+    let frame = screen::render_frame(&snapshot, &ui, (100, 24));
+
+    let workspace_row = frame
+        .plain
+        .iter()
+        .position(|row| row.contains("Home") && row.contains("tem"))
+        .expect("workspace chips show the space name with its folder name");
+    let subtab_row = frame
+        .plain
+        .iter()
+        .position(|row| row.contains("Terminal") && row.contains("System"))
+        .expect("subtab bar renders");
+    assert!(workspace_row < subtab_row, "workspaces sit above the subtab bar");
+    assert!(frame.plain[workspace_row].contains("Space 2"), "workspaces lay out horizontally");
+
+    let click = |x: usize, y: usize| screen::hit_test(&frame.regions, x, y).cloned();
+    let workspace_x = frame.plain[workspace_row].find("Space 2").unwrap();
+    assert_eq!(
+        click(workspace_x + 1, workspace_row),
+        Some(screen::Action::SelectWorkspace("tab-2".to_string()))
+    );
+    let subtab_x = frame.plain[subtab_row].find("Terminal").unwrap();
+    assert_eq!(
+        click(subtab_x, subtab_row),
+        Some(screen::Action::SelectSubtab("sub-term".to_string()))
+    );
+
+    let header_row = frame
+        .plain
+        .iter()
+        .position(|row| row.contains("CPU%") && row.contains("PORT"))
+        .expect("system header renders");
+    let cpu_x = frame.plain[header_row].find("CPU%").unwrap();
+    assert_eq!(click(cpu_x + 1, header_row), Some(screen::Action::SortBy("cpu".to_string())));
+    let port_x = frame.plain[header_row].find("PORT").unwrap();
+    assert_eq!(click(port_x + 1, header_row), Some(screen::Action::SortBy("port".to_string())));
+    let process_row = frame
+        .plain
+        .iter()
+        .position(|row| row.contains("node"))
+        .expect("process row renders");
+    assert_eq!(click(10, process_row), Some(screen::Action::SelectProcess(42)));
+}
+
+#[test]
+fn terminal_panel_regions_cover_the_buffer_area_for_click_focus_and_selection() {
+    let mut snapshot = sample_snapshot();
+    snapshot.active_subtab_id = "sub-term".to_string();
+    snapshot.workspaces[0].active_subtab_id = "sub-term".to_string();
+    snapshot.workspaces[0].subtabs[0].active = true;
+    snapshot.workspaces[0].subtabs[1].active = false;
+    snapshot.terminals.insert(
+        "sub-term".to_string(),
+        view_model::TerminalBufferView {
+            session_id: "session-1".to_string(),
+            text: (1..=40).map(|line| format!("line {line}\r\n")).collect(),
+        },
+    );
+    let ui = screen::UiState::default();
+    let frame = screen::render_frame(&snapshot, &ui, (80, 20));
+    let terminal_region = frame
+        .regions
+        .iter()
+        .find(|region| region.action == screen::Action::FocusTerminal)
+        .expect("terminal area is clickable");
+    assert!(terminal_region.height >= 10, "terminal area covers the panel");
+
+    // Scrolled view shows earlier lines.
+    let scrolled = screen::render_frame(
+        &snapshot,
+        &screen::UiState { terminal_scroll: 10, ..screen::UiState::default() },
+        (80, 20),
+    );
+    let bottom_line = |frame: &screen::Frame| frame
+        .plain
+        .iter()
+        .rev()
+        .find(|row| row.contains("line "))
+        .cloned()
+        .unwrap_or_default();
+    assert!(bottom_line(&frame).contains("line 40"));
+    assert!(bottom_line(&scrolled).contains("line 30"));
+}
+
+#[test]
+fn clipboard_panel_lists_items_with_copy_regions() {
+    let snapshot = sample_snapshot();
+    let mut with_clipboard = snapshot.clone();
+    with_clipboard.active_subtab_id = "sub-clip".to_string();
+    with_clipboard.workspaces[0].active_subtab_id = "sub-clip".to_string();
+    with_clipboard.workspaces[0].subtabs.push(view_model::SubtabView {
+        id: "sub-clip".to_string(),
+        kind: "clipboard".to_string(),
+        title: "Clipboard".to_string(),
+        active: true,
+        cwd: None,
+        url: None,
+    });
+    let frame = screen::render_frame(&with_clipboard, &screen::UiState::default(), (90, 20));
+    let row = frame
+        .plain
+        .iter()
+        .position(|line| line.contains("copied text"))
+        .expect("clipboard item preview renders");
+    assert_eq!(
+        screen::hit_test(&frame.regions, 5, row).cloned(),
+        Some(screen::Action::CopyClipboardItem("clip-9".to_string()))
+    );
+}
+
+#[test]
+fn selection_extracts_trimmed_text_between_two_grid_points() {
+    let plain = vec![
+        "first row text  ".to_string(),
+        "second row      ".to_string(),
+        "third           ".to_string(),
+    ];
+    assert_eq!(screen::selection_text(&plain, (6, 0), (10, 1)), "row text\nsecond row");
+    // Reversed drag order normalises.
+    assert_eq!(screen::selection_text(&plain, (10, 1), (6, 0)), "row text\nsecond row");
+    assert_eq!(screen::selection_text(&plain, (0, 2), (4, 2)), "third");
+}
+
+#[test]
+fn local_session_state_manages_workspaces_subtabs_and_command_routing() {
+    use session_state::SessionState;
+    let mut state = SessionState::new("~/home");
+    assert_eq!(state.workspaces.len(), 1);
+    let first_terminal = state.workspaces[0].subtabs[0].id.clone();
+
+    state.apply("tab new Research").unwrap();
+    assert_eq!(state.workspaces.len(), 2);
+    assert_eq!(state.workspaces[1].title, "Research");
+    assert_eq!(state.active_tab_id, state.workspaces[1].id);
+
+    state.apply("subtab new system").unwrap();
+    let active = state.active_workspace().unwrap();
+    assert_eq!(active.subtabs.len(), 4, "terminal, clipboard, info, then the new system subtab");
+    assert_eq!(active.active_subtab().unwrap().kind, "system");
+
+    let second_tab = state.active_tab_id.clone();
+    state.apply(&format!("tab select {}", state.workspaces[0].id)).unwrap();
+    assert_eq!(state.workspaces[0].id, state.active_tab_id);
+    state.apply(&format!("tab close {second_tab}")).unwrap();
+    assert_eq!(state.workspaces.len(), 1);
+
+    assert_eq!(
+        state.apply("terminal run echo hello").unwrap(),
+        session_state::Effect::RunTerminal { subtab_id: first_terminal, command: "echo hello".to_string() }
+    );
+    assert_eq!(
+        state.apply("system sort ram").unwrap(),
+        session_state::Effect::None
+    );
+    assert_eq!(state.system_sort_by, "ram");
+    state.apply("system search node web").unwrap();
+    assert_eq!(state.system_filter, "node web");
+    assert!(state.apply("web open https://x").is_err(), "unsupported domains error honestly");
+}
+
+#[test]
+fn local_process_sort_and_filter_match_the_gui_rules() {
+    use session_state::{filter_processes, sort_processes, LocalProcess};
+    let processes = vec![
+        LocalProcess { pid: 1, name: "chrome".into(), cpu_percent: 5.0, memory_bytes: 300, ports: vec![], ..Default::default() },
+        LocalProcess { pid: 2, name: "node api".into(), cpu_percent: 1.0, memory_bytes: 900, ports: vec![8080], ..Default::default() },
+        LocalProcess { pid: 3, name: "node worker".into(), cpu_percent: 9.0, memory_bytes: 100, ports: vec![3000], ..Default::default() },
+    ];
+    let filtered = filter_processes(&processes, "node chrome");
+    assert_eq!(filtered.len(), 3, "space separates OR keywords");
+    let filtered = filter_processes(&processes, "node");
+    assert_eq!(filtered.len(), 2);
+
+    let mut by_ram = filtered.clone();
+    sort_processes(&mut by_ram, "ram", "desc");
+    assert_eq!(by_ram[0].pid, 2);
+
+    let mut by_port = processes.clone();
+    sort_processes(&mut by_port, "port", "desc");
+    assert_eq!(by_port[0].pid, 3, "port sort puts the lowest listening port first");
+    assert_eq!(by_port.last().unwrap().pid, 1, "portless processes sort last");
 }
 
 #[test]

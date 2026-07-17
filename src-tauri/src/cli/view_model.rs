@@ -14,6 +14,7 @@ pub struct SnapshotView {
     pub system: SystemView,
     pub info: InfoView,
     pub clipboard_count: usize,
+    pub clipboard_items: Vec<ClipboardItemView>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -50,6 +51,7 @@ pub struct SystemView {
     pub sort_by: String,
     pub sort_direction: String,
     pub filter: String,
+    pub selected_pid: Option<i64>,
     pub process_count: usize,
     pub metrics: Option<MetricsView>,
     pub processes: Vec<ProcessView>,
@@ -84,6 +86,14 @@ pub struct ProcessView {
     pub write_bytes_per_second: f64,
     pub ports: Vec<u16>,
     pub priority: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ClipboardItemView {
+    pub id: String,
+    pub kind: String,
+    pub pinned: bool,
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, Default)]

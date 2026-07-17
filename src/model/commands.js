@@ -89,6 +89,7 @@ export const COMMANDS = Object.freeze([
   ["system tunnel stop <port>", "Stop the Cloudflare HTTPS tunnel for a process port."],
   ["info show", "Open the Info subtab."],
   ["info clear", "Clear notifications and errors."],
+  ["browser", "Serve this UI at http://127.0.0.1:8899 and open it in the default web browser."],
   ["help", "Show all available commands."]
 ]);
 
@@ -158,6 +159,7 @@ export function parseCommand(input) {
   }
   const domain = tokens.shift().toLowerCase();
   if (domain === "help") return { domain: "help", action: "show", args: [] };
+  if (domain === "browser") return { domain: "browser", action: (tokens.shift() || "open").toLowerCase(), args: tokens };
   const action = tokens.shift();
   if (!action) throw new Error(`Choose an action for ${domain}. Try: auri help`);
   return { domain, action: action.toLowerCase(), args: tokens };

@@ -303,7 +303,12 @@ export class AppController {
         requestProcessPriorityPermission: (prompt) => this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: prompt } }, { preserveInput: true }),
         consumeProcessPriorityPassword: () => this.view.consumeSystemPriorityPassword?.() || "",
         closeProcessPriorityPermission: () => this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: null } }, { preserveInput: true }),
-        exitApp: () => this.backend.exitApp()
+        exitApp: () => this.backend.exitApp(),
+        openBrowserUi: async () => {
+          const info = await this.backend.serveUi();
+          if (!info?.alreadyHosted) await this.backend.openExternalUrl(info.url);
+          return info;
+        }
       }
     };
   }

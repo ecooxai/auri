@@ -54,14 +54,23 @@ pub fn terminal_size() -> (u16, u16) {
 
 pub fn enter_ui_screen() {
     let mut stdout = std::io::stdout();
-    // Alternate screen, hidden cursor, home.
-    let _ = stdout.write_all(b"\x1b[?1049h\x1b[?25l\x1b[H");
+    // Alternate screen, hidden cursor, home, SGR mouse reporting (clicks,
+    // drags, and wheel — needed for tab clicks, sorting, and selection).
+    let _ = stdout.write_all(b"\x1b[?1049h\x1b[?25l\x1b[H\x1b[?1002h\x1b[?1006h");
     let _ = stdout.flush();
 }
 
 pub fn leave_ui_screen() {
     let mut stdout = std::io::stdout();
-    let _ = stdout.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+    // Mouse reporting off first so attached programs get their own mouse.
+    let _ = stdout.write_all(b"\x1b[?1002l\x1b[?1006l\x1b[0m\x1b[?25h\x1b[?1049l");
+    let _ = stdout.flush();
+}
+
+/// Copy text to the user's clipboard through the hosting terminal (OSC 52).
+pub fn osc52_copy(encoded_base64: &str) {
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(format!("\x1b]52;c;{encoded_base64}\x07").as_bytes());
     let _ = stdout.flush();
 }
 

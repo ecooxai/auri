@@ -1,3 +1,4 @@
+import { formatImageMeta, previewClipboardText } from "./clipboard.js";
 import { filterSystemProcesses, normalizePortDetails, sortSystemProcesses } from "./system.js";
 
 // Terminal buffers ride along in the snapshot so background tabs can live as
@@ -104,6 +105,23 @@ function serializeInfo(info) {
   };
 }
 
+const CLIPBOARD_ITEM_LIMIT = 50;
+
+function serializeClipboard(clipboard) {
+  const items = Array.isArray(clipboard?.items) ? clipboard.items : [];
+  return {
+    count: items.length,
+    items: items.slice(0, CLIPBOARD_ITEM_LIMIT).map((item) => ({
+      id: item.id,
+      kind: item.kind || "text",
+      pinned: Boolean(item.pinned),
+      preview: item.kind === "image"
+        ? formatImageMeta(item) || "Image"
+        : previewClipboardText(item.text)
+    }))
+  };
+}
+
 function serializeTerminalBuffers(buffers) {
   const terminals = {};
   for (const [subtabId, buffer] of Object.entries(buffers || {})) {
@@ -131,7 +149,7 @@ export function serializeAppSnapshot(state, extras = {}) {
     terminals: serializeTerminalBuffers(extras.terminalBuffers),
     system: serializeSystem(state, processLimit),
     info: serializeInfo(state.info),
-    clipboard: { count: (state.clipboard?.items || []).length },
+    clipboard: serializeClipboard(state.clipboard),
     settings: { theme: state.settings?.theme || "aurora-light", fontSize: state.settings?.fontSize || 20 }
   };
 }

@@ -323,6 +323,7 @@ auri system tunnel start <port> [--install]                              Start a
 auri system tunnel stop <port>                                           Stop the Cloudflare HTTPS tunnel for a process port.
 auri info show                                                                 Open the Info subtab.
 auri info clear                                                                Clear notifications and errors.
+auri browser                                                                   Serve this UI at http://127.0.0.1:8899 and open it in the default web browser.
 auri help                                                                      Show all available commands.
 ```
 
@@ -348,15 +349,28 @@ Paths or values containing spaces should be quoted. Shell command tails and AI p
 
 ## Terminal UI (`auri cli`)
 
-`auri cli` opens an interactive terminal UI that mirrors the running desktop app. Both frontends render the same app state: the GUI publishes a JSON snapshot of every workspace, subtab, terminal buffer, and the system monitor into the native layer after each change, and the TUI watches that stream over the per-instance Unix socket. Selecting a workspace or subtab in one frontend selects it in the other.
+`auri` (or `auri cli`) opens an interactive terminal UI. With a running desktop app it mirrors it live: the GUI publishes a JSON snapshot of every workspace, subtab, terminal buffer, and the system monitor into the native layer after each change, and the TUI watches that stream over the per-instance Unix socket. Selecting a workspace or subtab in one frontend selects it in the other. Without a running app the TUI hosts sessions itself, tmux-style: real PTYs, the real system monitor, and the shared clipboard history live inside the CLI process and end with it (the status line says "standalone" instead of pretending to mirror).
 
-- `↑/↓` (or `k/j`) select the workspace, `←/→` or `Tab` select the subtab — the GUI follows.
-- The terminal panel shows the shared terminal buffer. `r` runs a one-line command through `auri terminal run`; `a` attaches the full PTY session raw into your terminal (interactive programs work; `Ctrl+]` detaches; the terminal size follows the GUI window).
-- The System panel mirrors CPU/RAM/NET/DISK metrics and the sorted, filtered process table. `s` cycles the sort, `/` edits the shared search filter, `R` refreshes.
+- Workspace chips with their folder names sit horizontally at the top, above the subtab bar; click a chip or subtab to focus it. `↑/↓` (or `k/j`) select the workspace, `←/→` or `Tab` select the subtab — the GUI follows when mirrored.
+- The terminal panel shows the shared terminal buffer. Clicking the terminal (or `r`) readies a one-line prompt that runs through `auri terminal run`; `a` attaches the full PTY session raw into your terminal (interactive programs work; `Ctrl+]` detaches). The mouse wheel scrolls the buffer.
+- The System panel mirrors CPU/RAM/NET/DISK metrics and the sorted, filtered process table. Click a column header (CPU, RAM, NET, DISK, PORT, PID, NAME) to sort by it, click a row to select the process; `s` cycles the sort, `/` edits the shared search filter, `R` refreshes.
+- The Clipboard panel lists the shared clipboard history with pinned state and previews; click an item to copy it back to the system clipboard, and scroll with the wheel.
+- Drag with the mouse to select rendered text anywhere; a selection of four or more characters is copied to the clipboard two seconds after release (click to cancel), through the app, the local clipboard, or OSC 52 as a last resort.
 - `:` runs any Auri command from the registry, `g` focuses the GUI window, `q` quits.
 - Web, viewer, media, and settings subtabs stay selected and in sync but render in the GUI window; the TUI says so instead of pretending.
 
-`auri cli` requires a running Auri app — it is a live mirror, not a second instance. TUI-issued commands use a quiet socket form that does not steal focus to the GUI window.
+TUI-issued commands use a quiet socket form that does not steal focus to the GUI window.
+
+## Browser UI (`auri browser`, port 8899)
+
+`auri browser` asks the running app to serve the full Auri UI at `http://127.0.0.1:8899` and opens it in the default web browser (later visits can simply open that address; the GUI command `auri browser` does the same from the prompt). The page is the same frontend as the desktop window: native calls route over a local HTTP bridge and terminal output streams over server-sent events, so terminals, the folder pane, the system monitor, clipboard history, files, and AI all work. The browser session is a second frontend sharing the same native backend — it keeps its own workspaces and does not overwrite the desktop window's published app state. Web subtabs cannot embed a WebKit view inside a browser page, so opening one opens a plain new browser tab instead (one named tab per subtab, re-used on navigation). The server only accepts loopback connections and rejects non-local `Host` headers.
+
+## App lifecycle from the CLI
+
+- `auri` / `auri cli` — open the terminal UI (mirror of the running app, or standalone).
+- `auri browser` — serve and open the browser UI.
+- `auri stop` — stop the running Auri app.
+- `auri restart` — restart the app backend, wait for its command socket to return, then open the terminal UI.
 
 ## Background tabs live as state, not DOM
 

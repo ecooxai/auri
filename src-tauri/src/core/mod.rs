@@ -14,5 +14,6 @@ pub mod workspace;
 
 pub mod terminal;
 
+pub mod webserver;
 pub mod webview;
 pub mod webview_sleep;

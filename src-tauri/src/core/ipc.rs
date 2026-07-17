@@ -24,6 +24,10 @@ pub const STATE_REQUEST: &str = "__auri_state__";
 pub const WATCH_REQUEST: &str = "__auri_watch__";
 pub const QUIET_PREFIX: &str = "__auri_quiet__:";
 pub const ATTACH_PREFIX: &str = "__auri_term_attach__:";
+pub const COPY_PREFIX: &str = "__auri_copy__:";
+pub const SERVE_UI_REQUEST: &str = "__auri_serve_ui__";
+pub const QUIT_REQUEST: &str = "__auri_quit__";
+pub const APP_INFO_REQUEST: &str = "__auri_appinfo__";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum IncomingRequest<'a> {
@@ -37,6 +41,15 @@ pub enum IncomingRequest<'a> {
     StateWatch,
     /// Bidirectional raw byte bridge onto a running PTY session.
     TerminalAttach(&'a str),
+    /// Copy base64-encoded UTF-8 text to the system clipboard. Base64 keeps
+    /// multi-line selections inside the line-framed protocol.
+    CopyText(&'a str),
+    /// Start (or reuse) the local UI web server and reply with its URL.
+    ServeUi,
+    /// Quit the app after acknowledging (`auri stop`).
+    Quit,
+    /// Reply with this instance's pid and executable path (`auri restart`).
+    AppInfo,
 }
 
 pub fn parse_request(input: &str) -> Result<IncomingRequest<'_>, String> {
@@ -66,6 +79,22 @@ pub fn parse_request(input: &str) -> Result<IncomingRequest<'_>, String> {
             return Err("Terminal session id is empty.".to_string());
         }
         return Ok(IncomingRequest::TerminalAttach(session));
+    }
+    if let Some(encoded) = request.strip_prefix(COPY_PREFIX) {
+        let encoded = encoded.trim();
+        if encoded.is_empty() {
+            return Err("Copy payload is empty.".to_string());
+        }
+        return Ok(IncomingRequest::CopyText(encoded));
+    }
+    if request == SERVE_UI_REQUEST {
+        return Ok(IncomingRequest::ServeUi);
+    }
+    if request == QUIT_REQUEST {
+        return Ok(IncomingRequest::Quit);
+    }
+    if request == APP_INFO_REQUEST {
+        return Ok(IncomingRequest::AppInfo);
     }
     Ok(IncomingRequest::Command(request))
 }
@@ -302,6 +331,42 @@ fn handle_connection(mut stream: UnixStream, app: tauri::AppHandle) {
         },
         Ok(IncomingRequest::StateWatch) => stream_state(stream),
         Ok(IncomingRequest::TerminalAttach(session_id)) => attach_terminal(stream, session_id),
+        Ok(IncomingRequest::CopyText(encoded)) => {
+            let result = super::util::decode_base64(encoded)
+                .and_then(|bytes| String::from_utf8(bytes).map_err(|error| error.to_string()))
+                .and_then(|text| super::clipboard::set_text(&text));
+            respond_simple(stream, result);
+        }
+        Ok(IncomingRequest::ServeUi) => match super::webserver::ensure_started(app.clone()) {
+            Ok(url) => {
+                let _ = stream.write_all(format!("ok:{url}\n").as_bytes());
+            }
+            Err(error) => {
+                let _ = stream.write_all(format!("error:{error}\n").as_bytes());
+            }
+        },
+        Ok(IncomingRequest::Quit) => {
+            let _ = stream.write_all(b"ok\n");
+            let _ = stream.flush();
+            drop(stream);
+            // app.exit ends the process before CommandServer::drop runs, so
+            // remove the socket now instead of leaving a stale file.
+            if let Ok(path) = socket_path() {
+                let _ = fs::remove_file(path);
+            }
+            app.exit(0);
+        }
+        Ok(IncomingRequest::AppInfo) => {
+            let executable = std::env::current_exe()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let reply = format!(
+                "{{\"pid\":{},\"exe\":{}}}\n",
+                std::process::id(),
+                serde_json::Value::String(executable)
+            );
+            let _ = stream.write_all(reply.as_bytes());
+        }
         Err(error) => {
             let _ = stream.write_all(format!("error:{error}\n").as_bytes());
         }
