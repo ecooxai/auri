@@ -1,6 +1,6 @@
 {
   "name": "auri",
-  "version": "0.8.0",
+  "version": "0.81.0",
   "private": true,
   "type": "module",
   "scripts": {

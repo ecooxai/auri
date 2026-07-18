@@ -524,10 +524,16 @@ export class TerminalSession {
     if (!visible) return;
     const x = Math.max(0, Number(frame.cursorX) || 0);
     const y = Math.max(0, Number(frame.cursorY) || 0);
+    const row = this.screenElement?.querySelectorAll?.(".term-row")?.[y];
+    // Anchor to the row WebKit actually laid out. A hidden font probe can
+    // round to a different height on Linux, and multiplying that small error
+    // by cursorY eventually draws the cursor one or more rows above input.
+    const top = Number.isFinite(row?.offsetTop) ? row.offsetTop : y * this.rowHeight;
+    const height = Number(row?.offsetHeight) > 0 ? row.offsetHeight : this.rowHeight;
     cursor.style.left = `${Math.round(x * this.cellWidth)}px`;
-    cursor.style.top = `${Math.round(y * this.rowHeight)}px`;
+    cursor.style.top = `${Math.round(top)}px`;
     cursor.style.width = `${Math.max(1, Math.round(this.cellWidth))}px`;
-    cursor.style.height = `${Math.max(1, Math.round(this.rowHeight))}px`;
+    cursor.style.height = `${Math.max(1, Math.round(height))}px`;
   }
 
   placeMediaCards() {

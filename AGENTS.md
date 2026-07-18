@@ -1,6 +1,6 @@
 # Auri Agent Guide
 
-Current release: **v0.8** (package version `0.8.0`).
+Current release: **v0.81** (package version `0.81.0`).
 
 ## Common commands
 
