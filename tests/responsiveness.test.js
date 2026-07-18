@@ -87,6 +87,13 @@ test("terminal visuals use the app light palette", async () => {
   assert.doesNotMatch(css, /\.term-scroll\s*\{[^}]*#121c2f/s);
 });
 
+test("terminal ANSI backgrounds fill the complete row box", async () => {
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(css, /\.term-row\s*\{[^}]*height:\s*1\.25em[^}]*line-height:\s*1\.25em/s);
+  assert.match(css, /\.term-row\s*>\s*span\s*\{[^}]*display:\s*inline-block[^}]*height:\s*100%[^}]*vertical-align:\s*top/s);
+});
+
 test("every terminal control stays light in connected and input states", async () => {
   const css = await readFile("styles.css", "utf8");
 

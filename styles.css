@@ -1005,7 +1005,11 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 }
 .term-scroll::-webkit-scrollbar { width: 7px; }
 .term-scroll::-webkit-scrollbar-thumb { background: rgba(99, 117, 149, .16); border-radius: 99px; }
-.term-row { min-height: 1.25em; white-space: pre; overflow: hidden; }
+.term-row { height: 1.25em; line-height: 1.25em; white-space: pre; overflow: hidden; }
+/* WebKit paints an inline span's background around the glyph box, excluding
+   the line-height leading. Stretch each ANSI run through the full cell row so
+   dark full-screen TUIs do not expose the light terminal background as lines. */
+.term-row > span { display: inline-block; height: 100%; vertical-align: top; }
 .term-row::selection, .term-row *::selection { background: rgba(207, 217, 255, .6); }
 .term-screen { position: relative; }
 .term-probe { position: absolute; visibility: hidden; white-space: pre; }
