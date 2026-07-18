@@ -335,7 +335,7 @@ test("three-second folder poll refreshes metadata and promotes newly discovered 
   assert.deepEqual(folderPatches, [{ replaceAll: false, addedPaths: ["/tmp/new"] }]);
 });
 
-test("folder highlight expiry patches only row classes without rendering the app", async () => {
+test("later folder polls keep new markers indefinitely without rendering the app", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   let renders = 0;
   const folderPatches = [];
@@ -347,19 +347,23 @@ test("folder highlight expiry patches only row classes without rendering the app
       getTerminalInputValue: () => "",
       showToast() {}
     },
-    backend: { isNative: true },
+    backend: {
+      isNative: true,
+      listDirectory: async () => [{ path: "/tmp/new", name: "new", size: 2 }]
+    },
     terminalSessionFactory: () => ({ initialize: async () => {} })
   });
   const workspace = controller.state.tabs[0];
   controller.state = {
     ...controller.state,
     tabs: [{ ...workspace, folder: { ...workspace.folder, path: "/tmp", entries: [
-      { path: "/tmp/new", name: "new", _auriNew: true, _auriNewAt: 1_000 }
+      { path: "/tmp/new", name: "new", size: 1, _auriNew: true, _auriNewAt: 1 }
     ] } }]
   };
 
-  assert.equal(controller.expireFolderHighlights({ workspaceId: workspace.id, path: "/tmp", now: 31_000 }), true);
-  assert.equal(controller.state.tabs[0].folder.entries[0]._auriNew, false);
+  assert.equal(await controller.pollCurrentFolder(), true);
+  assert.equal(controller.state.tabs[0].folder.entries[0]._auriNew, true);
+  assert.equal(controller.state.tabs[0].folder.entries[0].size, 2);
   assert.equal(renders, 0);
   assert.deepEqual(folderPatches, [{ replaceAll: false, addedPaths: [] }]);
 });

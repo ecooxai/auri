@@ -2,7 +2,7 @@ import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
 import { appSnapshotJson } from "../model/snapshot.js";
 import { normalizeSystemSnapshot, processPriorityIdentity, protocolForPort } from "../model/system.js";
-import { expireNewFolderEntries, mergePolledFolderEntries, NEW_FOLDER_HIGHLIGHT_MS } from "../model/folder.js";
+import { mergePolledFolderEntries } from "../model/folder.js";
 import { classifyTerminalInput } from "../model/presentation.js";
 import { mirrorForwardsCommand } from "../model/commands.js";
 import { MediaCapture, pickRecordingDevices } from "../services/media-recorder.js";
@@ -201,7 +201,6 @@ export class AppController {
     this.systemMonitorRefreshing = false;
     this.folderPollTimer = null;
     this.folderPolling = false;
-    this.folderHighlightTimer = null;
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
     this.folderPreviewPath = null;
@@ -551,7 +550,6 @@ export class AppController {
 
   render(options = {}) {
     this.view.render(this.state, { native: this.native, nativeWebview: this.native, ...options });
-    this.scheduleFolderHighlightExpiry();
     const terminalHost = this.view.root.querySelector?.("#terminal-emulator");
     if (terminalHost) {
       const workspace = activeWorkspace(this.state);
@@ -634,45 +632,6 @@ export class AppController {
       this.pollCurrentFolder().catch((error) => this.reportError("Folder refresh", error));
     }, 3000);
     this.folderPollTimer.unref?.();
-    this.scheduleFolderHighlightExpiry();
-  }
-
-  scheduleFolderHighlightExpiry() {
-    clearTimeout(this.folderHighlightTimer);
-    this.folderHighlightTimer = null;
-    const workspace = activeWorkspace(this.state);
-    const now = Date.now();
-    const deadlines = (workspace.folder.entries || [])
-      .filter((entry) => entry?._auriNew)
-      .map((entry) => (Number(entry._auriNewAt) || now) + NEW_FOLDER_HIGHLIGHT_MS);
-    if (!deadlines.length) return;
-    const workspaceId = workspace.id;
-    const path = workspace.folder.path;
-    this.folderHighlightTimer = setTimeout(() => {
-      this.expireFolderHighlights({ workspaceId, path, now: Date.now() });
-    }, Math.max(0, Math.min(...deadlines) - now));
-    this.folderHighlightTimer.unref?.();
-  }
-
-  expireFolderHighlights({ workspaceId, path, now = Date.now() } = {}) {
-    const workspace = this.state.tabs.find((tab) => tab.id === workspaceId);
-    if (!workspace || workspace.folder.path !== path) {
-      this.scheduleFolderHighlightExpiry();
-      return false;
-    }
-    const entries = expireNewFolderEntries(workspace.folder.entries, now);
-    const changed = entries.some((entry, index) => entry !== workspace.folder.entries[index]);
-    if (!changed) {
-      this.scheduleFolderHighlightExpiry();
-      return false;
-    }
-    this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
-    if (this.state.activeTabId === workspaceId) {
-      this.view.patchFolderEntries?.(this.state, { replaceAll: false, addedPaths: [] });
-    }
-    this.scheduleFolderHighlightExpiry();
-    this.scheduleStateSync();
-    return true;
   }
 
   async pollCurrentFolder() {
@@ -696,7 +655,6 @@ export class AppController {
       if (!hasNew && !markerChanged && comparable(previous) === comparable(merged)) return false;
       this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries: merged } });
       this.view.patchFolderEntries?.(this.state, { replaceAll: false, addedPaths });
-      this.scheduleFolderHighlightExpiry();
       this.scheduleStateSync();
       return true;
     } finally {
@@ -2993,7 +2951,6 @@ export class AppController {
     if (this.state.activeTabId !== workspaceId || workspace.folder.path !== path) return false;
     this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
     this.view.patchFolderEntries?.(this.state, { replaceAll: true, addedPaths: [] });
-    this.scheduleFolderHighlightExpiry();
     this.scheduleStateSync();
     return { entries };
   }

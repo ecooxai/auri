@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { expireNewFolderEntries, mergePolledFolderEntries, sortFolderEntries } from "../src/model/folder.js";
+import { mergePolledFolderEntries, sortFolderEntries } from "../src/model/folder.js";
 
 const entries = [
   { name: "zeta.txt", kind: "text", size: 2, modified: 100 },
@@ -35,14 +35,11 @@ test("folder polling promotes newly discovered entries while refreshing existing
   assert.deepEqual(mergePolledFolderEntries(previous, fresh).map((entry) => [entry.name, entry.size]), [["c", 3], ["a", 9]]);
 });
 
-test("new folder markers survive later polls for 30 seconds and then expire", () => {
-  const discoveredAt = 10_000;
-  const previous = [{ path: "/tmp/new", name: "new", size: 1, _auriNew: true, _auriNewAt: discoveredAt }];
+test("new folder markers survive later polls without timing out", () => {
+  const previous = [{ path: "/tmp/new", name: "new", size: 1, _auriNew: true, _auriNewAt: 10_000 }];
   const fresh = [{ path: "/tmp/new", name: "new", size: 2 }];
 
-  assert.equal(mergePolledFolderEntries(previous, fresh, discoveredAt + 29_999)[0]._auriNew, true);
-  assert.equal(mergePolledFolderEntries(previous, fresh, discoveredAt + 30_000)[0]._auriNew, false);
-  assert.equal(expireNewFolderEntries(previous, discoveredAt + 30_000)[0]._auriNew, false);
+  assert.equal(mergePolledFolderEntries(previous, fresh, Number.MAX_SAFE_INTEGER)[0]._auriNew, true);
 });
 
 test("AppView patches new folder rows without replacing existing rows or terminal DOM", async () => {

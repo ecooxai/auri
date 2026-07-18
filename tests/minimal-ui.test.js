@@ -197,7 +197,7 @@ test("folder navigation controls sit above an editable compact path field", asyn
   assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*white[^}]*box-shadow:/s);
 });
 
-test("newly polled folder entries render with a very light blue marker", async () => {
+test("newly polled folder entries render a blue right-side dot on the normal row background", async () => {
   const { renderFolder } = await import("../src/views/panels.js");
   const { createInitialState } = await import("../src/model/state.js");
   const state = createInitialState();
@@ -211,7 +211,9 @@ test("newly polled folder entries render with a very light blue marker", async (
   const css = await readFile("styles.css", "utf8");
 
   assert.match(html, /file-row-wrap[^\"]*is-new/);
-  assert.match(css, /\.file-row-wrap\.is-new\s*\{[^}]*background:\s*#f0f7ff/i);
+  assert.match(html, /class="file-new-dot"/);
+  assert.match(css, /\.file-new-dot\s*\{[^}]*right:\s*9px[^}]*border-radius:\s*50%[^}]*background:\s*#[0-9a-f]{6}/i);
+  assert.doesNotMatch(css, /\.file-row-wrap\.is-new\s*\{[^}]*background:/i);
 });
 
 test("folder rows keep expanders but show full wrapped names without item icons", async () => {

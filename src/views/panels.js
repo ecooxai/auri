@@ -195,6 +195,7 @@ export function renderFolderRows(entries, tab, depth = 0) {
       <button type="button" class="file-row ${isDirectory ? "is-directory" : ""}" data-action="file-entry"
         data-path="${escapeHtml(entry.path)}" data-kind="${escapeHtml(entry.kind)}">
         <span class="file-name">${escapeHtml(entry.name)}</span>
+        ${entry._auriNew ? `<span class="file-new-dot" aria-hidden="true"></span>` : ""}
       </button>
       ${selected && !isDirectory ? `<button type="button" class="file-ai-button" data-action="file-attach-ai" data-path="${escapeHtml(entry.path)}" aria-label="Attach ${escapeHtml(entry.name)} to the AI prompt" title="Add to AI chat">✦</button>` : ""}
     </div>`;

@@ -442,8 +442,6 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .file-row-wrap.is-directory { grid-template-columns: 20px minmax(0, 1fr); }
 .file-row-wrap:hover { color: var(--ink); background: rgba(255, 255, 255, .66); }
 .file-row-wrap.is-selected { color: var(--blue-dark); background: rgba(221, 230, 255, .75); }
-.file-row-wrap.is-new { background: #f0f7ff; box-shadow: inset 2px 0 #a9c8f7; }
-.file-row-wrap.is-new:hover { background: #e9f3ff; }
 .file-row-wrap.is-file.is-selected { grid-template-columns: minmax(0, 1fr) auto; }
 .file-ai-button { min-height: 37px; width: 30px; border: 0; border-radius: 8px; cursor: pointer; color: var(--blue-dark); background: transparent; font-size: .72rem; }
 .file-ai-button:hover { background: rgba(112, 137, 248, .16); }
@@ -480,6 +478,8 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
   text-align: left;
 }
 .file-row.is-directory { padding-left: 2px; font-weight: 620; color: #3e506b; }
+.file-row-wrap.is-new .file-row { position: relative; padding-right: 24px; }
+.file-new-dot { position: absolute; top: 50%; right: 9px; width: 7px; height: 7px; border-radius: 50%; background: #5b8def; box-shadow: 0 0 0 2px rgba(91, 141, 239, .14); transform: translateY(-50%); pointer-events: none; }
 .file-name { display: block; min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: .68rem; line-height: 1.18; }
 .folder-children { display: grid; gap: 2px; }
 .folder-child-empty { min-height: 28px; padding-left: calc(var(--depth, 1) * 14px + 24px); display: flex; align-items: center; color: var(--faint); font-size: .6rem; }
