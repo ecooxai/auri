@@ -105,6 +105,8 @@ pub struct VtScreen {
     pub cursor_visible: bool,
     pub application_cursor_keys: bool,
     pub bracketed_paste: bool,
+    mouse_tracking_modes: u8,
+    pub mouse_sgr: bool,
     autowrap: bool,
     state: ParseState,
     utf8_pending: Vec<u8>,
@@ -135,6 +137,8 @@ impl VtScreen {
             cursor_visible: true,
             application_cursor_keys: false,
             bracketed_paste: false,
+            mouse_tracking_modes: 0,
+            mouse_sgr: false,
             autowrap: true,
             state: ParseState::Ground,
             utf8_pending: Vec::new(),
@@ -200,6 +204,28 @@ impl VtScreen {
 
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor_x.min(self.cols - 1), self.cursor_y)
+    }
+
+    pub fn alternate_screen(&self) -> bool {
+        self.saved_main.is_some()
+    }
+
+    pub fn mouse_tracking(&self) -> bool {
+        self.mouse_tracking_modes != 0
+    }
+
+    fn set_mouse_tracking(&mut self, mode: u16, enable: bool) {
+        let bit = match mode {
+            1000 => 1,
+            1002 => 2,
+            1003 => 4,
+            _ => return,
+        };
+        if enable {
+            self.mouse_tracking_modes |= bit;
+        } else {
+            self.mouse_tracking_modes &= !bit;
+        }
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -557,6 +583,8 @@ impl VtScreen {
                             25 => self.cursor_visible = enable,
                             7 => self.autowrap = enable,
                             47 | 1047 | 1049 => self.set_alt_screen(enable),
+                            1000 | 1002 | 1003 => self.set_mouse_tracking(*param, enable),
+                            1006 => self.mouse_sgr = enable,
                             2004 => self.bracketed_paste = enable,
                             _ => {}
                         }

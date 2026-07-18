@@ -451,6 +451,26 @@ fn vt_screen_tracks_application_cursor_and_bracketed_paste_modes() {
 }
 
 #[test]
+fn vt_screen_tracks_alternate_screen_and_mouse_reporting_modes() {
+    let mut screen = vt::VtScreen::new(4, 2);
+    assert!(!screen.alternate_screen());
+    assert!(!screen.mouse_tracking());
+    assert!(!screen.mouse_sgr);
+
+    screen.feed_str("\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+    assert!(screen.alternate_screen());
+    assert!(screen.mouse_tracking());
+    assert!(screen.mouse_sgr);
+
+    screen.feed_str("\x1b[?1000l");
+    assert!(screen.mouse_tracking(), "button tracking remains enabled");
+    screen.feed_str("\x1b[?1002l\x1b[?1006l\x1b[?1049l");
+    assert!(!screen.alternate_screen());
+    assert!(!screen.mouse_tracking());
+    assert!(!screen.mouse_sgr);
+}
+
+#[test]
 fn terminal_seed_takes_only_the_last_lines() {
     let text = (1..=250).map(|line| format!("line {line}\n")).collect::<String>();
     let tail = vt::tail_lines(&text, 100);

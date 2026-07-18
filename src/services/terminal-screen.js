@@ -81,6 +81,39 @@ export function encodePasteText(text, bracketedPaste = false) {
   return bracketedPaste ? `${ESC}[200~${normalized}${ESC}[201~` : normalized;
 }
 
+function mouseModifierBits(event) {
+  return (event?.shiftKey ? 4 : 0)
+    + (event?.altKey || event?.metaKey ? 8 : 0)
+    + (event?.ctrlKey ? 16 : 0);
+}
+
+/// Byte sequence a wheel event sends to a terminal-controlled TUI. Ordinary
+/// shell history returns null so the browser keeps its native scroll. Mouse-
+/// aware apps receive xterm wheel reports; alternate-screen apps that did not
+/// request mouse capture receive cursor keys, matching xterm alternate scroll.
+export function encodeWheelEvent(event, modes = {}, position = {}) {
+  const deltaY = Number(event?.deltaY) || 0;
+  if (!deltaY) return null;
+  const up = deltaY < 0;
+
+  if (modes.mouseTracking) {
+    const button = (up ? 64 : 65) + mouseModifierBits(event);
+    const column = Math.max(0, Math.floor(Number(position.column) || 0));
+    const row = Math.max(0, Math.floor(Number(position.row) || 0));
+    if (modes.mouseSgr) return `${ESC}[<${button};${column + 1};${row + 1}M`;
+
+    // Original X10 encoding stores button and 1-based coordinates as bytes
+    // offset by 32. Coordinates above 223 cannot be represented.
+    const x = Math.min(223, column + 1);
+    const y = Math.min(223, row + 1);
+    return `${ESC}[M${String.fromCharCode(button + 32, x + 32, y + 32)}`;
+  }
+
+  if (!modes.alternateScreen) return null;
+  const letter = up ? "A" : "B";
+  return modes.applicationCursorKeys ? `${ESC}O${letter}` : `${ESC}[${letter}`;
+}
+
 export const RUN_BOLD = 1;
 export const RUN_DIM = 2;
 export const RUN_ITALIC = 4;

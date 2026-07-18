@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   encodeKeyEvent,
   encodePasteText,
+  encodeWheelEvent,
   runSpanSpec,
   rowText,
   xterm256Color
@@ -53,6 +54,45 @@ test("arrow keys honor application cursor mode and modifiers", () => {
 test("paste text normalizes newlines and honors bracketed paste", () => {
   assert.equal(encodePasteText("echo hi\nls\r\npwd"), "echo hi\rls\rpwd");
   assert.equal(encodePasteText("hello", true), "\x1b[200~hello\x1b[201~");
+});
+
+test("wheel input uses SGR mouse reports only when the terminal app requested them", () => {
+  const wheel = (overrides = {}) => ({
+    deltaY: -80,
+    shiftKey: false,
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    ...overrides
+  });
+
+  assert.equal(
+    encodeWheelEvent(wheel(), { mouseTracking: true, mouseSgr: true }, { column: 4, row: 2 }),
+    "\x1b[<64;5;3M"
+  );
+  assert.equal(
+    encodeWheelEvent(
+      wheel({ deltaY: 80, shiftKey: true, ctrlKey: true }),
+      { mouseTracking: true, mouseSgr: true },
+      { column: 0, row: 0 }
+    ),
+    "\x1b[<85;1;1M",
+    "wheel-down and keyboard modifiers use xterm mouse button bits"
+  );
+  assert.equal(
+    encodeWheelEvent(wheel(), { alternateScreen: true, applicationCursorKeys: true }, { column: 0, row: 0 }),
+    "\x1bOA",
+    "alternate-screen apps without mouse capture receive cursor input like xterm alternate scroll"
+  );
+  assert.equal(
+    encodeWheelEvent(wheel({ deltaY: 80 }), { alternateScreen: true }, { column: 0, row: 0 }),
+    "\x1b[B"
+  );
+  assert.equal(
+    encodeWheelEvent(wheel(), {}, { column: 0, row: 0 }),
+    null,
+    "ordinary shell history remains browser-scrollable"
+  );
 });
 
 test("frame runs map to theme classes, palette colors, and inverse swaps", () => {

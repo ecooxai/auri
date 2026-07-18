@@ -1,5 +1,5 @@
 import { terminalAssistantSegments } from "../model/assistant.js";
-import { encodeKeyEvent, encodePasteText, rowText, runSpanSpec } from "./terminal-screen.js";
+import { encodeKeyEvent, encodePasteText, encodeWheelEvent, rowText, runSpanSpec } from "./terminal-screen.js";
 
 const encoder = new TextEncoder();
 
@@ -309,7 +309,13 @@ export class TerminalSession {
     this.rows = 0;
     this.cellWidth = 8;
     this.rowHeight = 16;
-    this.modes = { applicationCursorKeys: false, bracketedPaste: false };
+    this.modes = {
+      applicationCursorKeys: false,
+      bracketedPaste: false,
+      alternateScreen: false,
+      mouseTracking: false,
+      mouseSgr: false
+    };
     this.scrollbackLimit = 4000;
     this.shellCommand = "";
     this.mountedElement = null;
@@ -455,6 +461,9 @@ export class TerminalSession {
     this.rows = Number(frame.rows) || 0;
     this.modes.applicationCursorKeys = Boolean(frame.applicationCursorKeys);
     this.modes.bracketedPaste = Boolean(frame.bracketedPaste);
+    this.modes.alternateScreen = Boolean(frame.alternateScreen);
+    this.modes.mouseTracking = Boolean(frame.mouseTracking);
+    this.modes.mouseSgr = Boolean(frame.mouseSgr);
 
     const total = Number(frame.scrollbackLen) || 0;
     const first = Number(frame.scrollbackStart) || 0;
@@ -749,7 +758,28 @@ export class TerminalSession {
         console.error("Could not paste into terminal", error);
       });
     }, { signal });
+    root.addEventListener("wheel", (event) => this.handleWheelInput(event), { signal, passive: false });
     root.addEventListener("mousedown", () => root.focus({ preventScroll: true }));
+  }
+
+  handleWheelInput(event) {
+    const scroll = this.scrollElement;
+    const rect = scroll?.getBoundingClientRect?.() || { left: 0, top: 0 };
+    const column = Math.min(
+      Math.max(0, this.cols - 1),
+      Math.max(0, Math.floor((Number(event?.clientX) - Number(rect.left || 0)) / this.cellWidth))
+    );
+    const row = Math.min(
+      Math.max(0, this.rows - 1),
+      Math.max(0, Math.floor((Number(event?.clientY) - Number(rect.top || 0)) / this.rowHeight))
+    );
+    const sequence = encodeWheelEvent(event, this.modes, { column, row });
+    if (sequence === null) return false;
+    event.preventDefault();
+    this.write(sequence).catch((error) => {
+      console.error("Could not write terminal wheel input", error);
+    });
+    return true;
   }
 
   scheduleCwdRefresh() {

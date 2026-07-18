@@ -95,6 +95,13 @@ test("TerminalSession reuses an already-mounted renderer and applies the configu
   assert.match(source, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000, shellCommand = ""\)/);
 });
 
+test("TerminalSession forwards wheel input only for app-controlled terminal screens", async () => {
+  const source = await readFile("src/services/terminal-session.js", "utf8");
+  assert.match(source, /addEventListener\("wheel", \(event\) => this\.handleWheelInput\(event\)/);
+  assert.match(source, /encodeWheelEvent\(event, this\.modes/);
+  assert.match(source, /event\.preventDefault\(\)/);
+});
+
 test("TerminalSession passes the selected shell executable directly to PTY startup", async () => {
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const starts = [];
