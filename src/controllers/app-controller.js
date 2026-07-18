@@ -11,6 +11,7 @@ import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl, webA
 import { AssistantStreamParser, assistantPlainText, parseAssistantReply } from "../model/assistant.js";
 import { terminalCompletionContext, terminalCompletions } from "../model/terminal-completion.js";
 import { shortcutFromKeyboardEvent, shortcutKeyMatchesKeyboardEvent, shortcutMatchesKeyboardEvent, tabSwitchFromKeyboardEvent } from "../model/shortcut.js";
+import { terminalFocusZone } from "../views/app-view.js";
 
 function parentPath(path) {
   const value = String(path || "~").replace(/\/+$/, "");
@@ -157,6 +158,8 @@ export class AppController {
     this.capture = new MediaCapture();
     this.terminalSessionFactory = terminalSessionFactory || (() => { throw new Error("Terminal session factory is unavailable."); });
     this.terminalSessions = new Map();
+    // Last focused terminal zone ("screen" | "composer"), restored on switches.
+    this.terminalFocusZone = "screen";
     this.wakeTimer = null;
     this.wakeLiveSession = null;
     this.wakeStreamText = "";
@@ -250,8 +253,8 @@ export class AppController {
       buffers[subtabId] = {
         sessionId: session.sessionId || "",
         text: session.bufferText?.() || "",
-        cols: session.term?.cols || 0,
-        rows: session.term?.rows || 0
+        cols: session.cols || 0,
+        rows: session.rows || 0
       };
     }
     return buffers;
@@ -531,7 +534,7 @@ export class AppController {
     const targetWorkspaceId = event.payload?.workspaceId || this.state.activeTabId;
     const shouldFocusTerminal = Boolean(
       options.focusTerminal
-      || (changesWorkspace && activeSubtab(this.state)?.type === "terminal")
+      || (SUBTAB_SWITCH_EVENTS.has(event.type) && activeSubtab(this.state)?.type === "terminal")
       || (event.type === "WORKDIR_SET" && targetWorkspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal")
     );
     const renderOptions = { ...options, focusTerminal: shouldFocusTerminal };
@@ -555,6 +558,12 @@ export class AppController {
         requestAnimationFrame(() => {
           session.mount(terminalHost, terminalTarget.subtab.cwd || workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines)
             .then(() => {
+              // Restore whichever terminal zone was focused last: the
+              // composer input below the terminal, or the emulator screen.
+              if (options.focusTerminal && this.terminalFocusZone === "composer") {
+                this.view.getTerminalInput?.()?.focus?.();
+                return;
+              }
               if (options.focusTerminal && !this.isTerminalComposerFocused()) session.focus?.();
             })
             .catch((error) => this.reportError("Terminal", error));
@@ -1012,6 +1021,10 @@ export class AppController {
     window.addEventListener("focus", () => {
       this.wakeLiveSession?.resume?.().catch?.(() => {});
       this.refreshMediaPermissions({ render: false }).catch?.(() => {});
+    });
+    window.addEventListener("focusin", (event) => {
+      const zone = terminalFocusZone(event.target);
+      if (zone) this.terminalFocusZone = zone;
     });
     if (typeof document !== "undefined") {
       document.addEventListener?.("visibilitychange", () => {

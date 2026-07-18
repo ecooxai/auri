@@ -2,7 +2,7 @@
 autobins = false
 default-run = "auri-desktop"
 name = "auri"
-version = "0.7.0"
+version = "0.8.0"
 description = "A terminal-centered assistant workspace"
 authors = ["Auri contributors"]
 edition = "2021"

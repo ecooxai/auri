@@ -152,36 +152,36 @@ test("terminal click parsing chooses the candidate under the clicked cell", () =
 
 
 
+function linkedDomRows(texts, rect) {
+  const rows = texts.map((text) => ({
+    dataset: { text },
+    classList: { contains: (name) => name === "term-row" },
+    getBoundingClientRect: () => rect
+  }));
+  rows.forEach((row, index) => {
+    row.previousElementSibling = rows[index - 1] || null;
+    row.nextElementSibling = rows[index + 1] || null;
+  });
+  return rows;
+}
+
 test("terminal pointer coordinates reconstruct a full logical line across soft wraps", async () => {
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const session = new TerminalSession({ isNative: false });
-  const rows = [
-    { isWrapped: false, text: "open /Users/" },
-    { isWrapped: true, text: "me/Desktop/g" },
-    { isWrapped: true, text: "irl.jpg" }
-  ];
-  session.term = {
-    cols: 12,
-    rows: 3,
-    buffer: {
-      active: {
-        viewportY: 0,
-        getLine(row) {
-          const item = rows[row];
-          return item ? {
-            isWrapped: item.isWrapped,
-            translateToString(trimRight) {
-              return trimRight ? item.text.trimEnd() : item.text.padEnd(12, " ");
-            }
-          } : undefined;
-        }
-      }
-    }
-  };
-  const screen = { getBoundingClientRect: () => ({ left: 0, right: 120, top: 0, bottom: 60, width: 120, height: 60 }) };
-  const element = { querySelector: () => screen };
+  session.cols = 12;
+  session.cellWidth = 10;
+  // Rows that fill the whole grid width are soft-wrap continuations.
+  const rows = linkedDomRows(
+    ["open /Users/", "me/Desktop/g", "irl.jpg"],
+    { left: 0, right: 120, top: 40, bottom: 60, width: 120, height: 20 }
+  );
+  const element = { contains: () => true };
 
-  const point = session.terminalTextAtEvent(element, { clientX: 45, clientY: 50 });
+  const point = session.terminalTextAtEvent(element, {
+    target: { closest: () => rows[2] },
+    clientX: 45,
+    clientY: 50
+  });
 
   assert.equal(point.text, "open /Users/me/Desktop/girl.jpg");
   assert.equal(point.column, 28);
@@ -191,25 +191,22 @@ test("terminal pointer coordinates reconstruct a full logical line across soft w
   );
 });
 
-test("terminal pointer coordinates map to the visible xterm buffer cell", async () => {
+test("terminal pointer coordinates map to the clicked rendered row cell", async () => {
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const session = new TerminalSession({ isNative: false });
-  session.term = {
-    cols: 10,
-    rows: 5,
-    buffer: {
-      active: {
-        viewportY: 3,
-        getLine(row) {
-          return row === 5 ? { isWrapped: false, translateToString: () => "open /tmp/test.png" } : undefined;
-        }
-      }
-    }
-  };
-  const screen = { getBoundingClientRect: () => ({ left: 100, right: 300, top: 50, bottom: 150, width: 200, height: 100 }) };
-  const element = { querySelector: () => screen };
+  session.cols = 10;
+  session.cellWidth = 20;
+  const [row] = linkedDomRows(
+    ["open /tmp/test.png"],
+    { left: 100, right: 300, top: 90, bottom: 110, width: 200, height: 20 }
+  );
+  const element = { contains: () => true };
 
-  const point = session.terminalTextAtEvent(element, { clientX: 210, clientY: 98 });
+  const point = session.terminalTextAtEvent(element, {
+    target: { closest: () => row },
+    clientX: 210,
+    clientY: 98
+  });
 
   assert.equal(point.column, 5);
   assert.equal(point.text, "open /tmp/test.png");
@@ -219,7 +216,7 @@ test("terminal drag selection previews the complete selected filename when it co
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const session = new TerminalSession({ isNative: false });
   session.cwd = "/Users/me/Desktop";
-  session.term = { getSelection: () => "Screenshot 2026-07-08 at 09.22.36.png" };
+  session.selectedText = () => "Screenshot 2026-07-08 at 09.22.36.png";
   session.previewPointerDown = { x: 10, y: 10 };
   session.terminalTextAtEvent = () => ({
     text: "ordinary output",
@@ -244,7 +241,7 @@ test("terminal drag selection previews a contained relative directory path", asy
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const session = new TerminalSession({ isNative: false });
   session.cwd = "/Users/me/project";
-  session.term = { getSelection: () => "selected dir1/dir2/ from output" };
+  session.selectedText = () => "selected dir1/dir2/ from output";
   session.previewPointerDown = { x: 10, y: 10 };
   session.terminalTextAtEvent = () => ({
     text: "ordinary output",
@@ -335,4 +332,30 @@ test("terminal previews keep content interactive and open only from the top-left
   assert.match(css, /\.terminal-link-preview-frame\s*\{[^}]*pointer-events:\s*auto/s);
   assert.match(css, /\.terminal-link-preview-image\s*\{[^}]*pointer-events:\s*auto/s);
   assert.match(css, /\.terminal-link-preview-video\s*\{[^}]*pointer-events:\s*auto/s);
+});
+
+test("web url previews take 70% of the terminal panel with a 400px floor", async () => {
+  const { webPreviewSize } = await import("../src/services/terminal-session.js");
+  // 70% of a large panel.
+  assert.deepEqual(
+    webPreviewSize({ width: 1200, height: 1000 }, { width: 2000, height: 1600 }),
+    { width: 840, height: 700 }
+  );
+  // Small panels fall back to the 400px minimum.
+  assert.deepEqual(
+    webPreviewSize({ width: 300, height: 260 }, { width: 2000, height: 1600 }),
+    { width: 400, height: 400 }
+  );
+  // The viewport still caps the preview so it never overflows the window.
+  assert.deepEqual(
+    webPreviewSize({ width: 1200, height: 1000 }, { width: 500, height: 420 }),
+    { width: 484, height: 404 }
+  );
+  // Missing measurements stay at the floor.
+  assert.deepEqual(webPreviewSize({}, {}), { width: 400, height: 400 });
+});
+
+test("showPreview sizes url previews from the terminal panel", async () => {
+  const source = await readFile("src/services/terminal-session.js", "utf8");
+  assert.match(source, /target\.kind === "url"[\s\S]{0,300}webPreviewSize\(/);
 });

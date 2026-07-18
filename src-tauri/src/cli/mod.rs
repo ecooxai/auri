@@ -18,6 +18,7 @@ pub mod screen;
 pub mod term;
 pub mod tui;
 #[allow(dead_code)]
+#[path = "../core/vt.rs"]
 pub mod vt;
 #[allow(dead_code)]
 pub mod view_model;

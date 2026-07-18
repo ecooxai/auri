@@ -43,11 +43,37 @@ pub struct Style {
     pub inverse: bool,
 }
 
+/// A horizontal stretch of same-styled text — the unit scrollback rows are
+/// stored in and screen rows are serialized as for the GUI renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub text: String,
+    pub style: Style,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cell {
     ch: char,
     style: Style,
 }
+
+/// Trailing default-styled blanks trimmed, remaining cells merged by style.
+fn cells_to_runs(row: &[Cell]) -> Vec<Run> {
+    let mut end = row.len();
+    while end > 0 && row[end - 1].ch == ' ' && row[end - 1].style == Style::default() {
+        end -= 1;
+    }
+    let mut runs: Vec<Run> = Vec::new();
+    for cell in &row[..end] {
+        match runs.last_mut() {
+            Some(run) if run.style == cell.style => run.text.push(cell.ch),
+            _ => runs.push(Run { text: cell.ch.to_string(), style: cell.style }),
+        }
+    }
+    runs
+}
+
+const DEFAULT_SCROLLBACK_LIMIT: usize = 4000;
 
 impl Default for Cell {
     fn default() -> Self {
@@ -77,9 +103,17 @@ pub struct VtScreen {
     scroll_bottom: usize, // inclusive
     pending_wrap: bool,
     pub cursor_visible: bool,
+    pub application_cursor_keys: bool,
+    pub bracketed_paste: bool,
     autowrap: bool,
     state: ParseState,
     utf8_pending: Vec<u8>,
+    // Rows scrolled off the top of the main screen, stored as styled runs.
+    // `scrollback_trimmed` counts rows dropped by the cap so surviving rows
+    // keep stable absolute indices.
+    scrollback: std::collections::VecDeque<Vec<Run>>,
+    scrollback_limit: usize,
+    scrollback_trimmed: usize,
 }
 
 impl VtScreen {
@@ -99,10 +133,65 @@ impl VtScreen {
             scroll_bottom: rows - 1,
             pending_wrap: false,
             cursor_visible: true,
+            application_cursor_keys: false,
+            bracketed_paste: false,
             autowrap: true,
             state: ParseState::Ground,
             utf8_pending: Vec::new(),
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_limit: DEFAULT_SCROLLBACK_LIMIT,
+            scrollback_trimmed: 0,
         }
+    }
+
+    pub fn set_scrollback_limit(&mut self, limit: usize) {
+        self.scrollback_limit = limit.clamp(0, 100_000);
+        self.trim_scrollback();
+    }
+
+    fn trim_scrollback(&mut self) {
+        while self.scrollback.len() > self.scrollback_limit {
+            self.scrollback.pop_front();
+            self.scrollback_trimmed += 1;
+        }
+    }
+
+    fn push_scrollback(&mut self, row: &[Cell]) {
+        if self.saved_main.is_some() || self.scrollback_limit == 0 {
+            return;
+        }
+        self.scrollback.push_back(cells_to_runs(row));
+        self.trim_scrollback();
+    }
+
+    /// Total rows ever scrolled off the main screen (including trimmed ones).
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback_trimmed + self.scrollback.len()
+    }
+
+    /// Absolute index of the oldest row still stored.
+    pub fn scrollback_start(&self) -> usize {
+        self.scrollback_trimmed
+    }
+
+    /// Stored rows for the absolute range `[start, start + count)`, clamped
+    /// to what is still stored.
+    pub fn scrollback_runs(&self, start: usize, count: usize) -> Vec<Vec<Run>> {
+        let first = start.max(self.scrollback_trimmed) - self.scrollback_trimmed;
+        let last = start
+            .saturating_add(count)
+            .max(self.scrollback_trimmed)
+            .saturating_sub(self.scrollback_trimmed)
+            .min(self.scrollback.len());
+        if first >= last {
+            return Vec::new();
+        }
+        self.scrollback.range(first..last).cloned().collect()
+    }
+
+    /// The live screen grid as one styled-run row per grid row.
+    pub fn styled_runs(&self) -> Vec<Vec<Run>> {
+        self.grid.iter().map(|row| cells_to_runs(row)).collect()
     }
 
     pub fn size(&self) -> (usize, usize) {
@@ -128,7 +217,8 @@ impl VtScreen {
             if last_is_blank && self.cursor_y + 1 < self.grid.len() {
                 self.grid.pop();
             } else {
-                self.grid.remove(0);
+                let removed = self.grid.remove(0);
+                self.push_scrollback(&removed);
                 self.cursor_y = self.cursor_y.saturating_sub(1);
             }
         }
@@ -228,8 +318,15 @@ impl VtScreen {
                     self.state = ParseState::Ground;
                 }
                 'c' => {
+                    // Full reset clears the screen but history survives.
                     let (cols, rows) = (self.cols, self.rows);
+                    let scrollback = std::mem::take(&mut self.scrollback);
+                    let trimmed = self.scrollback_trimmed;
+                    let limit = self.scrollback_limit;
                     *self = VtScreen::new(cols, rows);
+                    self.scrollback = scrollback;
+                    self.scrollback_trimmed = trimmed;
+                    self.scrollback_limit = limit;
                 }
                 _ => self.state = ParseState::Ground,
             },
@@ -307,7 +404,10 @@ impl VtScreen {
 
     fn scroll_up(&mut self, count: usize) {
         for _ in 0..count {
-            self.grid.remove(self.scroll_top);
+            let removed = self.grid.remove(self.scroll_top);
+            if self.scroll_top == 0 {
+                self.push_scrollback(&removed);
+            }
             self.grid.insert(self.scroll_bottom, vec![Cell::default(); self.cols]);
         }
     }
@@ -453,9 +553,11 @@ impl VtScreen {
                 if private == Some('?') {
                     for param in params {
                         match param {
+                            1 => self.application_cursor_keys = enable,
                             25 => self.cursor_visible = enable,
                             7 => self.autowrap = enable,
                             47 | 1047 | 1049 => self.set_alt_screen(enable),
+                            2004 => self.bracketed_paste = enable,
                             _ => {}
                         }
                     }

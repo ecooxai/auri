@@ -149,8 +149,28 @@ fn terminal_start(
     cwd: String,
     cols: u16,
     rows: u16,
+    scrollback: Option<usize>,
 ) -> Result<(), String> {
-    terminal::start(app, session_id, cwd, cols, rows)
+    terminal::start(app, session_id, cwd, cols, rows, scrollback)
+}
+
+#[tauri::command]
+fn terminal_frame(session_id: String) -> Result<core::term_emulator::Frame, String> {
+    core::term_emulator::frame(&session_id)
+}
+
+#[tauri::command]
+fn terminal_scrollback(
+    session_id: String,
+    start: usize,
+    count: usize,
+) -> Result<Vec<Vec<core::term_emulator::FrameRun>>, String> {
+    core::term_emulator::scrollback(&session_id, start, count)
+}
+
+#[tauri::command]
+fn terminal_print(app: tauri::AppHandle, session_id: String, text: String) -> Result<usize, String> {
+    terminal::print(&app, &session_id, &text)
 }
 
 #[tauri::command]
@@ -781,6 +801,9 @@ pub fn run() {
             terminal_busy,
             terminal_resize,
             terminal_stop,
+            terminal_frame,
+            terminal_scrollback,
+            terminal_print,
             sync_app_state,
             serve_ui,
             window_start_dragging,

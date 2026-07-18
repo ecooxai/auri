@@ -429,7 +429,10 @@ export class Backend {
     return this.call("serve_ui");
   }
 
-  async startTerminal(sessionId, cwd, cols, rows) { return this.call("terminal_start", { sessionId, cwd, cols, rows }); }
+  async startTerminal(sessionId, cwd, cols, rows, scrollback = null) { return this.call("terminal_start", { sessionId, cwd, cols, rows, scrollback }); }
+  async terminalFrame(sessionId) { return this.call("terminal_frame", { sessionId }); }
+  async terminalScrollback(sessionId, start, count) { return this.call("terminal_scrollback", { sessionId, start, count }); }
+  async printTerminal(sessionId, text) { return this.call("terminal_print", { sessionId, text }); }
   async writeTerminal(sessionId, data) { return this.call("terminal_write", { sessionId, data: Array.from(data) }); }
   async getTerminalCwd(sessionId) { return this.call("terminal_cwd", { sessionId }); }
   async isTerminalBusy(sessionId) { return this.call("terminal_busy", { sessionId }); }

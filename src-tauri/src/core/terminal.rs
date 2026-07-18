@@ -3,7 +3,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,12 +31,48 @@ struct TerminalExit {
     session_id: String,
 }
 
+/// App-managed shell bootstrap: source the user's own rc files, then force a
+/// bare `%`/`$` prompt and emit the OSC 777 cwd marker the frontend already
+/// parses, so directory sync is event-driven instead of lsof polling.
+fn shell_bootstrap_dir(shell_name: &str) -> Option<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("auri-shell-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    match shell_name {
+        "zsh" => {
+            let marker = "precmd() { print -Pn '\\e]777;auri-cwd=%d\\a' }\nchpwd() { print -Pn '\\e]777;auri-cwd=%d\\a' }";
+            std::fs::write(
+                dir.join(".zshenv"),
+                "[ -f \"$HOME/.zshenv\" ] && source \"$HOME/.zshenv\"\n",
+            )
+            .ok()?;
+            std::fs::write(
+                dir.join(".zshrc"),
+                format!(
+                    "[ -f \"$HOME/.zshrc\" ] && source \"$HOME/.zshrc\"\nPROMPT='%# '\nRPROMPT=''\n{marker}\n"
+                ),
+            )
+            .ok()?;
+            Some(dir)
+        }
+        "bash" => {
+            std::fs::write(
+                dir.join("bashrc"),
+                "[ -f \"$HOME/.bashrc\" ] && source \"$HOME/.bashrc\"\nPS1='\\$ '\nPROMPT_COMMAND='printf \"\\033]777;auri-cwd=%s\\007\" \"$PWD\"'\n",
+            )
+            .ok()?;
+            Some(dir)
+        }
+        _ => None,
+    }
+}
+
 pub fn start(
     app: AppHandle,
     session_id: String,
     cwd: String,
     cols: u16,
     rows: u16,
+    scrollback: Option<usize>,
 ) -> Result<(), String> {
     stop(&session_id).ok();
 
@@ -51,9 +87,22 @@ pub fn start(
         .map_err(|error| format!("Could not create terminal: {error}"))?;
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut command = CommandBuilder::new(shell);
+    let shell_name = Path::new(&shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_string();
+    let mut command = CommandBuilder::new(&shell);
     command.cwd(super::workspace::expand_path(&cwd)?);
     command.env("TERM", "xterm-256color");
+    match (shell_name.as_str(), shell_bootstrap_dir(&shell_name)) {
+        ("zsh", Some(dir)) => command.env("ZDOTDIR", dir),
+        ("bash", Some(dir)) => {
+            command.arg("--rcfile");
+            command.arg(dir.join("bashrc"));
+        }
+        _ => {}
+    }
 
     let child = pair
         .slave
@@ -79,6 +128,7 @@ pub fn start(
         .lock()
         .map_err(|_| "Terminal session store is unavailable.".to_string())?
         .insert(session_id.clone(), session.clone());
+    super::term_emulator::create(&session_id, cols.max(2) as usize, rows.max(2) as usize, scrollback);
 
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
@@ -86,6 +136,7 @@ pub fn start(
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(count) => {
+                    super::term_emulator::feed(&session_id, &buffer[..count]);
                     let _ = app.emit(
                         "terminal-data",
                         TerminalData {
@@ -106,10 +157,32 @@ pub fn start(
         if let Ok(mut sessions) = SESSIONS.lock() {
             sessions.remove(&session_id);
         }
+        super::term_emulator::remove(&session_id);
         super::term_bridge::clear(&session_id);
     });
 
     Ok(())
+}
+
+/// Render GUI-side message blocks (user prompts, assistant replies) into the
+/// session's emulator and broadcast them to every mirror without ever
+/// touching the PTY's stdin.
+pub fn print(app: &AppHandle, session_id: &str, text: &str) -> Result<usize, String> {
+    if !exists(session_id) {
+        return Err("Terminal session is not running.".to_string());
+    }
+    let bytes = text.as_bytes();
+    super::term_emulator::feed(session_id, bytes);
+    let line = super::term_emulator::cursor_line(session_id)?;
+    let _ = app.emit(
+        "terminal-data",
+        TerminalData {
+            session_id: session_id.to_string(),
+            data: bytes.to_vec(),
+        },
+    );
+    super::term_bridge::forward(session_id, bytes);
+    Ok(line)
 }
 
 pub fn exists(session_id: &str) -> bool {
@@ -227,7 +300,9 @@ pub fn resize(session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|error| format!("Could not resize terminal: {error}"))
+        .map_err(|error| format!("Could not resize terminal: {error}"))?;
+    super::term_emulator::resize(session_id, cols.max(2) as usize, rows.max(2) as usize);
+    Ok(())
 }
 
 pub fn stop(session_id: &str) -> Result<(), String> {
@@ -235,6 +310,7 @@ pub fn stop(session_id: &str) -> Result<(), String> {
         .lock()
         .map_err(|_| "Terminal session store is unavailable.".to_string())?
         .remove(session_id);
+    super::term_emulator::remove(session_id);
     if let Some(session) = session {
         let mut session = session
             .lock()

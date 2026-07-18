@@ -582,6 +582,18 @@ mod server {
                 string_arg(args, "cwd")?,
                 u16_arg(args, "cols")?,
                 u16_arg(args, "rows")?,
+                args.get("scrollback").and_then(Value::as_u64).map(|value| value as usize),
+            )),
+            "terminal_frame" => to_json(crate::terminal_frame(string_arg(args, "sessionId")?)),
+            "terminal_scrollback" => to_json(crate::terminal_scrollback(
+                string_arg(args, "sessionId")?,
+                args.get("start").and_then(Value::as_u64).unwrap_or(0) as usize,
+                args.get("count").and_then(Value::as_u64).unwrap_or(0) as usize,
+            )),
+            "terminal_print" => to_json(crate::terminal_print(
+                app.clone(),
+                string_arg(args, "sessionId")?,
+                string_arg(args, "text")?,
             )),
             "terminal_write" => {
                 let data: Vec<u8> = args

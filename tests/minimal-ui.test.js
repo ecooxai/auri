@@ -221,7 +221,10 @@ test("folder rows keep expanders but show full wrapped names without item icons"
   assert.doesNotMatch(css, /\.file-name\s*\{[^}]*-webkit-line-clamp:/s);
   assert.doesNotMatch(css, /\.file-name\s*\{[^}]*overflow:\s*hidden/s);
   assert.match(css, /\.file-name\s*\{[^}]*font-size:\s*\.68rem/s);
-  assert.match(css, /\.file-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+  // Block flow so multi-line names grow the row instead of spilling over the
+  // next entry (WebKit under-measures grid/flex button content).
+  assert.match(css, /\.file-row\s*\{[^}]*display:\s*block/s);
+  assert.match(css, /\.file-row\s*\{[^}]*height:\s*auto/s);
   assert.doesNotMatch(css, /\.file-size\s*\{/);
 });
 

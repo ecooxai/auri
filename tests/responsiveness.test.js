@@ -20,7 +20,7 @@ test("terminal composer disables expensive macOS text services", () => {
 });
 
 
-test("terminal media is rendered inline by xterm instead of a separate history pane", async () => {
+test("terminal media is rendered inline in the scroll flow instead of a separate history pane", async () => {
   const state = createInitialState();
   state.tabs[0].terminal.history.push({ kind: "assistant", stdout: "response", audioUrl: "blob:audio" });
 
@@ -32,8 +32,8 @@ test("terminal media is rendered inline by xterm instead of a separate history p
   assert.doesNotMatch(html, /terminal-message-feed/);
   assert.doesNotMatch(html, /terminal-emulator-frame/);
   assert.doesNotMatch(html, /<audio/);
-  assert.match(terminal, /registerMarker\(/);
-  assert.match(terminal, /registerDecoration\(/);
+  assert.match(terminal, /placeMediaCards\(/);
+  assert.match(terminal, /mediaCards\.push\(/);
   assert.match(terminal, /createElement\("audio"\)/);
   assert.match(terminal, /createElement\("video"\)/);
   assert.match(terminal, /createElement\("img"\)/);
@@ -52,11 +52,11 @@ test("terminal input waits for the PTY instead of silently dropping keystrokes",
   assert.equal(startGuards.length, adoptQueueGuards.length, "every not-started early path queues the keystrokes");
 });
 
-test("terminal remounts are generation guarded and clicking restores xterm focus", async () => {
+test("terminal remounts are generation guarded and clicking restores terminal focus", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.match(source, /mountGeneration/);
   assert.match(source, /generation !== this\.mountGeneration/);
-  assert.match(source, /addEventListener\("mousedown", \(\) => this\.term\?\.focus\(\)\)/);
+  assert.match(source, /addEventListener\("mousedown", \(\) => root\.focus\(/);
 });
 
 test("submitted native commands do not inject a cwd printf probe", async () => {
@@ -79,10 +79,12 @@ test("terminal visuals use the app light palette", async () => {
 
   assert.match(css, /\.terminal-panel\s*\{[^}]*background:\s*#f8fbff/s);
   assert.match(css, /\.composer-wrap\s*\{[^}]*background:\s*rgba\(255, 255, 255, \.9\)/s);
-  assert.match(source, /background:\s*"#f8fbff"/);
-  assert.match(source, /foreground:\s*"#24324a"/);
-  assert.match(source, /cursor:\s*"#7089f8"/);
-  assert.doesNotMatch(source, /background:\s*"#121c2f"/);
+  void source;
+  assert.match(css, /\.term-scroll\s*\{[^}]*color: var\(--term-fg\)/s);
+  assert.match(css, /--term-fg: #24324a/);
+  assert.match(css, /--term-bg: #f8fbff/);
+  assert.match(css, /\.term-cursor\s*\{[^}]*background: #7089f8/s);
+  assert.doesNotMatch(css, /\.term-scroll\s*\{[^}]*#121c2f/s);
 });
 
 test("every terminal control stays light in connected and input states", async () => {
@@ -90,25 +92,25 @@ test("every terminal control stays light in connected and input states", async (
 
   assert.match(css, /\.terminal-input-zone\s*\{[^}]*background:\s*#f8fbff/s);
   assert.match(css, /\.model-select-wrap\.is-live-connected\s*\{[^}]*color:\s*#405a86/s);
-  assert.match(css, /\.terminal-emulator \.xterm \.composition-view\s*\{[^}]*background:\s*#f8fbff/s);
+  assert.match(css, /\.term-root\s*\{[^}]*--term-bg: #f8fbff/s);
   assert.doesNotMatch(css, /\.model-select-wrap\.is-live-connected\s*\{[^}]*color:\s*#e8f6ff/s);
 });
 
-test("xterm submissions refresh cwd from the native shell process", async () => {
+test("terminal submissions refresh cwd from the native shell process", async () => {
   const frontend = await readFile("src/services/terminal-session.js", "utf8");
   const backend = await readFile("src-tauri/src/core/terminal.rs", "utf8");
 
-  assert.match(frontend, /data\.includes\("\\r"\).*scheduleCwdRefresh/);
+  assert.match(frontend, /sequence\.includes\("\\r"\).*scheduleCwdRefresh/s);
   assert.match(frontend, /backend\.getTerminalCwd/);
   assert.match(backend, /pub fn cwd\(session_id: &str\)/);
   assert.match(backend, /process_id\(\)/);
 });
 
-test("window resizing refits xterm and resizes the native PTY", async () => {
+test("window resizing remeasures the grid and resizes the native PTY", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const controller = await readFile("src/controllers/app-controller.js", "utf8");
-  assert.match(terminal, /resize\(\)\s*\{[^}]*this\.fitAddon\.fit\(\)/s);
-  assert.match(terminal, /resizeTerminal\(this\.sessionId, this\.term\.cols, this\.term\.rows\)/);
+  assert.match(terminal, /resize\(\)\s*\{[^}]*this\.measureMetrics\(\)/s);
+  assert.match(terminal, /resizeTerminal\(this\.sessionId, grid\.cols, grid\.rows\)/);
   assert.match(controller, /window\.addEventListener\("resize", \(\) => \{[^}]*activeTerminalSession\(\)\.resize/s);
 });
 
@@ -129,7 +131,7 @@ test("terminal uses the configured interface font size", async () => {
 
   assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
   assert.match(terminal, /const terminalFontSize = Math\.round/);
-  assert.match(terminal, /fontSize: terminalFontSize/);
+  assert.match(terminal, /--term-font-size/);
   assert.match(controller, /session\.mount\(terminalHost, terminalTarget\.subtab\.cwd \|\| workspace\.terminal\.cwd, this\.state\.settings\.fontSize, this\.state\.settings\.terminalMaxLines\)/);
 });
 

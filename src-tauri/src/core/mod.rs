@@ -9,7 +9,9 @@ pub mod shell;
 pub mod state_sync;
 pub mod system;
 pub mod term_bridge;
+pub mod term_emulator;
 pub mod util;
+pub mod vt;
 pub mod workspace;
 
 pub mod terminal;

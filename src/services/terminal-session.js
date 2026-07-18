@@ -1,7 +1,7 @@
 import { terminalAssistantSegments } from "../model/assistant.js";
+import { encodeKeyEvent, encodePasteText, rowText, runSpanSpec } from "./terminal-screen.js";
 
 const encoder = new TextEncoder();
-let terminalModulesPromise = null;
 
 // Rolling decoded tail kept for state snapshots. Matches the snapshot cap so
 // pushes never re-decode the whole record log (which would churn the WebKit
@@ -212,6 +212,20 @@ export function terminalPreviewPlacement(anchor, viewport, size = { width: 450, 
   return { left, top, above };
 }
 
+/// Web-page minipreviews fill 70% of the terminal panel with a 400px floor,
+/// capped so they never overflow the window.
+export function webPreviewSize(panel = {}, viewport = {}) {
+  const panelWidth = Number(panel?.width) || 0;
+  const panelHeight = Number(panel?.height) || 0;
+  const viewWidth = Number(viewport?.width) || 0;
+  const viewHeight = Number(viewport?.height) || 0;
+  let width = Math.max(400, panelWidth * 0.7);
+  let height = Math.max(400, panelHeight * 0.7);
+  if (viewWidth > 0) width = Math.min(width, Math.max(1, viewWidth - 16));
+  if (viewHeight > 0) height = Math.min(height, Math.max(1, viewHeight - 16));
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
 export function mediaPreviewSize(intrinsicWidth, intrinsicHeight, {
   preferredWidth = 450,
   maxHeight = 500,
@@ -238,26 +252,6 @@ export function mediaPreviewSize(intrinsicWidth, intrinsicHeight, {
   return { width: Math.round(width), height: Math.round(height) };
 }
 
-async function loadTerminalModules() {
-  if (!terminalModulesPromise) {
-    terminalModulesPromise = Promise.all([
-      import("@xterm/xterm"),
-      import("@xterm/addon-fit")
-    ]).then(([xtermModule, fitAddonModule]) => ({
-      Terminal: xtermModule.Terminal || xtermModule.default?.Terminal,
-      FitAddon: fitAddonModule.FitAddon || fitAddonModule.default?.FitAddon
-    }));
-  }
-  return terminalModulesPromise;
-}
-
-function mediaRows(kind) {
-  if (kind === "image") return 14;
-  if (kind === "video") return 16;
-  if (kind === "audio") return 5;
-  return 3;
-}
-
 function snapshotMedia(item) {
   return {
     name: item?.name || "Attachment",
@@ -268,14 +262,21 @@ function snapshotMedia(item) {
   };
 }
 
+// Fallback-only display cleanup: strip escape sequences from recorded bytes
+// so the no-PTY browser preview can show readable text without an emulator.
+export function stripAnsi(text) {
+  return String(text || "")
+    .replace(/\][^]*(?:|\\)/g, "")
+    .replace(/\[[0-9;?<>=]*[ -/]*[@-~]/g, "")
+    .replace(/[@-_]/g, "")
+    .replace(/[ --]/g, "");
+}
+
 export class TerminalSession {
   constructor(backend, assistantActions = {}) {
     this.backend = backend;
     this.assistantActions = assistantActions;
     this.sessionId = `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    this.term = null;
-    this.fitAddon = null;
-    this.mountedElement = null;
     this.started = false;
     this.adoptOnly = false;
     this.pendingAdoptInput = "";
@@ -293,9 +294,7 @@ export class TerminalSession {
     this.bufferTail = "";
     this.tailDecoder = new TextDecoder();
     this.renderLineBudget = TERMINAL_RENDER_TAIL_LINES;
-    this.renderedFromIndex = 0;
     this.lastHistoryExpand = 0;
-    this.renderQueue = Promise.resolve();
     this.assistantStreamAtLineStart = true;
     this.clipboardAbort = null;
     this.previewElement = null;
@@ -303,6 +302,31 @@ export class TerminalSession {
     this.previewRequest = 0;
     this.previewDocumentAbort = null;
     this.previewPointerDown = null;
+
+    // Backend-frame renderer state: the Rust VtScreen is the emulator, the
+    // DOM below only mirrors its grid and scrollback window.
+    this.cols = 0;
+    this.rows = 0;
+    this.cellWidth = 8;
+    this.rowHeight = 16;
+    this.modes = { applicationCursorKeys: false, bracketedPaste: false };
+    this.scrollbackLimit = 4000;
+    this.mountedElement = null;
+    this.rootElement = null;
+    this.scrollElement = null;
+    this.backElement = null;
+    this.screenElement = null;
+    this.cursorElement = null;
+    this.frameTimer = null;
+    this.frameInflight = false;
+    this.frameDirty = false;
+    this.backSeeded = false;
+    this.backStart = 0;
+    this.backEnd = 0;
+    this.lastFrame = null;
+    this.mediaCards = [];
+    this.printQueue = Promise.resolve(null);
+    this.lastPrintLine = null;
   }
 
   async initialize() {
@@ -322,7 +346,7 @@ export class TerminalSession {
 
   consumeTerminalData(bytes) {
     const decoder = new TextDecoder();
-    const encoder = new TextEncoder();
+    const byteEncoder = new TextEncoder();
     let text = this.cwdMarkerBuffer + decoder.decode(bytes);
     this.cwdMarkerBuffer = "";
     const markerStart = String.fromCharCode(27) + "]777;auri-cwd=";
@@ -359,7 +383,7 @@ export class TerminalSession {
       text = text.slice(end + markerEnd.length);
     }
 
-    return encoder.encode(visible);
+    return byteEncoder.encode(visible);
   }
 
   recordByteLength(record) {
@@ -382,188 +406,340 @@ export class TerminalSession {
 
   appendRecord(record) {
     this.remember(record);
-    if (this.term) this.queueRender(record, this.mountGeneration);
+    if (this.rootElement) {
+      if (this.backend.isNative) this.scheduleFrameRefresh();
+      else this.renderFallback();
+    }
     this.onOutput?.();
   }
 
-  queueRender(record, generation) {
-    this.renderQueue = this.renderQueue
-      .then(() => {
-        if (!this.term || generation !== this.mountGeneration) return;
-        return this.renderRecord(record, generation);
-      })
-      .catch((error) => {
-        console.error("Could not render terminal output", error);
+  // ---- Backend frame rendering -------------------------------------------
+
+  scheduleFrameRefresh(delay = 16) {
+    if (this.frameTimer || !this.rootElement) return;
+    this.frameTimer = setTimeout(() => {
+      this.frameTimer = null;
+      this.refreshFrame().catch((error) => {
+        console.error("Could not render terminal frame", error);
       });
-    return this.renderQueue;
+    }, delay);
   }
 
-  writeToTerminal(data, generation) {
-    return new Promise((resolve) => {
-      if (!this.term || generation !== this.mountGeneration) {
-        resolve();
-        return;
-      }
-      this.term.write(data, resolve);
-    });
-  }
-
-  async renderRecord(record, generation) {
-    if (record.type === "media") {
-      await this.renderInlineMedia(record.item, generation);
+  async refreshFrame() {
+    if (!this.backend.isNative || !this.rootElement || !this.started) return;
+    if (this.frameInflight) {
+      this.frameDirty = true;
       return;
     }
-    await this.writeToTerminal(record.bytes, generation);
+    this.frameInflight = true;
+    const generation = this.mountGeneration;
+    try {
+      const frame = await this.backend.terminalFrame(this.sessionId);
+      if (!frame || generation !== this.mountGeneration || !this.rootElement) return;
+      await this.renderFrame(frame, generation);
+    } catch (error) {
+      console.error("Could not render terminal frame", error);
+    } finally {
+      this.frameInflight = false;
+      if (this.frameDirty) {
+        this.frameDirty = false;
+        this.scheduleFrameRefresh();
+      }
+    }
   }
 
-  populateMediaElement(element, item) {
-    if (element.dataset.auriMediaReady === "true") return;
-    element.dataset.auriMediaReady = "true";
-    element.classList.add("terminal-inline-media", `is-${item.kind}`);
-    element.style.pointerEvents = "auto";
+  async renderFrame(frame, generation) {
+    this.lastFrame = frame;
+    this.cols = Number(frame.cols) || 0;
+    this.rows = Number(frame.rows) || 0;
+    this.modes.applicationCursorKeys = Boolean(frame.applicationCursorKeys);
+    this.modes.bracketedPaste = Boolean(frame.bracketedPaste);
 
-    const document = element.ownerDocument;
-    const card = document.createElement("div");
-    card.className = "terminal-inline-media-card";
+    const total = Number(frame.scrollbackLen) || 0;
+    const first = Number(frame.scrollbackStart) || 0;
+    const atBottom = this.isAtBottom();
 
-    if (item.kind === "image" && item.url) {
-      const image = document.createElement("img");
-      image.src = item.url;
-      image.alt = item.name;
-      image.loading = "lazy";
-      card.append(image);
-    } else if (item.kind === "video" && item.url) {
-      const video = document.createElement("video");
-      video.src = item.url;
-      video.controls = true;
-      video.preload = "metadata";
-      card.append(video);
-    } else if (item.kind === "audio" && item.url) {
-      const audio = document.createElement("audio");
-      audio.src = item.url;
-      audio.controls = true;
-      audio.preload = "metadata";
-      card.append(audio);
+    // The emulator was reset or trimmed past our window: rebuild it.
+    if (total < this.backEnd || this.backStart < first) this.backSeeded = false;
+    if (!this.backSeeded) {
+      this.backStart = Math.max(first, total - this.renderLineBudget);
+      this.backEnd = this.backStart;
+      this.backElement.replaceChildren();
+      this.backSeeded = true;
+    }
+    if (total > this.backEnd) {
+      const from = this.backEnd;
+      const rows = await this.backend.terminalScrollback(this.sessionId, from, total - from);
+      if (generation !== this.mountGeneration || !this.rootElement) return;
+      const document = this.rootElement.ownerDocument;
+      for (let index = 0; index < rows.length; index += 1) {
+        this.backElement.append(this.renderRow(document, rows[index], from + index));
+      }
+      this.backEnd = from + rows.length;
+      if (atBottom) {
+        while (this.backEnd - this.backStart > this.renderLineBudget && this.backElement.firstChild) {
+          this.backElement.firstChild.remove();
+          this.backStart += 1;
+        }
+      }
     }
 
-    const caption = document.createElement("div");
-    caption.className = "terminal-inline-media-caption";
-    const icon = item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : item.kind === "video" ? "▷" : "◇";
-    caption.textContent = `${icon} ${item.name}`;
-    card.append(caption);
-    element.replaceChildren(card);
+    const document = this.rootElement.ownerDocument;
+    const screenRows = [];
+    const lines = Array.isArray(frame.lines) ? frame.lines : [];
+    for (let index = 0; index < lines.length; index += 1) {
+      screenRows.push(this.renderRow(document, lines[index], total + index));
+    }
+    this.screenElement.replaceChildren(...screenRows, this.cursorElement);
+    this.positionCursor(frame);
+    this.placeMediaCards();
+    if (atBottom) this.scrollToBottom();
   }
 
-  async renderInlineMedia(rawItem, generation) {
-    if (!this.term || generation !== this.mountGeneration) return;
-    const item = snapshotMedia(rawItem);
-    const rows = mediaRows(item.kind);
-    const marker = this.term.registerMarker(0);
-    if (!marker) return;
+  renderRow(document, runs, absoluteLine) {
+    const row = document.createElement("div");
+    row.className = "term-row";
+    row.dataset.line = String(absoluteLine);
+    const text = rowText(runs);
+    row.dataset.text = text;
+    if (!Array.isArray(runs) || !runs.length) return row;
+    for (const run of runs) {
+      const spec = runSpanSpec(run);
+      if (!spec.text) continue;
+      const span = document.createElement("span");
+      span.textContent = spec.text;
+      if (spec.className) span.className = spec.className;
+      if (spec.color) span.style.color = spec.color;
+      if (spec.background) span.style.backgroundColor = spec.background;
+      row.append(span);
+    }
+    return row;
+  }
 
-    const decoration = this.term.registerDecoration({
-      marker,
-      width: Math.max(1, this.term.cols),
-      height: rows,
-      layer: "top"
+  positionCursor(frame) {
+    const cursor = this.cursorElement;
+    if (!cursor) return;
+    const visible = frame.cursorVisible !== false;
+    cursor.hidden = !visible;
+    if (!visible) return;
+    const x = Math.max(0, Number(frame.cursorX) || 0);
+    const y = Math.max(0, Number(frame.cursorY) || 0);
+    cursor.style.left = `${Math.round(x * this.cellWidth)}px`;
+    cursor.style.top = `${Math.round(y * this.rowHeight)}px`;
+    cursor.style.width = `${Math.max(1, Math.round(this.cellWidth))}px`;
+    cursor.style.height = `${Math.max(1, Math.round(this.rowHeight))}px`;
+  }
+
+  placeMediaCards() {
+    if (!this.rootElement || !this.mediaCards.length) return;
+    const document = this.rootElement.ownerDocument;
+    for (const card of this.mediaCards) {
+      if (!card.element) {
+        card.element = document.createElement("div");
+        this.populateMediaElement(card.element, card.item);
+      }
+      const row =
+        this.backElement.querySelector(`[data-line="${card.line}"]`) ||
+        this.screenElement.querySelector(`[data-line="${card.line}"]`);
+      if (row) row.after(card.element);
+      else if (!card.element.isConnected && card.line >= this.backStart) {
+        // Row not rendered yet (e.g. anchored past current content): keep the
+        // card at the end of the scrollback flow so it stays visible.
+        this.backElement.append(card.element);
+      }
+    }
+  }
+
+  isAtBottom() {
+    const scroll = this.scrollElement;
+    if (!scroll) return true;
+    return scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - this.rowHeight * 1.5;
+  }
+
+  scrollToBottom() {
+    const scroll = this.scrollElement;
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  }
+
+  // Scrolled to the very top with older history stored in the backend:
+  // double the window and prepend the older rows, keeping the viewport
+  // anchored at the seam so the newly loaded lines are what the user sees.
+  expandHistory() {
+    if (!this.rootElement || !this.backend.isNative || !this.lastFrame) return false;
+    const first = Number(this.lastFrame.scrollbackStart) || 0;
+    if (this.backStart <= first) return false;
+    const now = Date.now();
+    if (now - this.lastHistoryExpand < 500) return false;
+    this.lastHistoryExpand = now;
+
+    this.renderLineBudget = Math.min(this.renderLineBudget * 2, 1000000);
+    const from = Math.max(first, this.backEnd - this.renderLineBudget);
+    if (from >= this.backStart) return false;
+    const count = this.backStart - from;
+    const generation = this.mountGeneration;
+    this.backend
+      .terminalScrollback(this.sessionId, from, count)
+      .then((rows) => {
+        if (generation !== this.mountGeneration || !this.rootElement || !rows?.length) return;
+        const document = this.rootElement.ownerDocument;
+        const scroll = this.scrollElement;
+        const heightBefore = scroll.scrollHeight;
+        const nodes = rows.map((runs, index) => this.renderRow(document, runs, from + index));
+        this.backElement.prepend(...nodes);
+        this.backStart = from;
+        scroll.scrollTop += scroll.scrollHeight - heightBefore;
+      })
+      .catch((error) => {
+        console.error("Could not load terminal history", error);
+      });
+    return true;
+  }
+
+  // No-PTY browser preview: show the recorded output as stripped plain text.
+  renderFallback() {
+    if (!this.rootElement) return;
+    const document = this.rootElement.ownerDocument;
+    const start = replayStartIndex(this.output, this.renderLineBudget);
+    let text = "";
+    for (const record of this.output.slice(start)) {
+      if (record?.type === "bytes" && record.bytes) text += new TextDecoder().decode(record.bytes);
+    }
+    const rows = stripAnsi(text).replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n");
+    const nodes = rows.map((line, index) => {
+      const row = document.createElement("div");
+      row.className = "term-row";
+      row.dataset.line = String(index);
+      row.dataset.text = line;
+      row.textContent = line;
+      return row;
     });
-    if (decoration) {
-      const render = (element) => this.populateMediaElement(element, item);
-      decoration.onRender(render);
-      if (decoration.element) render(decoration.element);
-    }
+    this.screenElement.replaceChildren(...nodes);
+    this.cursorElement.hidden = true;
+    this.scrollToBottom();
+  }
 
-    await this.writeToTerminal("\r\n".repeat(rows), generation);
+  // ---- Mounting and input -------------------------------------------------
+
+  measureMetrics() {
+    if (!this.rootElement) return;
+    const document = this.rootElement.ownerDocument;
+    const probe = document.createElement("span");
+    probe.className = "term-probe";
+    probe.textContent = "W".repeat(50);
+    this.screenElement.append(probe);
+    const rect = probe.getBoundingClientRect?.();
+    if (rect?.width) this.cellWidth = rect.width / 50;
+    if (probe.offsetHeight) this.rowHeight = probe.offsetHeight;
+    probe.remove();
+  }
+
+  gridForViewport() {
+    const scroll = this.scrollElement;
+    if (!scroll) return { cols: this.cols || 80, rows: this.rows || 24 };
+    const cols = Math.max(2, Math.floor((scroll.clientWidth || 0) / this.cellWidth) || 80);
+    const rows = Math.max(2, Math.floor((scroll.clientHeight || 0) / this.rowHeight) || 24);
+    return { cols, rows };
   }
 
   async mount(element, cwd = "~", fontSize = 20, maxLines = 4000) {
     if (!element) return;
     if (!this.started) this.cwd = cwd || this.cwd;
-    const lineLimit = Math.min(100000, Math.max(100, Number(maxLines) || 4000));
+    this.scrollbackLimit = Math.min(100000, Math.max(100, Number(maxLines) || 4000));
+    this.renderLineBudget = Math.max(this.renderLineBudget, TERMINAL_RENDER_TAIL_LINES);
     const terminalFontSize = Math.round(Math.min(30, Math.max(14, Number(fontSize) || 20)) * 0.6);
 
-    if (this.term && this.mountedElement === element) {
-      this.term.options.scrollback = lineLimit;
-      this.term.options.fontSize = terminalFontSize;
-      this.fitAddon?.fit();
+    if (this.rootElement && this.mountedElement === element) {
+      this.rootElement.style.setProperty("--term-font-size", `${terminalFontSize}px`);
+      this.measureMetrics();
+      this.resize();
       if (!this.started && this.backend.isNative) {
-        await this.ensureStarted(this.cwd, this.term.cols, this.term.rows);
-      } else if (this.started && !this.adoptOnly) {
-        this.backend.resizeTerminal(this.sessionId, this.term.cols, this.term.rows).catch(() => {});
+        const grid = this.gridForViewport();
+        await this.ensureStarted(this.cwd, grid.cols, grid.rows);
       }
+      this.scheduleFrameRefresh(0);
       return;
     }
 
     const generation = ++this.mountGeneration;
     this.clipboardAbort?.abort();
     this.dismissPreview();
-    this.term?.dispose();
-    const { Terminal, FitAddon } = await loadTerminalModules();
-    this.fitAddon = new FitAddon();
-    this.term = new Terminal({
-      cursorBlink: true,
-      scrollback: lineLimit,
-      fontFamily: "SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-      fontSize: terminalFontSize,
-      lineHeight: 1.25,
-      theme: {
-        background: "#f8fbff",
-        foreground: "#24324a",
-        cursor: "#7089f8",
-        cursorAccent: "#f8fbff",
-        selectionBackground: "#cfd9ff99",
-        black: "#24324a",
-        red: "#c65d6a",
-        green: "#3f9277",
-        yellow: "#a97726",
-        blue: "#546be1",
-        magenta: "#8b62c8",
-        cyan: "#318f96",
-        white: "#e7ecf3",
-        brightBlack: "#7a879b",
-        brightRed: "#d86b78",
-        brightGreen: "#5ebc99",
-        brightYellow: "#c49138",
-        brightBlue: "#7089f8",
-        brightMagenta: "#a87ce5",
-        brightCyan: "#58b9bd",
-        brightWhite: "#ffffff"
-      }
-    });
-    this.term.loadAddon(this.fitAddon);
-    this.term.open(element);
-    this.mountedElement = element;
-    this.installClipboardHandlers(element);
-    this.fitAddon.fit();
-    this.renderQueue = Promise.resolve();
-    // Replay only the trailing lines; older records stay stored and are
-    // loaded when the user scrolls to the very top.
-    this.renderLineBudget = TERMINAL_RENDER_TAIL_LINES;
-    this.renderedFromIndex = replayStartIndex(this.output, this.renderLineBudget);
-    for (const record of this.output.slice(this.renderedFromIndex)) this.queueRender(record, generation);
-    this.term.onScroll?.((viewportY) => {
-      if (viewportY === 0) this.expandHistory();
-    });
+    const document = element.ownerDocument;
+    element.replaceChildren();
 
-    this.term.onData((data) => {
-      if (data.includes("\r") || data.includes("\n")) this.scheduleCwdRefresh();
-      this.write(data).catch((error) => {
+    const root = document.createElement("div");
+    root.className = "term-root";
+    root.tabIndex = 0;
+    root.style.setProperty("--term-font-size", `${terminalFontSize}px`);
+    const scroll = document.createElement("div");
+    scroll.className = "term-scroll";
+    const back = document.createElement("div");
+    back.className = "term-back";
+    const screen = document.createElement("div");
+    screen.className = "term-screen";
+    const cursor = document.createElement("div");
+    cursor.className = "term-cursor";
+    cursor.hidden = true;
+    screen.append(cursor);
+    scroll.append(back, screen);
+    root.append(scroll);
+    element.append(root);
+
+    this.mountedElement = element;
+    this.rootElement = root;
+    this.scrollElement = scroll;
+    this.backElement = back;
+    this.screenElement = screen;
+    this.cursorElement = cursor;
+    this.backSeeded = false;
+    this.lastFrame = null;
+    for (const card of this.mediaCards) card.element = null;
+
+    this.measureMetrics();
+    this.installClipboardHandlers(root);
+    this.installInputHandlers(root);
+    scroll.addEventListener("scroll", () => {
+      if (scroll.scrollTop === 0) this.expandHistory();
+    }, { signal: this.clipboardAbort.signal });
+
+    if (this.backend.isNative) {
+      const grid = this.gridForViewport();
+      if (!this.started) {
+        await this.ensureStarted(this.cwd, grid.cols, grid.rows);
+        if (generation !== this.mountGeneration) return;
+      } else if (!this.adoptOnly && (grid.cols !== this.cols || grid.rows !== this.rows)) {
+        this.backend.resizeTerminal(this.sessionId, grid.cols, grid.rows).catch(() => {});
+      }
+      this.scheduleFrameRefresh(0);
+    } else {
+      if (this.output.length === 0) {
+        this.remember({ type: "bytes", bytes: encoder.encode("Browser preview does not provide a native PTY.\n") });
+      }
+      this.renderFallback();
+    }
+  }
+
+  installInputHandlers(root) {
+    const { signal } = this.clipboardAbort;
+    root.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented) return;
+      const sequence = encodeKeyEvent(event, this.modes);
+      if (sequence === null) return;
+      event.preventDefault();
+      this.scrollToBottom();
+      if (sequence.includes("\r") || sequence.includes("\n")) this.scheduleCwdRefresh();
+      this.write(sequence).catch((error) => {
         console.error("Could not write terminal input", error);
       });
-    });
-    element.addEventListener("mousedown", () => this.term?.focus());
-    this.term.onResize(({ cols, rows }) => {
-      // Adopted sessions share the desktop window's PTY and must not fight
-      // it over the grid size.
-      if (this.started && !this.adoptOnly) this.backend.resizeTerminal(this.sessionId, cols, rows).catch(() => {});
-    });
-
-    if (!this.started && this.backend.isNative) {
-      await this.ensureStarted(this.cwd, this.term.cols, this.term.rows);
-      if (generation !== this.mountGeneration) return;
-    } else if (!this.backend.isNative && this.output.length === 0) {
-      this.term.writeln("Browser preview does not provide a native PTY.");
-    }
+    }, { signal });
+    root.addEventListener("paste", (event) => {
+      const text = event.clipboardData?.getData?.("text") || "";
+      if (!text) return;
+      event.preventDefault();
+      this.write(encodePasteText(text, this.modes.bracketedPaste)).catch((error) => {
+        console.error("Could not paste into terminal", error);
+      });
+    }, { signal });
+    root.addEventListener("mousedown", () => root.focus({ preventScroll: true }));
   }
 
   scheduleCwdRefresh() {
@@ -590,7 +766,11 @@ export class TerminalSession {
   }
 
   selectedText() {
-    return this.term?.getSelection?.() || "";
+    const root = this.rootElement;
+    const selection = root?.ownerDocument?.getSelection?.();
+    if (!root || !selection || selection.isCollapsed) return "";
+    if (!root.contains(selection.anchorNode)) return "";
+    return selection.toString();
   }
 
   async copySelection() {
@@ -602,41 +782,42 @@ export class TerminalSession {
   }
 
   terminalTextAtEvent(element, event) {
-    const screen = element.querySelector?.(".xterm-screen") || element;
-    const rect = screen.getBoundingClientRect?.();
-    const cols = Math.max(1, Number(this.term?.cols) || 1);
-    const rows = Math.max(1, Number(this.term?.rows) || 1);
-    if (!rect?.width || !rect?.height) return null;
-    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return null;
-    const column = Math.min(cols - 1, Math.max(0, Math.floor(((event.clientX - rect.left) / rect.width) * cols)));
-    const viewportRow = Math.min(rows - 1, Math.max(0, Math.floor(((event.clientY - rect.top) / rect.height) * rows)));
-    const buffer = this.term?.buffer?.active;
-    const bufferRow = (Number(buffer?.viewportY) || 0) + viewportRow;
-    const line = buffer?.getLine?.(bufferRow);
-    if (!line) return null;
+    const target = event.target?.closest?.(".term-row");
+    const row = target && element.contains(target) ? target : null;
+    if (!row) return null;
+    const rect = row.getBoundingClientRect?.();
+    if (!rect?.width) return null;
+    const column = Math.max(0, Math.floor((event.clientX - rect.left) / this.cellWidth));
+    const cols = Math.max(1, this.cols || Math.round(rect.width / this.cellWidth));
+    const rowString = (node) => String(node?.dataset?.text ?? node?.textContent ?? "");
 
-    let startRow = bufferRow;
-    while (startRow > 0 && buffer.getLine?.(startRow)?.isWrapped) startRow -= 1;
-    let endRow = bufferRow;
-    while (buffer.getLine?.(endRow + 1)?.isWrapped) endRow += 1;
-
-    let text = "";
+    // Rows whose text fills the whole grid width are soft-wrap continuations:
+    // join them so a long path or URL split across rows previews as one line.
+    let text = rowString(row);
     let logicalColumn = column;
-    for (let row = startRow; row <= endRow; row += 1) {
-      const segment = buffer.getLine?.(row)?.translateToString?.(row === endRow) || "";
-      if (row < bufferRow) logicalColumn += segment.length;
-      text += segment;
+    let previous = row.previousElementSibling;
+    while (previous?.classList?.contains?.("term-row") && rowString(previous).length === cols) {
+      text = rowString(previous) + text;
+      logicalColumn += cols;
+      previous = previous.previousElementSibling;
     }
-    const cellWidth = rect.width / cols;
-    const cellHeight = rect.height / rows;
+    let current = row;
+    while (rowString(current).length === cols) {
+      const next = current.nextElementSibling;
+      if (!next?.classList?.contains?.("term-row")) break;
+      text += rowString(next);
+      current = next;
+    }
+
+    if (!text.trim()) return null;
     return {
       text,
-      column: logicalColumn,
+      column: Math.min(logicalColumn, Math.max(0, text.length - 1)),
       anchor: {
-        left: rect.left + column * cellWidth,
-        right: rect.left + (column + 1) * cellWidth,
-        top: rect.top + viewportRow * cellHeight,
-        bottom: rect.top + (viewportRow + 1) * cellHeight
+        left: rect.left + column * this.cellWidth,
+        right: rect.left + (column + 1) * this.cellWidth,
+        top: rect.top,
+        bottom: rect.bottom
       }
     };
   }
@@ -706,6 +887,18 @@ export class TerminalSession {
     preview.append(body, openButton);
     document.body.append(preview);
     this.previewElement = preview;
+    if (target.kind === "url") {
+      const panelRect = this.mountedElement?.getBoundingClientRect?.()
+        || this.scrollElement?.getBoundingClientRect?.()
+        || {};
+      const view = document.defaultView || globalThis;
+      const size = webPreviewSize(panelRect, {
+        width: Number(view.innerWidth) || 0,
+        height: Number(view.innerHeight) || 0
+      });
+      preview.style.width = `${size.width}px`;
+      preview.style.height = `${size.height}px`;
+    }
     this.positionPreview(preview, anchor);
     const previewView = document.defaultView || globalThis;
     const preferredMediaWidth = preview.offsetWidth || Math.min(
@@ -851,20 +1044,22 @@ export class TerminalSession {
     if (!id || (this.started && this.sessionId === id)) return false;
     this.sessionId = id;
     this.started = true;
+    this.backSeeded = false;
     if (!this.output.length && text) this.appendRecord({ type: "bytes", bytes: encoder.encode(text) });
     const pending = this.pendingAdoptInput;
     this.pendingAdoptInput = "";
     if (pending) await this.backend.writeTerminal(this.sessionId, encoder.encode(pending));
+    this.scheduleFrameRefresh(0);
     return true;
   }
 
-  async ensureStarted(cwd = this.cwd, cols = this.term?.cols || 80, rows = this.term?.rows || 24) {
+  async ensureStarted(cwd = this.cwd, cols = this.cols || 80, rows = this.rows || 24) {
     if (!this.backend.isNative) return false;
     if (this.started) return true;
     if (this.adoptOnly) return false;
     if (!this.startPromise) {
       this.cwd = cwd || this.cwd;
-      this.startPromise = this.backend.startTerminal(this.sessionId, this.cwd, cols, rows)
+      this.startPromise = this.backend.startTerminal(this.sessionId, this.cwd, cols, rows, this.scrollbackLimit)
         .then(() => {
           this.started = true;
           return true;
@@ -886,20 +1081,26 @@ export class TerminalSession {
     await this.backend.writeTerminal(this.sessionId, encoder.encode(data));
   }
 
-  // Background terminals live as recorded output only: the emulator and its
-  // DOM are released while the PTY keeps running and appendRecord keeps
-  // capturing output, so a later mount() replays the exact same state.
+  // Background terminals live as recorded output only: the DOM mirror is
+  // released while the PTY and its backend emulator keep running, so a later
+  // mount() re-fetches the exact same screen.
   sleep() {
-    if (!this.term) return false;
+    if (!this.rootElement) return false;
     this.mountGeneration += 1;
+    clearTimeout(this.frameTimer);
+    this.frameTimer = null;
     this.clipboardAbort?.abort();
     this.clipboardAbort = null;
     this.dismissPreview();
-    this.term.dispose();
-    this.term = null;
-    this.fitAddon = null;
+    this.rootElement.remove();
+    this.rootElement = null;
+    this.scrollElement = null;
+    this.backElement = null;
+    this.screenElement = null;
+    this.cursorElement = null;
     this.mountedElement = null;
-    this.renderQueue = Promise.resolve();
+    this.backSeeded = false;
+    for (const card of this.mediaCards) card.element = null;
     return true;
   }
 
@@ -907,41 +1108,20 @@ export class TerminalSession {
     return this.bufferTail;
   }
 
-  // Scrolled to the top with older history stored: double the rendered
-  // window and rebuild the emulator content, keeping the viewport near the
-  // seam so the newly loaded lines are what the user sees.
-  expandHistory() {
-    if (!this.term || this.renderedFromIndex <= 0) return false;
-    const now = Date.now();
-    if (now - this.lastHistoryExpand < 500) return false;
-    this.lastHistoryExpand = now;
-
-    this.renderLineBudget = Math.min(this.renderLineBudget * 2, 1000000);
-    const start = replayStartIndex(this.output, this.renderLineBudget);
-    if (start >= this.renderedFromIndex) return false;
-    const added = countRecordLines(this.output.slice(start, this.renderedFromIndex));
-    this.renderedFromIndex = start;
-
-    const generation = ++this.mountGeneration;
-    this.term.reset();
-    this.renderQueue = Promise.resolve();
-    for (const record of this.output.slice(start)) this.queueRender(record, generation);
-    this.renderQueue = this.renderQueue.then(() => {
-      if (generation !== this.mountGeneration || !this.term) return;
-      this.term.scrollToTop();
-      this.term.scrollLines(Math.max(0, added - 1));
-    });
-    return true;
-  }
-
   async stop() {
     this.mountGeneration += 1;
     clearTimeout(this.cwdRefreshTimer);
+    clearTimeout(this.frameTimer);
+    this.frameTimer = null;
     this.clipboardAbort?.abort();
     this.clipboardAbort = null;
     this.dismissPreview();
-    this.term?.dispose();
-    this.term = null;
+    this.rootElement?.remove();
+    this.rootElement = null;
+    this.scrollElement = null;
+    this.backElement = null;
+    this.screenElement = null;
+    this.cursorElement = null;
     this.mountedElement = null;
     for (const off of this.unlisten.splice(0)) off?.();
     // Adopted sessions borrow the desktop window's PTY; only that window may
@@ -951,15 +1131,17 @@ export class TerminalSession {
   }
 
   resize() {
-    if (!this.term || !this.fitAddon) return;
-    this.fitAddon.fit();
-    if (this.started) {
-      this.backend.resizeTerminal(this.sessionId, this.term.cols, this.term.rows).catch(() => {});
+    if (!this.rootElement) return;
+    this.measureMetrics();
+    const grid = this.gridForViewport();
+    if (this.started && !this.adoptOnly && (grid.cols !== this.cols || grid.rows !== this.rows)) {
+      this.backend.resizeTerminal(this.sessionId, grid.cols, grid.rows).catch(() => {});
     }
+    this.scheduleFrameRefresh();
   }
 
   focus() {
-    this.term?.focus();
+    this.rootElement?.focus({ preventScroll: true });
   }
 
   async run(command) {
@@ -967,8 +1149,87 @@ export class TerminalSession {
     this.scheduleCwdRefresh();
   }
 
+  // ---- Printed messages and media ----------------------------------------
+  // GUI-side messages (You/assistant blocks) print through the backend
+  // emulator so every mirror — GUI, browser session, TUI attach — shows them.
+  // The bytes come back over the terminal-data event, which also keeps the
+  // record log and state snapshot in sync.
+
+  enqueuePrint(text) {
+    this.printQueue = this.printQueue
+      .then(async () => {
+        if (!text) return this.lastPrintLine;
+        if (!this.backend.isNative || (this.adoptOnly && !this.started)) {
+          this.appendRecord({ type: "bytes", bytes: encoder.encode(text) });
+          return this.lastPrintLine;
+        }
+        await this.ensureStarted();
+        const line = await this.backend.printTerminal(this.sessionId, text);
+        this.lastPrintLine = typeof line === "number" ? line : this.lastPrintLine;
+        return this.lastPrintLine;
+      })
+      .catch((error) => {
+        console.error("Could not print to terminal", error);
+        return this.lastPrintLine;
+      });
+    return this.printQueue;
+  }
+
+  populateMediaElement(element, item) {
+    if (element.dataset.auriMediaReady === "true") return;
+    element.dataset.auriMediaReady = "true";
+    element.classList.add("terminal-inline-media", `is-${item.kind}`);
+
+    const document = element.ownerDocument;
+    const card = document.createElement("div");
+    card.className = "terminal-inline-media-card";
+
+    if (item.kind === "image" && item.url) {
+      const image = document.createElement("img");
+      image.src = item.url;
+      image.alt = item.name;
+      image.loading = "lazy";
+      card.append(image);
+    } else if (item.kind === "video" && item.url) {
+      const video = document.createElement("video");
+      video.src = item.url;
+      video.controls = true;
+      video.preload = "metadata";
+      card.append(video);
+    } else if (item.kind === "audio" && item.url) {
+      const audio = document.createElement("audio");
+      audio.src = item.url;
+      audio.controls = true;
+      audio.preload = "metadata";
+      card.append(audio);
+    }
+
+    const caption = document.createElement("div");
+    caption.className = "terminal-inline-media-caption";
+    const icon = item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : item.kind === "video" ? "▷" : "◇";
+    caption.textContent = `${icon} ${item.name}`;
+    card.append(caption);
+    element.replaceChildren(card);
+  }
+
   printMedia(items = []) {
-    for (const item of items) this.appendRecord({ type: "media", item: snapshotMedia(item) });
+    if (!items.length) return;
+    const snapshots = items.map((item) => snapshotMedia(item));
+    this.printQueue = this.printQueue.then((line) => {
+      const anchor = typeof line === "number"
+        ? line
+        : (Number(this.lastFrame?.scrollbackLen) || 0) + (Number(this.lastFrame?.cursorY) || 0);
+      for (const item of snapshots) {
+        this.mediaCards.push({ item, line: anchor, element: null });
+      }
+      while (this.mediaCards.length > 40) {
+        const dropped = this.mediaCards.shift();
+        dropped.element?.remove?.();
+      }
+      this.scheduleFrameRefresh(0);
+      this.placeMediaCards();
+      return line;
+    });
   }
 
   printUser(message, attachments = []) {
@@ -985,29 +1246,25 @@ export class TerminalSession {
 
   beginAssistantStream(name) {
     const esc = String.fromCharCode(27);
-    const output = `\r\n${esc}[1;35m${name || "Auri"}${esc}[0m\r\n`;
-    this.appendRecord({ type: "bytes", bytes: encoder.encode(output) });
+    this.enqueuePrint(`\r\n${esc}[1;35m${name || "Auri"}${esc}[0m\r\n`);
     this.assistantStreamAtLineStart = true;
   }
 
   appendAssistantStream(text) {
     if (!text) return;
     const normalized = String(text).replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
-    this.appendRecord({ type: "bytes", bytes: encoder.encode(normalized) });
+    this.enqueuePrint(normalized);
     this.assistantStreamAtLineStart = normalized.endsWith("\r\n");
   }
 
   endAssistantStream() {
-    if (!this.assistantStreamAtLineStart) {
-      this.appendRecord({ type: "bytes", bytes: encoder.encode("\r\n") });
-    }
+    if (!this.assistantStreamAtLineStart) this.enqueuePrint("\r\n");
     this.assistantStreamAtLineStart = true;
   }
 
   printMessage(label, message, color) {
     const normalized = String(message ?? "").replaceAll("\r\n", "\n").replaceAll("\n", "\r\n");
     const esc = String.fromCharCode(27);
-    const output = `\r\n${esc}[1;${color}m${label}${esc}[0m\r\n${normalized}\r\n`;
-    this.appendRecord({ type: "bytes", bytes: encoder.encode(output) });
+    this.enqueuePrint(`\r\n${esc}[1;${color}m${label}${esc}[0m\r\n${normalized}\r\n`);
   }
 }

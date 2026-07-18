@@ -271,6 +271,22 @@ pub fn main_fill_bounds(width: u32, height: u32) -> (i32, i32, u32, u32) {
     (0, 0, width, height)
 }
 
+/// Reading the pasteboard is expensive on macOS: AppKit re-encodes clipboard
+/// images (multi-megabyte TIFF/PNG conversions) on every image read, so the
+/// clipboard history poll must not touch it while nothing changed. `current`
+/// is the OS pasteboard change counter (None when the platform has none);
+/// `last` remembers the counter that was last read.
+pub fn should_read_clipboard(last: &mut Option<i64>, current: Option<i64>) -> bool {
+    match current {
+        None => true,
+        Some(count) if *last == Some(count) => false,
+        Some(count) => {
+            *last = Some(count);
+            true
+        }
+    }
+}
+
 /// Keep WebKitGTK from starting the PipeWire GStreamer device provider when
 /// that provider is not explicitly configured by the user. The provider can
 /// crash WebKit's content process during device discovery; PulseAudio/V4L2

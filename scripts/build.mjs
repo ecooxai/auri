@@ -59,7 +59,7 @@ await writeFileIfChanged(
 await writeFileIfChanged("dist/three-viewer.js", threeViewerBuild.outputFiles[0].contents);
 
 const index = (await readFile("index.html", "utf8"))
-  .replace('src="src/main.js"', 'src="app.js?v=3"');
+  .replace('src="src/main.js"', 'src="app.js?v=4"');
 await writeFileIfChanged("dist/index.html", index);
 
 const staticFiles = [

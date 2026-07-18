@@ -8,6 +8,16 @@ export function applyAppFontSize(root, value) {
   return size;
 }
 
+// Which part of the terminal panel a focus target belongs to: the emulator
+// screen, the composer input below it, or neither. The controller remembers
+// the last zone so switching back to a terminal restores the same one.
+export function terminalFocusZone(target) {
+  if (!target?.closest) return null;
+  if (target.id === "terminal-input" || target.closest("#terminal-input")) return "composer";
+  if (target.closest("#terminal-emulator")) return "screen";
+  return null;
+}
+
 export function captureFolderScroll(root, nextPath) {
   const list = root?.querySelector?.(".folder-list");
   return list?.dataset?.folderPath === nextPath ? list.scrollTop : 0;

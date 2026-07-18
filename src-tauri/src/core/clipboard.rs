@@ -117,6 +117,37 @@ fn image_fingerprint(width: usize, height: usize, bytes: &[u8]) -> String {
     finalize_sha256(hasher)
 }
 
+#[cfg(target_os = "macos")]
+fn pasteboard_change_count() -> Option<i64> {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+    let class = AnyClass::get(c"NSPasteboard")?;
+    unsafe {
+        let pasteboard: *mut AnyObject = msg_send![class, generalPasteboard];
+        if pasteboard.is_null() {
+            return None;
+        }
+        let count: isize = msg_send![&*pasteboard, changeCount];
+        Some(count as i64)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pasteboard_change_count() -> Option<i64> {
+    None
+}
+
+/// The current clipboard, read only when the pasteboard change counter moved
+/// since the previous call (always read where no counter exists).
+fn current_clipboard_if_changed() -> Option<CurrentClipboard> {
+    static LAST_CHANGE_COUNT: Mutex<Option<i64>> = Mutex::new(None);
+    let mut last = LAST_CHANGE_COUNT.lock().ok()?;
+    if !super::util::should_read_clipboard(&mut last, pasteboard_change_count()) {
+        return None;
+    }
+    current_clipboard()
+}
+
 fn current_clipboard() -> Option<CurrentClipboard> {
     let mut clipboard = Clipboard::new().ok()?;
     if let Ok(paths) = clipboard.get().file_list() {
@@ -280,7 +311,7 @@ pub fn read_history() -> Result<Vec<ClipboardEntry>, String> {
         changed = true;
     }
 
-    if let Some(current) = current_clipboard() {
+    if let Some(current) = current_clipboard_if_changed() {
         let fingerprint = match &current {
             CurrentClipboard::Text { fingerprint, .. }
             | CurrentClipboard::Image { fingerprint, .. } => fingerprint,

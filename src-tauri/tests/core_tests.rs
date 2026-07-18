@@ -28,7 +28,7 @@ mod term_bridge;
 #[path = "../src/core/util.rs"]
 mod util;
 
-#[path = "../src/cli/vt.rs"]
+#[path = "../src/core/vt.rs"]
 mod vt;
 
 #[path = "../src/core/webserver.rs"]
@@ -36,6 +36,23 @@ mod webserver;
 
 #[path = "../src/core/webview_sleep.rs"]
 mod webview_sleep;
+
+#[test]
+fn clipboard_change_counter_gate_skips_reads_until_the_counter_moves() {
+    let mut last = None;
+
+    // First observation always reads and remembers the counter.
+    assert!(util::should_read_clipboard(&mut last, Some(7)));
+    // Unchanged counter: the expensive pasteboard read is skipped.
+    assert!(!util::should_read_clipboard(&mut last, Some(7)));
+    assert!(!util::should_read_clipboard(&mut last, Some(7)));
+    // The counter moved: read again and track the new value.
+    assert!(util::should_read_clipboard(&mut last, Some(8)));
+    assert!(!util::should_read_clipboard(&mut last, Some(8)));
+    // Platforms without a change counter always read.
+    assert!(util::should_read_clipboard(&mut last, None));
+    assert!(util::should_read_clipboard(&mut last, None));
+}
 
 #[test]
 fn base64_encoder_matches_standard_vectors() {
@@ -325,6 +342,72 @@ fn vt_screen_scroll_region_and_reverse_index_behave() {
     // Reverse index at the top of the region scrolls the region down.
     screen.feed_str("\x1b[2;1H\x1bM");
     assert_eq!(screen.plain_lines()[0], "a");
+}
+
+#[test]
+fn vt_screen_collects_scrolled_lines_as_styled_scrollback() {
+    let mut screen = vt::VtScreen::new(8, 2);
+    screen.feed_str("\x1b[36mone\x1b[0m\r\ntwo\r\nthree\r\nfour");
+    assert_eq!(screen.scrollback_len(), 2, "two rows scrolled off the screen");
+    assert_eq!(screen.scrollback_start(), 0);
+    let rows = screen.scrollback_runs(0, 2);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][0].text, "one");
+    assert_eq!(rows[0][0].style.fg, vt::Color::Indexed(6));
+    assert_eq!(rows[1][0].text, "two");
+    assert!(screen.scrollback_runs(5, 10).is_empty(), "out-of-range requests clamp");
+
+    // The alternate screen (vim, top) must never leak into scrollback.
+    screen.feed_str("\x1b[?1049h");
+    for _ in 0..10 {
+        screen.feed_str("alt\r\n");
+    }
+    screen.feed_str("\x1b[?1049l");
+    assert_eq!(screen.scrollback_len(), 2);
+}
+
+#[test]
+fn vt_screen_scrollback_cap_keeps_absolute_indices() {
+    let mut screen = vt::VtScreen::new(8, 2);
+    screen.set_scrollback_limit(4);
+    for index in 0..10 {
+        screen.feed_str(&format!("l{index}\r\n"));
+    }
+    assert_eq!(screen.scrollback_len(), 9, "absolute count includes trimmed rows");
+    assert_eq!(screen.scrollback_start(), 5, "the oldest stored row keeps its absolute index");
+    let rows = screen.scrollback_runs(5, 100);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0][0].text, "l5");
+    assert_eq!(rows[3][0].text, "l8");
+    // Requests older than the stored window return only stored rows.
+    assert_eq!(screen.scrollback_runs(0, 100).len(), 4);
+}
+
+#[test]
+fn vt_screen_screen_runs_merge_cells_by_style() {
+    let mut screen = vt::VtScreen::new(10, 2);
+    screen.feed_str("ab\x1b[1;31mCD\x1b[0mef");
+    let rows = screen.styled_runs();
+    assert_eq!(rows[0].len(), 3);
+    assert_eq!(rows[0][0].text, "ab");
+    assert_eq!(rows[0][1].text, "CD");
+    assert!(rows[0][1].style.bold);
+    assert_eq!(rows[0][1].style.fg, vt::Color::Indexed(1));
+    assert_eq!(rows[0][2].text, "ef");
+    assert!(rows[1].is_empty(), "blank rows carry no runs");
+}
+
+#[test]
+fn vt_screen_tracks_application_cursor_and_bracketed_paste_modes() {
+    let mut screen = vt::VtScreen::new(4, 2);
+    assert!(!screen.application_cursor_keys);
+    assert!(!screen.bracketed_paste);
+    screen.feed_str("\x1b[?1h\x1b[?2004h");
+    assert!(screen.application_cursor_keys);
+    assert!(screen.bracketed_paste);
+    screen.feed_str("\x1b[?1l\x1b[?2004l");
+    assert!(!screen.application_cursor_keys);
+    assert!(!screen.bracketed_paste);
 }
 
 #[test]

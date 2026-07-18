@@ -29,7 +29,7 @@ let staticCopyQueue = Promise.resolve();
 async function copyStaticFile(filename) {
   if (filename === "index.html") {
     const index = (await readFile(path.join(root, filename), "utf8"))
-      .replace('src="src/main.js"', 'src="app.js?v=3"');
+      .replace('src="src/main.js"', 'src="app.js?v=4"');
     await writeFile(path.join(dist, filename), index);
     return;
   }

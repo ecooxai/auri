@@ -55,21 +55,23 @@ test("AppView drops background terminal hosts so slept terminals leave the DOM",
   assert.equal(view.terminalHosts.size, 0);
 });
 
-test("TerminalSession.sleep disposes the emulator but keeps recorded output growing for replay", async () => {
+test("TerminalSession.sleep releases the DOM mirror but keeps recorded output growing for replay", async () => {
   const { TerminalSession } = await import("../src/services/terminal-session.js");
   const encoder = new TextEncoder();
   const session = new TerminalSession({ isNative: false }, {});
   session.remember({ type: "bytes", bytes: encoder.encode("hello ") });
 
-  let disposed = 0;
-  session.term = { dispose() { disposed += 1; } };
-  session.fitAddon = {};
+  let removed = 0;
+  session.rootElement = { remove() { removed += 1; } };
+  session.scrollElement = {};
+  session.screenElement = {};
   session.mountedElement = {};
 
   assert.equal(session.sleep(), true);
-  assert.equal(disposed, 1);
-  assert.equal(session.term, null);
-  assert.equal(session.fitAddon, null);
+  assert.equal(removed, 1);
+  assert.equal(session.rootElement, null);
+  assert.equal(session.scrollElement, null);
+  assert.equal(session.screenElement, null);
   assert.equal(session.mountedElement, null);
 
   session.appendRecord({ type: "bytes", bytes: encoder.encode("world") });
@@ -85,11 +87,11 @@ test("AppController sleeps every terminal session except the focused one on rend
   assert.match(method, /type === "terminal"/);
 });
 
-test("TerminalSession reuses an already-mounted emulator and applies the configured scrollback", async () => {
+test("TerminalSession reuses an already-mounted renderer and applies the configured scrollback", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.match(source, /this\.mountedElement === element/);
-  assert.match(source, /this\.term\.options\.scrollback = lineLimit/);
-  assert.match(source, /scrollback: lineLimit/);
+  assert.match(source, /this\.scrollbackLimit = Math\.min\(100000, Math\.max\(100, Number\(maxLines\)/);
+  assert.match(source, /startTerminal\(this\.sessionId, this\.cwd, cols, rows, this\.scrollbackLimit\)/);
   assert.match(source, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
 });
 
@@ -116,7 +118,7 @@ test("terminal selection copy delegates to the command-backed clipboard action",
   const session = new TerminalSession({ isNative: false }, {
     copyText: async (text) => copied.push(text)
   });
-  session.term = { getSelection: () => "selected terminal text" };
+  session.selectedText = () => "selected terminal text";
 
   assert.equal(await session.copySelection(), true);
   assert.deepEqual(copied, ["selected terminal text"]);
