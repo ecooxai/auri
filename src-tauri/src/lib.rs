@@ -150,8 +150,9 @@ fn terminal_start(
     cols: u16,
     rows: u16,
     scrollback: Option<usize>,
+    shell_command: Option<String>,
 ) -> Result<(), String> {
-    terminal::start(app, session_id, cwd, cols, rows, scrollback)
+    terminal::start(app, session_id, cwd, cols, rows, scrollback, shell_command)
 }
 
 #[tauri::command]
@@ -179,8 +180,8 @@ fn terminal_write(session_id: String, data: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn terminal_cwd(session_id: String) -> Result<String, String> {
-    terminal::cwd(&session_id)
+fn terminal_cwd(session_id: String, logical_cwd: Option<String>) -> Result<String, String> {
+    terminal::cwd(&session_id, logical_cwd.as_deref())
 }
 
 #[tauri::command]

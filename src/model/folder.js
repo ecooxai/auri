@@ -11,6 +11,8 @@ function hiddenKey(entry) {
   return String(entry.name || "").startsWith(".") ? 1 : 0;
 }
 
+export const NEW_FOLDER_HIGHLIGHT_MS = 30_000;
+
 export function sortFolderEntries(entries = [], sortBy = "name") {
   const sorted = [...entries];
   sorted.sort((left, right) => {
@@ -34,10 +36,28 @@ export function sortFolderEntries(entries = [], sortBy = "name") {
   return sorted;
 }
 
-export function mergePolledFolderEntries(previous = [], fresh = []) {
-  const known = new Set((Array.isArray(previous) ? previous : []).map((entry) => String(entry?.path || entry?.name || "")));
+export function mergePolledFolderEntries(previous = [], fresh = [], now = Date.now()) {
+  const previousByPath = new Map((Array.isArray(previous) ? previous : []).map((entry) => [
+    String(entry?.path || entry?.name || ""),
+    entry
+  ]));
   const current = Array.isArray(fresh) ? fresh : [];
-  const added = current.filter((entry) => !known.has(String(entry?.path || entry?.name || ""))).map((entry) => ({ ...entry, _auriNew: true }));
-  const existing = current.filter((entry) => known.has(String(entry?.path || entry?.name || ""))).map((entry) => ({ ...entry, _auriNew: false }));
+  const added = current.filter((entry) => !previousByPath.has(String(entry?.path || entry?.name || ""))).map((entry) => ({ ...entry, _auriNew: true, _auriNewAt: now }));
+  const existing = current.filter((entry) => previousByPath.has(String(entry?.path || entry?.name || ""))).map((entry) => {
+    const previousEntry = previousByPath.get(String(entry?.path || entry?.name || ""));
+    const discoveredAt = Number(previousEntry?._auriNewAt) || now;
+    const isNew = Boolean(previousEntry?._auriNew) && now - discoveredAt < NEW_FOLDER_HIGHLIGHT_MS;
+    return { ...entry, _auriNew: isNew, ...(isNew ? { _auriNewAt: discoveredAt } : {}) };
+  });
   return [...added, ...existing];
+}
+
+export function expireNewFolderEntries(entries = [], now = Date.now()) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => {
+    if (!entry?._auriNew) return entry;
+    const discoveredAt = Number(entry._auriNewAt) || now;
+    if (now - discoveredAt < NEW_FOLDER_HIGHLIGHT_MS) return entry;
+    const { _auriNewAt, ...rest } = entry;
+    return { ...rest, _auriNew: false };
+  });
 }

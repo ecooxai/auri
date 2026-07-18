@@ -204,6 +204,28 @@ test("terminal line retention defaults to 4000 and rejects unsafe values", () =>
   assert.equal(state.settings.terminalMaxLines, 4000);
 });
 
+test("terminal shell presets keep the direct executable field synchronized", () => {
+  let state = createInitialState();
+  assert.equal(state.settings.terminalShellPreset, "default");
+  assert.equal(state.settings.terminalShellCommand, "");
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalShellPreset", value: "bash" } });
+  assert.equal(state.settings.terminalShellPreset, "bash");
+  assert.equal(state.settings.terminalShellCommand, "/bin/bash");
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalShellCommand", value: "/bin/zsh" } });
+  assert.equal(state.settings.terminalShellPreset, "zsh");
+  assert.equal(state.settings.terminalShellCommand, "/bin/zsh");
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalShellCommand", value: "/usr/local/bin/fish" } });
+  assert.equal(state.settings.terminalShellPreset, "custom");
+  assert.equal(state.settings.terminalShellCommand, "/usr/local/bin/fish");
+
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalShellPreset", value: "default" } });
+  assert.equal(state.settings.terminalShellPreset, "default");
+  assert.equal(state.settings.terminalShellCommand, "");
+});
+
 test("folder pane width has a usable persisted range", () => {
   let state = createInitialState();
   assert.equal(state.settings.folderPaneWidth, 230);

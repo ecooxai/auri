@@ -165,14 +165,22 @@ export function renderFolder(state) {
         ${state.ui.folderCreateKind ? renderFolderCreateForm(state.ui.folderCreateKind) : ""}
       </div>
       <div class="folder-list" role="list" data-folder-path="${escapeHtml(tab.folder.path)}">
-        ${entries.length ? renderFolderRows(entries, tab) : `<div class="empty-small"><span>◇</span><p>This folder is empty.</p></div>`}
+        ${renderFolderList(state)}
       </div>
-      <div class="folder-footer"><span>${entries.length} ${entries.length === 1 ? "item" : "items"}</span><span class="folder-sync-state ${terminalSynced ? "is-synced" : ""}"><i></i>${terminalSynced ? "Terminal synced" : "Syncs on terminal focus"}</span></div>
+      <div class="folder-footer"><span data-folder-count>${entries.length} ${entries.length === 1 ? "item" : "items"}</span><span class="folder-sync-state ${terminalSynced ? "is-synced" : ""}"><i></i>${terminalSynced ? "Terminal synced" : "Syncs on terminal focus"}</span></div>
       <button type="button" class="folder-resize-handle" data-action="folder-resize" aria-label="Resize folder pane" title="Resize folder pane"></button>
     </aside>`;
 }
 
-function renderFolderRows(entries, tab, depth = 0) {
+export function renderFolderList(state) {
+  const tab = activeWorkspace(state);
+  const entries = tab.folder.entries || [];
+  return entries.length
+    ? renderFolderRows(entries, tab)
+    : `<div class="empty-small"><span>◇</span><p>This folder is empty.</p></div>`;
+}
+
+export function renderFolderRows(entries, tab, depth = 0) {
   const sortBy = tab.folder.sortBy;
   const expandedMap = tab.folder.expanded || {};
   return sortFolderEntries(entries || [], sortBy).map((entry) => {
@@ -180,7 +188,7 @@ function renderFolderRows(entries, tab, depth = 0) {
     const isDirectory = entry.kind === "directory";
     const expanded = Boolean(expandedMap[entry.path]);
     const childEntries = expandedMap[entry.path]?.entries || [];
-    const row = `<div class="file-row-wrap ${isDirectory ? "is-directory" : "is-file"} ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""}" role="listitem" style="--depth:${depth}">
+    const row = `<div class="file-row-wrap ${isDirectory ? "is-directory" : "is-file"} ${selected ? "is-selected" : ""} ${expanded ? "is-expanded" : ""} ${entry._auriNew ? "is-new" : ""}" role="listitem" style="--depth:${depth}" data-folder-entry-path="${escapeHtml(entry.path)}">
       ${isDirectory
         ? `<button type="button" class="folder-toggle" data-action="folder-toggle" data-path="${escapeHtml(entry.path)}" aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(entry.name)}" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "▾" : "▸"}</button>`
         : ""}
@@ -865,6 +873,7 @@ export function renderSettings(state) {
       <section class="setting-section"><div class="section-copy"><h3>Assistant models</h3><p>Keys stay in your local Auri configuration.</p></div><div><div class="model-list">${models}</div>${renderModelEditor(editingModel)}
       <details class="add-model"><summary>＋ Add AI model</summary><form id="model-form"><div class="form-grid"><label>Display name<input name="name" required placeholder="My assistant"></label><label>API type<select name="type">${renderModelTypeOptions("gemini")}</select></label><label>Model name<input name="model" required placeholder="model-name"></label><label>API URL<input name="url" type="url" placeholder="Optional"></label><label class="wide">API key<input name="apiKey" type="password" placeholder="Optional"></label></div><button class="action-button primary" type="submit"><span>＋</span>Add model</button></form></details></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Appearance</h3><p>Adjust Auri for comfortable reading.</p></div><div class="settings-card"><label><span>Interface font size<small>Pixels · 14–30</small></span><input data-setting="fontSize" type="number" min="14" max="30" step="1" value="${state.settings.fontSize}"></label><label><span>Terminal retained lines<small>Oldest lines are discarded · 100–100,000</small></span><input data-setting="terminalMaxLines" type="number" min="100" max="100000" step="100" value="${state.settings.terminalMaxLines}"></label><label><span>Show on every desktop<small>Linux X11 workspaces and supported desktops</small></span><input data-setting="visibleOnAllWorkspaces" type="checkbox" ${state.settings.visibleOnAllWorkspaces ? "checked" : ""}></label></div></section>
+      <section class="setting-section"><div class="section-copy"><h3>Terminal shell</h3><p>Choose the executable used by new terminal sessions.</p></div><div class="settings-card"><label><span>Shell<small>New terminal sessions</small></span><select data-setting="terminalShellPreset"><option value="default" ${state.settings.terminalShellPreset === "default" ? "selected" : ""}>Default</option><option value="bash" ${state.settings.terminalShellPreset === "bash" ? "selected" : ""}>Bash</option><option value="zsh" ${state.settings.terminalShellPreset === "zsh" ? "selected" : ""}>Zsh</option><option value="custom" ${state.settings.terminalShellPreset === "custom" ? "selected" : ""}>Custom</option></select></label><label><span>Shell executable<small>Direct path, for example /bin/bash</small></span><input data-setting="terminalShellCommand" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Use $SHELL, then /bin/sh" value="${escapeHtml(state.settings.terminalShellCommand || "")}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Terminal completion</h3><p>Recent shell commands are loaded from zsh and bash history.</p></div><div class="settings-card terminal-completion-card"><div class="settings-textarea-row"><label class="settings-field-heading" for="custom-completions"><span>Custom commands<small>One command per line · available in every workspace</small></span></label><div class="custom-completions-shell"><div class="custom-completions-gutter" id="custom-completions-lines" aria-hidden="true">${customCompletionLineNumbers(state.settings.customCompletions)}</div><textarea id="custom-completions" rows="8" spellcheck="false" placeholder="git status&#10;npm test">${escapeHtml(state.settings.customCompletions || "")}</textarea></div><div class="custom-completions-footer"><small id="custom-completions-count">${customCompletionCountLabel(state.settings.customCompletions)}</small><button class="action-button secondary settings-save-button" type="button" data-action="custom-completions-save">Save commands</button></div></div></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Wake & live session</h3><p>Hold the shortcut to reveal Auri and begin recording.</p></div><div class="settings-card"><label><span>Wake shortcut<small>Press the shortcut you want to use</small></span><input id="wake-shortcut-input" class="shortcut-capture" data-setting="wakeShortcut" type="text" readonly autocomplete="off" spellcheck="false" aria-label="Wake shortcut. Focus this field and press a key combination." value="${escapeHtml(state.settings.wakeShortcut)}"></label><label><span>Hold duration<small>Seconds</small></span><input data-setting="wakeHoldSeconds" type="number" min="1" max="8" value="${state.settings.wakeHoldSeconds}"></label><label><span>No-reply disconnect<small>Seconds after audio input stops or reply activity</small></span><input data-setting="liveDisconnectSeconds" type="number" min="1" max="3600" value="${state.settings.liveDisconnectSeconds}"></label></div></section>
       <section class="setting-section"><div class="section-copy"><h3>Context & media</h3><p>Control what Auri attaches to assistant requests and how recordings look.</p></div><div class="settings-card"><label><span>Always attach screenshot<small>Compressed JPEG</small></span><input data-setting="alwaysAttachScreenshot" type="checkbox" ${state.settings.alwaysAttachScreenshot ? "checked" : ""}></label><label><span>Circle around cursor<small>Marks the pointer in screen recordings — light blue inside light green</small></span><input data-setting="cursorHighlight" type="checkbox" ${state.settings.cursorHighlight ? "checked" : ""}></label><label><span>Audio bitrate<small>M4A target</small></span><input data-setting="audioBitrateKbps" type="number" min="32" max="320" value="${state.settings.audioBitrateKbps}"></label></div></section>

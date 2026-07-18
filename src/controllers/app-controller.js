@@ -2,7 +2,7 @@ import { executeCommand } from "./command-controller.js";
 import { createInitialState, reduceState, activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
 import { appSnapshotJson } from "../model/snapshot.js";
 import { normalizeSystemSnapshot, processPriorityIdentity, protocolForPort } from "../model/system.js";
-import { mergePolledFolderEntries } from "../model/folder.js";
+import { expireNewFolderEntries, mergePolledFolderEntries, NEW_FOLDER_HIGHLIGHT_MS } from "../model/folder.js";
 import { classifyTerminalInput } from "../model/presentation.js";
 import { mirrorForwardsCommand } from "../model/commands.js";
 import { MediaCapture, pickRecordingDevices } from "../services/media-recorder.js";
@@ -201,6 +201,7 @@ export class AppController {
     this.systemMonitorRefreshing = false;
     this.folderPollTimer = null;
     this.folderPolling = false;
+    this.folderHighlightTimer = null;
     this.folderPathTimer = null;
     this.folderPathRequest = 0;
     this.folderPreviewPath = null;
@@ -312,6 +313,7 @@ export class AppController {
         moveSubtabToMain: (id) => this.moveSubtabToMain(id),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
         showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
+        refreshFolder: () => this.refreshFolder(),
         refreshSystemMonitor: () => this.refreshSystemMonitor(),
         requestProcessPriorityPermission: (prompt) => this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: prompt } }, { preserveInput: true }),
         consumeProcessPriorityPassword: () => this.view.consumeSystemPriorityPassword?.() || "",
@@ -549,6 +551,7 @@ export class AppController {
 
   render(options = {}) {
     this.view.render(this.state, { native: this.native, nativeWebview: this.native, ...options });
+    this.scheduleFolderHighlightExpiry();
     const terminalHost = this.view.root.querySelector?.("#terminal-emulator");
     if (terminalHost) {
       const workspace = activeWorkspace(this.state);
@@ -556,7 +559,7 @@ export class AppController {
       if (terminalTarget) {
         const session = this.terminalSessionFor(terminalTarget.subtab.id);
         requestAnimationFrame(() => {
-          session.mount(terminalHost, terminalTarget.subtab.cwd || workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines)
+          session.mount(terminalHost, terminalTarget.subtab.cwd || workspace.terminal.cwd, this.state.settings.fontSize, this.state.settings.terminalMaxLines, this.state.settings.terminalShellCommand)
             .then(() => {
               // Restore whichever terminal zone was focused last: the
               // composer input below the terminal, or the emulator screen.
@@ -631,6 +634,45 @@ export class AppController {
       this.pollCurrentFolder().catch((error) => this.reportError("Folder refresh", error));
     }, 3000);
     this.folderPollTimer.unref?.();
+    this.scheduleFolderHighlightExpiry();
+  }
+
+  scheduleFolderHighlightExpiry() {
+    clearTimeout(this.folderHighlightTimer);
+    this.folderHighlightTimer = null;
+    const workspace = activeWorkspace(this.state);
+    const now = Date.now();
+    const deadlines = (workspace.folder.entries || [])
+      .filter((entry) => entry?._auriNew)
+      .map((entry) => (Number(entry._auriNewAt) || now) + NEW_FOLDER_HIGHLIGHT_MS);
+    if (!deadlines.length) return;
+    const workspaceId = workspace.id;
+    const path = workspace.folder.path;
+    this.folderHighlightTimer = setTimeout(() => {
+      this.expireFolderHighlights({ workspaceId, path, now: Date.now() });
+    }, Math.max(0, Math.min(...deadlines) - now));
+    this.folderHighlightTimer.unref?.();
+  }
+
+  expireFolderHighlights({ workspaceId, path, now = Date.now() } = {}) {
+    const workspace = this.state.tabs.find((tab) => tab.id === workspaceId);
+    if (!workspace || workspace.folder.path !== path) {
+      this.scheduleFolderHighlightExpiry();
+      return false;
+    }
+    const entries = expireNewFolderEntries(workspace.folder.entries, now);
+    const changed = entries.some((entry, index) => entry !== workspace.folder.entries[index]);
+    if (!changed) {
+      this.scheduleFolderHighlightExpiry();
+      return false;
+    }
+    this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
+    if (this.state.activeTabId === workspaceId) {
+      this.view.patchFolderEntries?.(this.state, { replaceAll: false, addedPaths: [] });
+    }
+    this.scheduleFolderHighlightExpiry();
+    this.scheduleStateSync();
+    return true;
   }
 
   async pollCurrentFolder() {
@@ -644,10 +686,18 @@ export class AppController {
       if (this.state.activeTabId !== workspaceId || workspace.folder.path !== path) return false;
       const previous = workspace.folder.entries || [];
       const merged = mergePolledFolderEntries(previous, fresh);
-      const comparable = (entries) => JSON.stringify(entries.map(({ _auriNew, ...entry }) => entry));
-      const hasNew = merged.some((entry) => entry._auriNew);
-      if (!hasNew && comparable(previous) === comparable(merged)) return false;
-      this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries: merged } }, { preserveInput: true });
+      const comparable = (entries) => JSON.stringify(entries.map(({ _auriNew, _auriNewAt, ...entry }) => entry));
+      const previousPaths = new Set(previous.map((entry) => String(entry.path || entry.name || "")));
+      const addedPaths = merged
+        .map((entry) => String(entry.path || entry.name || ""))
+        .filter((entryPath) => !previousPaths.has(entryPath));
+      const hasNew = addedPaths.length > 0;
+      const markerChanged = merged.some((entry, index) => Boolean(entry?._auriNew) !== Boolean(previous[index]?._auriNew));
+      if (!hasNew && !markerChanged && comparable(previous) === comparable(merged)) return false;
+      this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries: merged } });
+      this.view.patchFolderEntries?.(this.state, { replaceAll: false, addedPaths });
+      this.scheduleFolderHighlightExpiry();
+      this.scheduleStateSync();
       return true;
     } finally {
       this.folderPolling = false;
@@ -853,7 +903,7 @@ export class AppController {
       { type: "MIRROR_WORKSPACES_SYNC", payload: { snapshot } },
       { preserveInput: true, render: this.configurationReady }
     );
-    for (const key of ["theme", "fontSize"]) {
+    for (const key of ["theme", "fontSize", "terminalShellPreset", "terminalShellCommand"]) {
       const value = snapshot.settings?.[key];
       if (value !== undefined && value !== this.state.settings[key]) {
         this.dispatch({ type: "SETTING_SET", payload: { key, value } }, { preserveInput: true, render: this.configurationReady });
@@ -1636,7 +1686,7 @@ export class AppController {
           break;
         case "folder-refresh":
           this.cancelFolderPathNavigation();
-          await this.refreshFolder();
+          await this.runInternal("folder list");
           break;
         case "folder-more":
           this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: !this.state.ui.folderMenuOpen } }, { preserveInput: true });
@@ -2935,10 +2985,17 @@ export class AppController {
     await this.syncDirectory(result.cwd, workspace.id, terminal.id);
   }
 
-  async refreshFolder({ focusTerminal = false } = {}) {
+  async refreshFolder() {
+    const workspaceId = this.state.activeTabId;
     const path = activeWorkspace(this.state).folder.path;
     const entries = await this.backend.listDirectory(path);
-    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { entries } }, { preserveInput: true, focusTerminal });
+    const workspace = activeWorkspace(this.state);
+    if (this.state.activeTabId !== workspaceId || workspace.folder.path !== path) return false;
+    this.state = reduceState(this.state, { type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } });
+    this.view.patchFolderEntries?.(this.state, { replaceAll: true, addedPaths: [] });
+    this.scheduleFolderHighlightExpiry();
+    this.scheduleStateSync();
+    return { entries };
   }
 
   showFolderEntryPreview(path, { previewAnchor, previewDocument, previewText } = {}) {

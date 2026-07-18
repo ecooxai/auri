@@ -178,6 +178,9 @@ export async function executeCommand(input, context) {
 
     if (domain === "folder") {
       const workspace = activeWorkspace(getState());
+      if (action === "list" && !args.length && actions.refreshFolder) {
+        return await actions.refreshFolder();
+      }
       if (action === "sort") {
         const sortBy = args[0];
         if (!["name", "date", "type"].includes(sortBy)) throw new Error("Folder sort must be name, date, or type.");

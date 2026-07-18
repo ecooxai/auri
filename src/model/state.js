@@ -70,6 +70,8 @@ export function createInitialState() {
       fontSize: 20,
       folderPaneWidth: 230,
       terminalMaxLines: 4000,
+      terminalShellPreset: "default",
+      terminalShellCommand: "",
       wakeShortcut: "Alt+Space",
       wakeHoldSeconds: 2,
       liveDisconnectSeconds: 60,
@@ -433,6 +435,28 @@ export function reduceState(state, event) {
       };
     case "SETTING_SET": {
       let value = event.payload.value;
+      if (event.payload.key === "terminalShellPreset") {
+        const preset = ["default", "bash", "zsh", "custom"].includes(String(value)) ? String(value) : "default";
+        const command = preset === "bash"
+          ? "/bin/bash"
+          : preset === "zsh"
+            ? "/bin/zsh"
+            : preset === "custom"
+              ? (!["", "/bin/bash", "/bin/zsh"].includes(state.settings.terminalShellCommand) ? state.settings.terminalShellCommand : "")
+              : "";
+        return { ...state, settings: { ...state.settings, terminalShellPreset: preset, terminalShellCommand: command } };
+      }
+      if (event.payload.key === "terminalShellCommand") {
+        const command = String(value || "").trim();
+        const preset = command === ""
+          ? "default"
+          : command === "/bin/bash"
+            ? "bash"
+            : command === "/bin/zsh"
+              ? "zsh"
+              : "custom";
+        return { ...state, settings: { ...state.settings, terminalShellPreset: preset, terminalShellCommand: command } };
+      }
       if (event.payload.key === "fontSize") {
         value = Math.min(30, Math.max(14, Number(value) || 20));
       } else if (event.payload.key === "folderPaneWidth") {

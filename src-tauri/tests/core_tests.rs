@@ -64,6 +64,46 @@ fn base64_encoder_matches_standard_vectors() {
 }
 
 #[test]
+fn configured_terminal_shell_overrides_environment_default_without_shell_parsing() {
+    assert_eq!(
+        util::terminal_shell_command(Some(" /bin/bash "), Some("/bin/zsh")),
+        "/bin/bash"
+    );
+    assert_eq!(
+        util::terminal_shell_command(Some(""), Some("/bin/zsh")),
+        "/bin/zsh"
+    );
+    assert_eq!(util::terminal_shell_command(None, None), "/bin/sh");
+}
+
+#[cfg(unix)]
+#[test]
+fn logical_directory_helpers_preserve_symlink_names() {
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "auri-logical-path-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let target = root.join("real-project");
+    let link = root.join("project");
+    std::fs::create_dir_all(&target).unwrap();
+    symlink(&target, &link).unwrap();
+
+    assert!(util::paths_refer_to_same_location(&link, &target));
+    assert_eq!(
+        util::normalize_logical_path(&link.join("child").join("..")),
+        link
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn file_kinds_cover_supported_viewers() {
     assert_eq!(util::file_kind("photo.JPG"), "image");
     assert_eq!(util::file_kind("voice.m4a"), "audio");

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { mergePolledFolderEntries, sortFolderEntries } from "../src/model/folder.js";
+import { expireNewFolderEntries, mergePolledFolderEntries, sortFolderEntries } from "../src/model/folder.js";
 
 const entries = [
   { name: "zeta.txt", kind: "text", size: 2, modified: 100 },
@@ -33,6 +33,74 @@ test("folder polling promotes newly discovered entries while refreshing existing
   const previous = [{ path: "/tmp/a", name: "a", size: 1 }, { path: "/tmp/b", name: "b", size: 2 }];
   const fresh = [{ path: "/tmp/a", name: "a", size: 9 }, { path: "/tmp/c", name: "c", size: 3 }];
   assert.deepEqual(mergePolledFolderEntries(previous, fresh).map((entry) => [entry.name, entry.size]), [["c", 3], ["a", 9]]);
+});
+
+test("new folder markers survive later polls for 30 seconds and then expire", () => {
+  const discoveredAt = 10_000;
+  const previous = [{ path: "/tmp/new", name: "new", size: 1, _auriNew: true, _auriNewAt: discoveredAt }];
+  const fresh = [{ path: "/tmp/new", name: "new", size: 2 }];
+
+  assert.equal(mergePolledFolderEntries(previous, fresh, discoveredAt + 29_999)[0]._auriNew, true);
+  assert.equal(mergePolledFolderEntries(previous, fresh, discoveredAt + 30_000)[0]._auriNew, false);
+  assert.equal(expireNewFolderEntries(previous, discoveredAt + 30_000)[0]._auriNew, false);
+});
+
+test("AppView patches new folder rows without replacing existing rows or terminal DOM", async () => {
+  const { AppView } = await import("../src/views/app-view.js");
+  const { createInitialState } = await import("../src/model/state.js");
+  const toggles = [];
+  const inserted = [];
+  const htmlWrites = [];
+  const existingRow = {
+    dataset: { folderEntryPath: "/tmp/old" },
+    classList: {
+      toggle(name, value) { toggles.push([name, value]); },
+      contains() { return false; }
+    },
+    nextElementSibling: null,
+    remove() { throw new Error("existing row should remain mounted"); }
+  };
+  let innerHTML = "existing folder row";
+  const list = {
+    dataset: { folderPath: "/tmp" },
+    scrollTop: 37,
+    querySelectorAll: () => [existingRow],
+    querySelector: () => null,
+    insertAdjacentHTML(position, html) { inserted.push([position, html]); },
+    get innerHTML() { return innerHTML; },
+    set innerHTML(value) { innerHTML = value; htmlWrites.push(value); }
+  };
+  const count = { textContent: "1 item" };
+  const terminal = { identity: "same terminal node" };
+  const root = {
+    querySelector(selector) {
+      if (selector === ".folder-list") return list;
+      if (selector === "[data-folder-count]") return count;
+      if (selector === "#terminal-emulator") return terminal;
+      return null;
+    }
+  };
+  const view = new AppView(root);
+  const state = createInitialState();
+  state.tabs[0].folder.path = "/tmp";
+  state.tabs[0].folder.entries = [
+    { path: "/tmp/new", name: "new", kind: "file", _auriNew: true },
+    { path: "/tmp/old", name: "old", kind: "file", _auriNew: false }
+  ];
+
+  assert.equal(view.patchFolderEntries(state, { replaceAll: false, addedPaths: ["/tmp/new"] }), true);
+  assert.deepEqual(htmlWrites, [], "polling must not replace the folder list");
+  assert.deepEqual(toggles, [["is-new", false]]);
+  assert.equal(inserted[0][0], "afterbegin");
+  assert.match(inserted[0][1], /data-folder-entry-path="\/tmp\/new"/);
+  assert.match(inserted[0][1], /is-new/);
+  assert.equal(count.textContent, "2 items");
+  assert.equal(root.querySelector("#terminal-emulator"), terminal);
+  assert.equal(list.scrollTop, 37);
+
+  assert.equal(view.patchFolderEntries(state, { replaceAll: true }), true);
+  assert.equal(htmlWrites.length, 1, "manual refresh replaces only the folder list contents");
+  assert.equal(root.querySelector("#terminal-emulator"), terminal);
 });
 
 test("native folder bridge exposes creation, metadata, modification dates, and registered commands", async () => {

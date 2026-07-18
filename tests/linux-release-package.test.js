@@ -10,7 +10,7 @@ import {
 
 const projectRoot = new URL("../", import.meta.url);
 
-test("release metadata stays aligned for Auri v0.81", async () => {
+test("release metadata stays aligned for Auri v0.82", async () => {
   const [packageSource, tauriSource, cargoSource, lockSource, readme, agentGuide] = await Promise.all([
     readFile(new URL("package.json", projectRoot), "utf8"),
     readFile(new URL("src-tauri/tauri.conf.json", projectRoot), "utf8"),
@@ -24,12 +24,12 @@ test("release metadata stays aligned for Auri v0.81", async () => {
   const cargoVersion = cargoSource.match(/\[package\][\s\S]*?\nversion = "([^"]+)"/)?.[1];
   const lockVersion = lockSource.match(/^name = "auri"\nversion = "([^"]+)"/m)?.[1];
 
-  assert.equal(packageVersion, "0.81.0");
+  assert.equal(packageVersion, "0.82.0");
   assert.equal(tauriVersion, packageVersion);
   assert.equal(cargoVersion, packageVersion);
   assert.equal(lockVersion, packageVersion);
-  assert.match(readme, /Current release: \*\*v0\.81\*\* \(package version `0\.81\.0`\)\./);
-  assert.match(agentGuide, /Current release: \*\*v0\.81\*\* \(package version `0\.81\.0`\)\./);
+  assert.match(readme, /Current release: \*\*v0\.82\*\* \(package version `0\.82\.0`\)\./);
+  assert.match(agentGuide, /Current release: \*\*v0\.82\*\* \(package version `0\.82\.0`\)\./);
 });
 
 test("Linux release archive names identify the version, architecture, and Arch Linux build host", () => {

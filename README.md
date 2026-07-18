@@ -1,6 +1,6 @@
 # Auri
 
-Current release: **v0.81** (package version `0.81.0`).
+Current release: **v0.82** (package version `0.82.0`).
 
 ## Common commands
 

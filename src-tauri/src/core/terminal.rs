@@ -73,6 +73,7 @@ pub fn start(
     cols: u16,
     rows: u16,
     scrollback: Option<usize>,
+    shell_command: Option<String>,
 ) -> Result<(), String> {
     stop(&session_id).ok();
 
@@ -86,7 +87,11 @@ pub fn start(
         })
         .map_err(|error| format!("Could not create terminal: {error}"))?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let environment_shell = std::env::var("SHELL").ok();
+    let shell = super::util::terminal_shell_command(
+        shell_command.as_deref(),
+        environment_shell.as_deref(),
+    );
     let shell_name = Path::new(&shell)
         .file_name()
         .and_then(|name| name.to_str())
@@ -212,7 +217,18 @@ pub fn write(session_id: &str, data: &[u8]) -> Result<(), String> {
         .map_err(|error| format!("Could not flush terminal input: {error}"))
 }
 
-pub fn cwd(session_id: &str) -> Result<String, String> {
+fn displayed_cwd(reported: &Path, logical_cwd: Option<&str>) -> String {
+    if let Some(logical_cwd) = logical_cwd.filter(|value| !value.is_empty()) {
+        if let Ok(logical_path) = super::workspace::expand_path(logical_cwd) {
+            if super::util::paths_refer_to_same_location(&logical_path, reported) {
+                return logical_cwd.to_string();
+            }
+        }
+    }
+    super::workspace::display_path(reported)
+}
+
+pub fn cwd(session_id: &str, logical_cwd: Option<&str>) -> Result<String, String> {
     let session = SESSIONS
         .lock()
         .map_err(|_| "Terminal session store is unavailable.".to_string())?
@@ -230,7 +246,7 @@ pub fn cwd(session_id: &str) -> Result<String, String> {
     {
         let path = std::fs::read_link(format!("/proc/{pid}/cwd"))
             .map_err(|error| format!("Could not read terminal directory: {error}"))?;
-        return Ok(super::workspace::display_path(&path));
+        return Ok(displayed_cwd(&path, logical_cwd));
     }
 
     #[cfg(target_os = "macos")]
@@ -248,7 +264,7 @@ pub fn cwd(session_id: &str) -> Result<String, String> {
             .find_map(|line| line.strip_prefix('n'))
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "Terminal directory was not reported.".to_string())?;
-        return Ok(super::workspace::display_path(&PathBuf::from(value)));
+        return Ok(displayed_cwd(&PathBuf::from(value), logical_cwd));
     }
 
     #[allow(unreachable_code)]

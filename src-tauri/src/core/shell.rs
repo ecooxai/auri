@@ -24,12 +24,12 @@ pub fn run(command: &str, cwd: &str) -> Result<CommandResult, String> {
         if !next.is_dir() {
             return Err(format!("Not a directory: {}", display_path(&next)));
         }
-        let canonical = next.canonicalize().unwrap_or(next);
+        let logical = super::util::normalize_logical_path(&next);
         return Ok(CommandResult {
             stdout: String::new(),
             stderr: String::new(),
             code: 0,
-            cwd: display_path(&canonical),
+            cwd: display_path(&logical),
         });
     }
 
@@ -132,5 +132,35 @@ fn resolve_destination(current: &Path, destination: &str) -> Result<PathBuf, Str
         home_dir()
     } else {
         Ok(current.join(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn cd_preserves_the_logical_symlink_path() {
+        use std::os::unix::fs::symlink;
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "auri-shell-symlink-test-{}-{suffix}",
+            std::process::id()
+        ));
+        let target = root.join("real-project");
+        let link = root.join("project");
+        std::fs::create_dir_all(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let result = run(&format!("cd '{}'", display_path(&link)), &display_path(&root)).unwrap();
+
+        assert_eq!(result.cwd, display_path(&link));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

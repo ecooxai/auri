@@ -99,6 +99,20 @@ test("settings expose an all-workspaces desktop visibility toggle", () => {
   assert.match(html, /Show on every desktop/);
 });
 
+test("settings expose synchronized default, bash, zsh, and custom shell controls", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SETTING_SET", payload: { key: "terminalShellPreset", value: "bash" } });
+  const html = renderSettings(state);
+
+  assert.match(html, /data-setting="terminalShellPreset"/);
+  assert.match(html, /<option value="default"[^>]*>Default<\/option>/);
+  assert.match(html, /<option value="bash" selected>Bash<\/option>/);
+  assert.match(html, /<option value="zsh"[^>]*>Zsh<\/option>/);
+  assert.match(html, /<option value="custom"[^>]*>Custom<\/option>/);
+  assert.match(html, /data-setting="terminalShellCommand"[^>]*value="\/bin\/bash"/);
+  assert.match(html, /New terminal sessions/);
+});
+
 test("process priority settings are collapsed by default at the bottom and put Add above the saved list", () => {
   let state = createInitialState();
   state = reduceState(state, {

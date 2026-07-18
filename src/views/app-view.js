@@ -1,5 +1,5 @@
 import { activeSubtab, activeWorkspace } from "../model/state.js";
-import { buildDiskMountRows, buildGpuCardRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemPriorityPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
+import { buildDiskMountRows, buildGpuCardRows, buildNetInterfaceRows, buildProcessMonitorPage, buildProcessMonitorRows, buildSystemMetrics, buildSystemStatusText, customCompletionLineNumbers, formatProcessPortCell, renderActivePanel, renderAssistantTranscriptPopup, renderFolder, renderFolderList, renderFolderRows, renderMainTabs, renderProcessMonitorContent, renderSubtabs, renderSystemProcessDetail, renderSystemKillPrompt, renderSystemPriorityPrompt, renderSystemTunnelPrompt, renderWebOverlay } from "./panels.js";
 
 export function applyAppFontSize(root, value) {
   const size = Math.min(30, Math.max(14, Number(value) || 20));
@@ -215,6 +215,56 @@ export class AppView {
         input?.select();
       }
     });
+  }
+
+  // Folder polling is intentionally isolated from the app-wide render path:
+  // existing rows and the terminal DOM stay mounted while new rows are
+  // prepended, removed rows disappear, and the short-lived new marker fades.
+  // An explicit toolbar refresh replaces this list only.
+  patchFolderEntries(state, { replaceAll = false, addedPaths = [] } = {}) {
+    const tab = activeWorkspace(state);
+    const list = this.root?.querySelector?.(".folder-list");
+    if (!list || list.dataset?.folderPath !== tab.folder.path) return false;
+    const scrollTop = list.scrollTop || 0;
+    const entries = tab.folder.entries || [];
+
+    if (replaceAll) {
+      list.innerHTML = renderFolderList(state);
+    } else {
+      const expected = new Map(entries.map((entry) => [String(entry.path || entry.name || ""), entry]));
+      const existingPaths = new Set();
+      const rows = [...(list.querySelectorAll?.(":scope > .file-row-wrap[data-folder-entry-path]") || [])];
+      for (const row of rows) {
+        const path = String(row.dataset?.folderEntryPath || "");
+        const entry = expected.get(path);
+        if (!entry) {
+          const children = row.nextElementSibling?.classList?.contains?.("folder-children")
+            ? row.nextElementSibling
+            : null;
+          children?.remove?.();
+          row.remove?.();
+          continue;
+        }
+        existingPaths.add(path);
+        row.classList?.toggle?.("is-new", Boolean(entry._auriNew));
+      }
+
+      const added = new Set(addedPaths.map(String));
+      const additions = entries.filter((entry) => {
+        const path = String(entry.path || entry.name || "");
+        return added.has(path) && !existingPaths.has(path);
+      });
+      if (additions.length) {
+        list.querySelector?.(":scope > .empty-small")?.remove?.();
+        list.insertAdjacentHTML?.("afterbegin", renderFolderRows(additions, tab));
+      }
+      if (!entries.length) list.innerHTML = renderFolderList(state);
+    }
+
+    const count = this.root.querySelector?.("[data-folder-count]");
+    if (count) count.textContent = `${entries.length} ${entries.length === 1 ? "item" : "items"}`;
+    list.scrollTop = scrollTop;
+    return true;
   }
 
   // In-place refresh for the quiet 5s system-monitor poll. Updates the

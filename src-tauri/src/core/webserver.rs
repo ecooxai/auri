@@ -583,6 +583,7 @@ mod server {
                 u16_arg(args, "cols")?,
                 u16_arg(args, "rows")?,
                 args.get("scrollback").and_then(Value::as_u64).map(|value| value as usize),
+                opt_string_arg(args, "shellCommand"),
             )),
             "terminal_frame" => to_json(crate::terminal_frame(string_arg(args, "sessionId")?)),
             "terminal_scrollback" => to_json(crate::terminal_scrollback(
@@ -605,7 +606,12 @@ mod server {
                     .ok_or("The data argument is missing.")?;
                 to_json(crate::terminal_write(string_arg(args, "sessionId")?, data))
             }
-            "terminal_cwd" => to_json(crate::terminal_cwd(string_arg(args, "sessionId")?)),
+            "terminal_cwd" => to_json(crate::terminal_cwd(
+                string_arg(args, "sessionId")?,
+                args.get("logicalCwd")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            )),
             "terminal_busy" => to_json(crate::terminal_busy(string_arg(args, "sessionId")?)),
             "terminal_resize" => to_json(crate::terminal_resize(
                 string_arg(args, "sessionId")?,

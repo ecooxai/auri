@@ -442,6 +442,8 @@ code, pre, textarea { font-family: "SFMono-Regular", Consolas, "Liberation Mono"
 .file-row-wrap.is-directory { grid-template-columns: 20px minmax(0, 1fr); }
 .file-row-wrap:hover { color: var(--ink); background: rgba(255, 255, 255, .66); }
 .file-row-wrap.is-selected { color: var(--blue-dark); background: rgba(221, 230, 255, .75); }
+.file-row-wrap.is-new { background: #f0f7ff; box-shadow: inset 2px 0 #a9c8f7; }
+.file-row-wrap.is-new:hover { background: #e9f3ff; }
 .file-row-wrap.is-file.is-selected { grid-template-columns: minmax(0, 1fr) auto; }
 .file-ai-button { min-height: 37px; width: 30px; border: 0; border-radius: 8px; cursor: pointer; color: var(--blue-dark); background: transparent; font-size: .72rem; }
 .file-ai-button:hover { background: rgba(112, 137, 248, .16); }

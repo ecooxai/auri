@@ -311,6 +311,7 @@ export class TerminalSession {
     this.rowHeight = 16;
     this.modes = { applicationCursorKeys: false, bracketedPaste: false };
     this.scrollbackLimit = 4000;
+    this.shellCommand = "";
     this.mountedElement = null;
     this.rootElement = null;
     this.scrollElement = null;
@@ -647,9 +648,12 @@ export class TerminalSession {
     return { cols, rows };
   }
 
-  async mount(element, cwd = "~", fontSize = 20, maxLines = 4000) {
+  async mount(element, cwd = "~", fontSize = 20, maxLines = 4000, shellCommand = "") {
     if (!element) return;
-    if (!this.started) this.cwd = cwd || this.cwd;
+    if (!this.started) {
+      this.cwd = cwd || this.cwd;
+      this.shellCommand = String(shellCommand || "").trim();
+    }
     this.scrollbackLimit = Math.min(100000, Math.max(100, Number(maxLines) || 4000));
     this.renderLineBudget = Math.max(this.renderLineBudget, TERMINAL_RENDER_TAIL_LINES);
     const terminalFontSize = Math.round(Math.min(30, Math.max(14, Number(fontSize) || 20)) * 0.6);
@@ -759,7 +763,7 @@ export class TerminalSession {
 
   async refreshCwd() {
     if (!this.backend.isNative || !this.started) return;
-    const cwd = await this.backend.getTerminalCwd(this.sessionId);
+    const cwd = await this.backend.getTerminalCwd(this.sessionId, this.cwd);
     if (!cwd || cwd === this.cwd) return;
     this.cwd = cwd;
     await this.onCwdChange?.(cwd);
@@ -1065,7 +1069,7 @@ export class TerminalSession {
     if (this.adoptOnly) return false;
     if (!this.startPromise) {
       this.cwd = cwd || this.cwd;
-      this.startPromise = this.backend.startTerminal(this.sessionId, this.cwd, cols, rows, this.scrollbackLimit)
+      this.startPromise = this.backend.startTerminal(this.sessionId, this.cwd, cols, rows, this.scrollbackLimit, this.shellCommand)
         .then(() => {
           this.started = true;
           return true;

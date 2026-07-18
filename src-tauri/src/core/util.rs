@@ -1,7 +1,58 @@
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 pub const RELEASE_FILE_SERVER_PORT: u16 = 8_890;
 pub const DEVELOPMENT_FILE_SERVER_PORT: u16 = 8_895;
+
+/// Remove only lexical `.` and `..` components. Unlike `canonicalize`, this
+/// keeps symlink names intact for paths shown back to the user.
+pub fn normalize_logical_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() && !path.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        normalized
+    }
+}
+
+/// Filesystem identity check used only to decide which spelling of a cwd to
+/// display. Both paths must exist; errors conservatively report no match.
+pub fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Choose the executable passed directly to the PTY launcher. An empty
+/// override follows the environment and finally falls back to `/bin/sh`.
+pub fn terminal_shell_command(
+    configured: Option<&str>,
+    environment_shell: Option<&str>,
+) -> String {
+    configured
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            environment_shell
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("/bin/sh")
+        .to_string()
+}
 
 /// Keep packaged builds on the stable release port while isolating debug builds
 /// from a running release app and from older development listeners.

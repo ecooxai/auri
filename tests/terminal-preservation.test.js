@@ -91,8 +91,22 @@ test("TerminalSession reuses an already-mounted renderer and applies the configu
   const source = await readFile("src/services/terminal-session.js", "utf8");
   assert.match(source, /this\.mountedElement === element/);
   assert.match(source, /this\.scrollbackLimit = Math\.min\(100000, Math\.max\(100, Number\(maxLines\)/);
-  assert.match(source, /startTerminal\(this\.sessionId, this\.cwd, cols, rows, this\.scrollbackLimit\)/);
-  assert.match(source, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
+  assert.match(source, /startTerminal\(this\.sessionId, this\.cwd, cols, rows, this\.scrollbackLimit, this\.shellCommand\)/);
+  assert.match(source, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000, shellCommand = ""\)/);
+});
+
+test("TerminalSession passes the selected shell executable directly to PTY startup", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const starts = [];
+  const session = new TerminalSession({
+    isNative: true,
+    startTerminal: async (...args) => { starts.push(args); }
+  });
+  session.shellCommand = "/bin/bash";
+  session.scrollbackLimit = 2500;
+
+  assert.equal(await session.ensureStarted("/tmp", 90, 30), true);
+  assert.deepEqual(starts, [[session.sessionId, "/tmp", 90, 30, 2500, "/bin/bash"]]);
 });
 
 test("assistant transcript markers render as normal terminal text without decorations", async () => {

@@ -306,8 +306,16 @@ test("system refresh reapplies a saved priority immediately when a process resta
 
 test("three-second folder poll refreshes metadata and promotes newly discovered entries", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
+  let renders = 0;
+  const folderPatches = [];
   const controller = new AppController({
-    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    view: {
+      root: { querySelector: () => null },
+      render() { renders += 1; },
+      patchFolderEntries(_state, options) { folderPatches.push(options); return true; },
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
     backend: { isNative: true, listDirectory: async () => [
       { path: "/tmp/old", name: "old", size: 9 },
       { path: "/tmp/new", name: "new", size: 1 }
@@ -323,6 +331,89 @@ test("three-second folder poll refreshes metadata and promotes newly discovered 
   assert.deepEqual(controller.state.tabs[0].folder.entries.map((entry) => [entry.name, entry.size, entry._auriNew]), [
     ["new", 1, true], ["old", 9, false]
   ]);
+  assert.equal(renders, 0, "folder polling must not rebuild the terminal or app shell");
+  assert.deepEqual(folderPatches, [{ replaceAll: false, addedPaths: ["/tmp/new"] }]);
+});
+
+test("folder highlight expiry patches only row classes without rendering the app", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renders = 0;
+  const folderPatches = [];
+  const controller = new AppController({
+    view: {
+      root: { querySelector: () => null },
+      render() { renders += 1; },
+      patchFolderEntries(_state, options) { folderPatches.push(options); return true; },
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const workspace = controller.state.tabs[0];
+  controller.state = {
+    ...controller.state,
+    tabs: [{ ...workspace, folder: { ...workspace.folder, path: "/tmp", entries: [
+      { path: "/tmp/new", name: "new", _auriNew: true, _auriNewAt: 1_000 }
+    ] } }]
+  };
+
+  assert.equal(controller.expireFolderHighlights({ workspaceId: workspace.id, path: "/tmp", now: 31_000 }), true);
+  assert.equal(controller.state.tabs[0].folder.entries[0]._auriNew, false);
+  assert.equal(renders, 0);
+  assert.deepEqual(folderPatches, [{ replaceAll: false, addedPaths: [] }]);
+});
+
+test("folder toolbar refresh replaces only the folder list without rendering the terminal", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renders = 0;
+  const folderPatches = [];
+  const controller = new AppController({
+    view: {
+      root: { querySelector: () => null },
+      render() { renders += 1; },
+      patchFolderEntries(_state, options) { folderPatches.push(options); return true; },
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
+    backend: {
+      isNative: true,
+      listDirectory: async () => [{ path: "/tmp/fresh", name: "fresh", kind: "file" }]
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.state.tabs[0].folder.path = "/tmp";
+
+  await controller.refreshFolder();
+
+  assert.deepEqual(controller.state.tabs[0].folder.entries.map((entry) => entry.name), ["fresh"]);
+  assert.equal(renders, 0, "manual folder refresh must leave the terminal DOM untouched");
+  assert.deepEqual(folderPatches, [{ replaceAll: true, addedPaths: [] }]);
+});
+
+test("folder refresh toolbar and folder list command share the command-backed refresh path", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const commands = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  controller.runInternal = async (command) => { commands.push(command); };
+  const target = {
+    dataset: { action: "folder-refresh" },
+    closest(selector) { return selector === "[data-action]" ? this : null; }
+  };
+
+  await controller.handleClick({ target, preventDefault() {} });
+
+  assert.deepEqual(commands, ["folder list"]);
+
+  const h = harness();
+  const refreshCalls = [];
+  h.actions = { refreshFolder: async () => { refreshCalls.push(true); return { entries: [] }; } };
+  await executeCommand("folder list", h);
+  assert.deepEqual(refreshCalls, [true]);
 });
 
 

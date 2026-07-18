@@ -102,8 +102,27 @@ test("terminal submissions refresh cwd from the native shell process", async () 
 
   assert.match(frontend, /sequence\.includes\("\\r"\).*scheduleCwdRefresh/s);
   assert.match(frontend, /backend\.getTerminalCwd/);
-  assert.match(backend, /pub fn cwd\(session_id: &str\)/);
+  assert.match(backend, /pub fn cwd\(session_id: &str, logical_cwd: Option<&str>\)/);
   assert.match(backend, /process_id\(\)/);
+});
+
+test("terminal cwd refresh sends the logical path for symlink preservation", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const calls = [];
+  const session = new TerminalSession({
+    isNative: true,
+    getTerminalCwd: async (...args) => {
+      calls.push(args);
+      return "/home/a/project";
+    }
+  });
+  session.started = true;
+  session.sessionId = "terminal-link";
+  session.cwd = "/home/a/project";
+
+  await session.refreshCwd();
+
+  assert.deepEqual(calls, [["terminal-link", "/home/a/project"]]);
 });
 
 test("window resizing remeasures the grid and resizes the native PTY", async () => {
@@ -129,10 +148,10 @@ test("terminal uses the configured interface font size", async () => {
   const terminal = await readFile("src/services/terminal-session.js", "utf8");
   const controller = await readFile("src/controllers/app-controller.js", "utf8");
 
-  assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000\)/);
+  assert.match(terminal, /async mount\(element, cwd = "~", fontSize = 20, maxLines = 4000, shellCommand = ""\)/);
   assert.match(terminal, /const terminalFontSize = Math\.round/);
   assert.match(terminal, /--term-font-size/);
-  assert.match(controller, /session\.mount\(terminalHost, terminalTarget\.subtab\.cwd \|\| workspace\.terminal\.cwd, this\.state\.settings\.fontSize, this\.state\.settings\.terminalMaxLines\)/);
+  assert.match(controller, /session\.mount\(terminalHost, terminalTarget\.subtab\.cwd \|\| workspace\.terminal\.cwd, this\.state\.settings\.fontSize, this\.state\.settings\.terminalMaxLines, this\.state\.settings\.terminalShellCommand\)/);
 });
 
 test("full renders restore non-terminal focus when preserveInput is set", async () => {

@@ -197,6 +197,23 @@ test("folder navigation controls sit above an editable compact path field", asyn
   assert.match(css, /\.folder-path-input:focus\s*\{[^}]*background:\s*white[^}]*box-shadow:/s);
 });
 
+test("newly polled folder entries render with a very light blue marker", async () => {
+  const { renderFolder } = await import("../src/views/panels.js");
+  const { createInitialState } = await import("../src/model/state.js");
+  const state = createInitialState();
+  state.tabs[0].folder.entries = [{
+    path: "/tmp/new-folder",
+    name: "new-folder",
+    kind: "directory",
+    _auriNew: true
+  }];
+  const html = renderFolder(state);
+  const css = await readFile("styles.css", "utf8");
+
+  assert.match(html, /file-row-wrap[^\"]*is-new/);
+  assert.match(css, /\.file-row-wrap\.is-new\s*\{[^}]*background:\s*#f0f7ff/i);
+});
+
 test("folder rows keep expanders but show full wrapped names without item icons", async () => {
   const panels = await readFile("src/views/panels.js", "utf8");
   const css = await readFile("styles.css", "utf8");
