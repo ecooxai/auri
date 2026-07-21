@@ -129,7 +129,8 @@ test("assistant transcript markers render as normal terminal text without decora
 test("programmatic terminal runs do not steal focus from the composer", async () => {
   const source = await readFile("src/services/terminal-session.js", "utf8");
   const runMethod = source.match(/async run\(command\) \{([\s\S]*?)\n  \}/)?.[1] || "";
-  assert.match(runMethod, /this\.write\(`\$\{command\}\\r`\)/);
+  assert.match(runMethod, /encodePasteText\(command, this\.modes\.bracketedPaste\)/);
+  assert.match(runMethod, /this\.write\(`\$\{sequence\}\\r`\)/);
   assert.doesNotMatch(runMethod, /this\.focus\(\)/);
 });
 

@@ -3,8 +3,8 @@ import { createInitialState, reduceState, activeWorkspace, activeSubtab, seriali
 import { appSnapshotJson } from "../model/snapshot.js";
 import { normalizeSystemSnapshot, processPriorityIdentity, protocolForPort } from "../model/system.js";
 import { mergePolledFolderEntries } from "../model/folder.js";
-import { classifyTerminalInput } from "../model/presentation.js";
-import { mirrorForwardsCommand } from "../model/commands.js";
+import { mirrorForwardsCommand, terminalInputTransportCommand } from "../model/commands.js";
+import { terminalLineAtCursor } from "../model/terminal-input.js";
 import { MediaCapture, pickRecordingDevices } from "../services/media-recorder.js";
 import { isSimpleCdCommand, shellQuote } from "../model/path.js";
 import { defaultBookmarkName, nextWebZoom, normalizeWebUrl, titleForWebUrl, webAiMenuItems, webAiMenuPayload, webAiPrompt } from "../model/browser.js";
@@ -328,6 +328,7 @@ export class AppController {
         moveSubtabToMain: (id) => this.moveSubtabToMain(id),
         showUserMessage: (text, attachments) => this.activeTerminalSession().printUser(text, attachments),
         showAssistantMessage: (name, text, audio) => this.showCompletedAssistantMessage(name, text, audio),
+        runTerminalCommand: this.native ? (command) => this.runLiveTerminalCommand(command) : undefined,
         refreshFolder: () => this.refreshFolder(),
         refreshSystemMonitor: () => this.refreshSystemMonitor(),
         requestProcessPriorityPermission: (prompt) => this.dispatch({ type: "UI_SET", payload: { systemPriorityPrompt: prompt } }, { preserveInput: true }),
@@ -390,6 +391,7 @@ export class AppController {
           throw error;
         }
       },
+      readClipboardText: () => this.backend.readClipboardText?.() || "",
       preparePreview: (target) => this.prepareTerminalPreview(target),
       openPreview: (target) => this.openTerminalPreview(target),
       releasePreview: (preview) => this.backend.releaseFileView?.(preview?.url)
@@ -2167,10 +2169,10 @@ export class AppController {
         this.terminalEnterHoldTimer = setTimeout(() => {
           this.terminalEnterHoldTimer = null;
           this.terminalEnterHeld = true;
-          Promise.resolve(this.submitTerminal("run")).catch((error) => {
+          Promise.resolve(this.submitTerminal("run-line")).catch((error) => {
             this.view.showToast(error?.message || String(error), "error");
           });
-        }, 2000);
+        }, 1000);
         return;
       }
     }
@@ -2870,28 +2872,54 @@ export class AppController {
     // A hosted web session hands mirrored-state commands to the desktop
     // window; the result arrives back as an app-state snapshot.
     if (this.backend.isHostedWeb && mirrorForwardsCommand(command)) {
-      await this.backend.forwardCommand(command);
+      const forwardedCommand = options.terminalCommand === undefined
+        ? command
+        : terminalInputTransportCommand(options.terminalCommand);
+      await this.backend.forwardCommand(forwardedCommand);
       return { forwarded: true };
     }
     return executeCommand(command, { ...this.context(), ...options });
   }
 
   async submitTerminal(mode) {
-    const value = this.view.getTerminalInputValue().trim();
-    if (!value) return;
+    const source = this.view.getTerminalInputValue();
+    const input = this.view.getTerminalInput?.();
+    const line = mode === "run-line"
+      ? terminalLineAtCursor(source, input?.selectionStart ?? source.length)
+      : null;
+    const value = line ? line.text : source;
+    if (!value.trim()) return false;
     this.clearTerminalCompletions();
-    this.view.setTerminalInput("", false);
-    try {
-      if (mode === "run") {
-        this.dispatch({ type: "TERMINAL_COMMAND_REMEMBER", payload: { command: value } }, { preserveInput: true });
+    if (line) {
+      const replaced = this.view.replaceTerminalInputRange?.(line.removeStart, line.removeEnd, "", true);
+      if (!replaced) {
+        this.view.setTerminalInput(`${source.slice(0, line.removeStart)}${source.slice(line.removeEnd)}`, true);
       }
-      if (mode === "ask") await this.runInternal(`ai ask ${value}`);
-      else if (classifyTerminalInput(value) === "auri") await this.runInternal(value);
-      else if (this.native) await this.runNativeTerminalCommand(value);
-      else await this.runInternal(`terminal run ${value}`);
-    } finally {
-      this.view.setTerminalInput("", true);
+    } else {
+      this.view.setTerminalInput("", false);
     }
+    try {
+      if (mode === "ask") await this.runInternal(`ai ask ${value}`);
+      else await this.runInternal("terminal run", { terminalCommand: value });
+    } finally {
+      if (line) this.view.getTerminalInput?.()?.focus?.();
+      else this.view.setTerminalInput("", true);
+    }
+    return true;
+  }
+
+  async runLiveTerminalCommand(command) {
+    const value = String(command ?? "");
+    if (!value.trim()) throw new Error("Enter a shell command.");
+    // Command history and state mirrors still update, but the mounted terminal
+    // host and composer remain untouched. PTY output refreshes only the live
+    // backend frame in TerminalSession.
+    this.dispatch(
+      { type: "TERMINAL_COMMAND_REMEMBER", payload: { command: value } },
+      { preserveInput: true, render: false }
+    );
+    await this.runNativeTerminalCommand(value);
+    return { ok: true, live: true };
   }
 
   async runNativeTerminalCommand(command) {

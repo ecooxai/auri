@@ -33,11 +33,27 @@ function controlByte(rawKey) {
   return specials[key] ?? null;
 }
 
+export function isTerminalPasteShortcut(event) {
+  if (!event) return false;
+  const key = String(event.key || "");
+  const lowerKey = key.toLowerCase();
+  return Boolean(
+    (event.ctrlKey && event.shiftKey && lowerKey === "v")
+    || (event.metaKey && lowerKey === "v")
+    || (event.shiftKey && key === "Insert")
+  );
+}
+
 /// Byte sequence a key press sends to the PTY, or null when the key is not
 /// terminal input (app shortcuts, bare modifiers, browser-handled keys).
 export function encodeKeyEvent(event, modes = {}) {
-  if (!event || event.metaKey) return null;
+  if (!event) return null;
   const key = String(event.key || "");
+  // Desktop terminal paste shortcuts must reach the browser's paste event so
+  // TerminalSession can forward the clipboard payload. Plain Ctrl+V is not a
+  // paste shortcut here: terminals use it as the literal-next C0 byte.
+  if (isTerminalPasteShortcut(event)) return null;
+  if (event.metaKey) return null;
 
   const arrow = ARROW_LETTERS[key];
   if (arrow) return csiWithModifier(arrow, event, modes);

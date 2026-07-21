@@ -271,7 +271,7 @@ export function renderTerminal(state) {
         <div class="composer-wrap">
           ${renderLiveStatus(state.ui.liveStatus)}
           ${state.media.attachments.length ? `<div class="attachment-row">${state.media.attachments.map((item) => `<span class="attachment-chip">${item.kind === "image" ? "◈" : item.kind === "audio" ? "♪" : "▷"} ${escapeHtml(item.name)}<button type="button" data-action="attachment-remove" data-id="${item.id}">×</button></span>`).join("")}</div>` : ""}
-          <textarea id="terminal-input" rows="3" role="combobox" aria-autocomplete="list" aria-controls="terminal-completion" aria-expanded="false" aria-haspopup="listbox" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · hold Enter 2s or ⌘/Ctrl + Enter runs"></textarea>
+          <textarea id="terminal-input" rows="3" role="combobox" aria-autocomplete="list" aria-controls="terminal-completion" aria-expanded="false" aria-haspopup="listbox" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" placeholder="Type a command or ask Auri…  Enter adds a line · hold Enter 1s runs this line · ⌘/Ctrl + Enter runs all"></textarea>
         <div class="composer-actions">
           <label class="model-select-wrap ${state.ui.liveConnected ? "is-live-connected" : ""}" title="Select AI model">
             <select id="terminal-model-select" class="model-select" aria-label="AI model">

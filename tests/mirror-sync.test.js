@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mirrorForwardsCommand } from "../src/model/commands.js";
 import { createInitialState, reduceState } from "../src/model/state.js";
 import { TerminalSession } from "../src/services/terminal-session.js";
+import { terminalInputFromTransportCommand } from "../src/model/commands.js";
 import { Backend } from "../src/services/backend.js";
 
 const decoder = new TextDecoder();
@@ -123,6 +124,27 @@ test("hosted web sessions forward only commands that mutate mirrored app state",
   for (const command of local) {
     assert.equal(mirrorForwardsCommand(command), false, `${command} stays local`);
   }
+});
+
+test("hosted composer forwards its complete terminal input in a line-safe command", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const forwarded = [];
+  const controller = new AppController({
+    view: { root: { querySelector: () => null }, render() {}, getTerminalInputValue: () => "", showToast() {} },
+    backend: {
+      isNative: false,
+      isHostedWeb: true,
+      forwardCommand: async (command) => forwarded.push(command)
+    },
+    terminalSessionFactory: () => ({ initialize: async () => {} })
+  });
+  const input = "printf 'one'\nprintf 'snowman ☃'";
+
+  await controller.runInternal("terminal run", { terminalCommand: input });
+
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].includes("\n"), false);
+  assert.equal(terminalInputFromTransportCommand(forwarded[0]), input);
 });
 
 test("an adopt-only terminal session joins the GUI PTY instead of starting its own", async () => {

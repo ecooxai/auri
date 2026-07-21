@@ -4,6 +4,7 @@ import {
   encodeKeyEvent,
   encodePasteText,
   encodeWheelEvent,
+  isTerminalPasteShortcut,
   runSpanSpec,
   rowText,
   xterm256Color
@@ -23,9 +24,18 @@ test("printable keys encode as themselves with alt as ESC prefix", () => {
 test("control combinations map to C0 bytes", () => {
   assert.equal(encodeKeyEvent(key({ key: "c", ctrlKey: true })), "\x03");
   assert.equal(encodeKeyEvent(key({ key: "C", ctrlKey: true, shiftKey: true })), "\x03");
+  assert.equal(encodeKeyEvent(key({ key: "v", ctrlKey: true })), "\x16", "Ctrl+V remains literal-next PTY input");
+  assert.equal(encodeKeyEvent(key({ key: "V", ctrlKey: true, shiftKey: true })), null, "Ctrl+Shift+V is left to the clipboard paste event");
   assert.equal(encodeKeyEvent(key({ key: " ", ctrlKey: true })), "\0");
   assert.equal(encodeKeyEvent(key({ key: "[", ctrlKey: true })), "\x1b");
   assert.equal(encodeKeyEvent(key({ key: "d", ctrlKey: true })), "\x04");
+});
+
+test("terminal paste shortcuts are distinct from literal Ctrl+V input", () => {
+  assert.equal(isTerminalPasteShortcut(key({ key: "V", ctrlKey: true, shiftKey: true })), true);
+  assert.equal(isTerminalPasteShortcut(key({ key: "Insert", shiftKey: true })), true);
+  assert.equal(isTerminalPasteShortcut(key({ key: "v", metaKey: true })), true);
+  assert.equal(isTerminalPasteShortcut(key({ key: "v", ctrlKey: true })), false);
 });
 
 test("editing and navigation keys use xterm sequences", () => {
@@ -54,6 +64,52 @@ test("arrow keys honor application cursor mode and modifiers", () => {
 test("paste text normalizes newlines and honors bracketed paste", () => {
   assert.equal(encodePasteText("echo hi\nls\r\npwd"), "echo hi\rls\rpwd");
   assert.equal(encodePasteText("hello", true), "\x1b[200~hello\x1b[201~");
+});
+
+test("TerminalSession sends clipboard paste and multiline runs through the live PTY", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const writes = [];
+  const session = new TerminalSession({
+    isNative: true,
+    writeTerminal: async (_sessionId, bytes) => writes.push(new TextDecoder().decode(bytes)),
+    getTerminalCwd: async () => "~"
+  });
+  session.started = true;
+  session.modes.bracketedPaste = true;
+
+  await session.paste("echo one\necho two");
+  await session.run("printf one\nprintf two");
+
+  assert.deepEqual(writes, [
+    "\x1b[200~echo one\recho two\x1b[201~",
+    "\x1b[200~printf one\rprintf two\x1b[201~\r"
+  ]);
+});
+
+test("TerminalSession explicitly reads the native clipboard for a paste shortcut", async () => {
+  const { TerminalSession } = await import("../src/services/terminal-session.js");
+  const writes = [];
+  let prevented = 0;
+  const session = new TerminalSession({
+    isNative: true,
+    writeTerminal: async (_sessionId, bytes) => writes.push(new TextDecoder().decode(bytes))
+  }, {
+    readClipboardText: async () => "printf pasted"
+  });
+  session.started = true;
+
+  const result = await session.handlePasteShortcut({
+    key: "V",
+    ctrlKey: true,
+    shiftKey: true,
+    altKey: false,
+    metaKey: false,
+    preventDefault() { prevented += 1; }
+  });
+
+  assert.equal(result, true);
+  assert.equal(prevented, 1);
+  assert.deepEqual(writes, ["printf pasted"]);
 });
 
 test("wheel input uses SGR mouse reports only when the terminal app requested them", () => {

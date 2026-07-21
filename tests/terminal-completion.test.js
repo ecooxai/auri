@@ -444,11 +444,11 @@ test("frequent commands append without duplicating existing custom lines", () =>
   assert.equal(state.settings.customCompletions, "git status\nnpm test\ncargo check");
 });
 
-test("quick Enter inserts a newline while holding Enter for two seconds runs once", async (t) => {
+test("quick Enter inserts a newline while holding Enter for one second runs the current line once", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { AppController } = await import("../src/controllers/app-controller.js");
   const inserted = [];
-  let runs = 0;
+  const runs = [];
   const input = { id: "terminal-input", value: "echo hello" };
   const view = {
     root: { querySelector: () => null },
@@ -463,7 +463,7 @@ test("quick Enter inserts a newline while holding Enter for two seconds runs onc
     backend: { isNative: false },
     terminalSessionFactory: () => ({ initialize: async () => {} })
   });
-  controller.submitTerminal = async () => { runs += 1; };
+  controller.submitTerminal = async (mode) => { runs.push(mode); };
   const event = {
     target: input,
     key: "Enter",
@@ -480,13 +480,13 @@ test("quick Enter inserts a newline while holding Enter for two seconds runs onc
   t.mock.timers.tick(300);
   controller.handleKeyup(event);
   assert.deepEqual(inserted, ["\n"]);
-  assert.equal(runs, 0);
+  assert.deepEqual(runs, []);
 
   input.value = "echo held";
   await controller.handleKeydown(event);
-  t.mock.timers.tick(2000);
+  t.mock.timers.tick(1000);
   await Promise.resolve();
-  assert.equal(runs, 1);
+  assert.deepEqual(runs, ["run-line"]);
   controller.handleKeyup(event);
   assert.deepEqual(inserted, ["\n"]);
 });
@@ -495,10 +495,12 @@ test("running from the composer restores composer focus and never focuses the PT
   const { AppController } = await import("../src/controllers/app-controller.js");
   const focusFlags = [];
   let terminalFocusCalls = 0;
+  let renders = 0;
+  const terminalRuns = [];
   let inputValue = "echo hello";
   const view = {
     root: { querySelector: () => null },
-    render() {},
+    render() { renders += 1; },
     getTerminalInputValue: () => inputValue,
     setTerminalInput(value, focus) { inputValue = value; focusFlags.push(focus); },
     setTerminalCompletions() {},
@@ -509,7 +511,7 @@ test("running from the composer restores composer focus and never focuses the PT
     backend: { isNative: true },
     terminalSessionFactory: () => ({
       initialize: async () => {},
-      run: async () => {},
+      run: async (command) => { terminalRuns.push(command); },
       focus: () => { terminalFocusCalls += 1; }
     })
   });
@@ -519,6 +521,48 @@ test("running from the composer restores composer focus and never focuses the PT
   assert.equal(inputValue, "");
   assert.equal(focusFlags.at(-1), true);
   assert.equal(terminalFocusCalls, 0);
+  assert.equal(renders, 0, "submitting input must not remount the terminal panel");
+  assert.deepEqual(terminalRuns, ["echo hello"]);
+});
+
+test("long-press submission sends only the caret line and keeps the other composer lines", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  const terminalRuns = [];
+  const input = {
+    id: "terminal-input",
+    value: "echo first\necho current\necho last",
+    selectionStart: "echo first\necho cur".length,
+    selectionEnd: "echo first\necho cur".length,
+    focus() {},
+    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  };
+  const view = {
+    root: { querySelector: () => null },
+    render() {},
+    getTerminalInput: () => input,
+    getTerminalInputValue: () => input.value,
+    replaceTerminalInputRange(start, end, value) {
+      input.value = `${input.value.slice(0, start)}${value}${input.value.slice(end)}`;
+      input.setSelectionRange(start, start);
+      return true;
+    },
+    setTerminalInput(value) { input.value = value; },
+    setTerminalCompletions() {},
+    showToast() {}
+  };
+  const controller = new AppController({
+    view,
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({
+      initialize: async () => {},
+      run: async (command) => { terminalRuns.push(command); }
+    })
+  });
+
+  await controller.submitTerminal("run-line");
+
+  assert.deepEqual(terminalRuns, ["echo current"]);
+  assert.equal(input.value, "echo first\necho last");
 });
 
 test("custom completion textarea Enter remains a normal multiline edit", async () => {

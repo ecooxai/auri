@@ -933,6 +933,14 @@ export class Backend {
     return this.decorateClipboardItems(await this.call("read_clipboard_history"));
   }
 
+  async readClipboardText() {
+    if (!this.invoke && typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+      return navigator.clipboard.readText();
+    }
+    const current = (await this.readClipboardHistory())[0];
+    return current?.kind === "text" ? String(current.text || "") : "";
+  }
+
   async setClipboardPinned(id, pinned) {
     if (!this.invoke) {
       const item = this.browserClipboardHistory.find((entry) => entry.id === id);

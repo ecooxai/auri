@@ -150,6 +150,52 @@ export function extractCommandTail(input) {
   return extractActionTail(input, "terminal", "run");
 }
 
+const TERMINAL_INPUT_TRANSPORT_PREFIX = "--auri-input=";
+
+function encodeTerminalInput(value) {
+  const bytes = new TextEncoder().encode(String(value ?? ""));
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+
+function decodeTerminalInput(value) {
+  const encoded = String(value ?? "").replaceAll("-", "+").replaceAll("_", "/");
+  const padded = encoded.padEnd(encoded.length + ((4 - (encoded.length % 4)) % 4), "=");
+  let binary;
+  try {
+    binary = atob(padded);
+  } catch {
+    throw new Error("The forwarded terminal input is malformed.");
+  }
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("The forwarded terminal input is not valid UTF-8.");
+  }
+}
+
+// Hosted frontends cannot put raw composer text in the one-line command
+// transport: newlines delimit socket messages and shell punctuation must stay
+// byte-for-byte intact. This private argument is decoded only by terminal run.
+export function terminalInputTransportCommand(value) {
+  return `terminal run ${TERMINAL_INPUT_TRANSPORT_PREFIX}${encodeTerminalInput(value)}`;
+}
+
+export function terminalInputFromTransportCommand(input) {
+  const source = String(input ?? "").trim().replace(/^auri\s+/i, "");
+  const prefix = `terminal run ${TERMINAL_INPUT_TRANSPORT_PREFIX}`;
+  if (!source.toLowerCase().startsWith(prefix)) return null;
+  const encoded = source.slice(prefix.length);
+  if (!/^[A-Za-z0-9_-]*$/.test(encoded)) {
+    throw new Error("The forwarded terminal input is malformed.");
+  }
+  return decodeTerminalInput(encoded);
+}
+
 export function parseCommand(input) {
   const tokens = tokenize(String(input ?? ""));
   if (!tokens.length) throw new Error("Enter a command.");

@@ -1,5 +1,5 @@
 import { terminalAssistantSegments } from "../model/assistant.js";
-import { encodeKeyEvent, encodePasteText, encodeWheelEvent, rowText, runSpanSpec } from "./terminal-screen.js";
+import { encodeKeyEvent, encodePasteText, encodeWheelEvent, isTerminalPasteShortcut, rowText, runSpanSpec } from "./terminal-screen.js";
 
 const encoder = new TextEncoder();
 
@@ -754,7 +754,7 @@ export class TerminalSession {
       const text = event.clipboardData?.getData?.("text") || "";
       if (!text) return;
       event.preventDefault();
-      this.write(encodePasteText(text, this.modes.bracketedPaste)).catch((error) => {
+      this.paste(text).catch((error) => {
         console.error("Could not paste into terminal", error);
       });
     }, { signal });
@@ -1058,6 +1058,13 @@ export class TerminalSession {
     }, { signal });
     element.addEventListener("mouseup", (event) => this.handlePreviewMouseUp(element, event), { signal });
     element.addEventListener("keydown", (event) => {
+      const paste = this.handlePasteShortcut(event);
+      if (paste) {
+        paste.catch((error) => {
+          console.error("Could not paste into terminal", error);
+        });
+        return;
+      }
       const key = String(event.key || "").toLowerCase();
       const isCopyShortcut = (event.ctrlKey && event.shiftKey && key === "c") || (event.metaKey && key === "c") || (event.ctrlKey && event.key === "Insert");
       if (!isCopyShortcut || !this.selectedText()) return;
@@ -1073,6 +1080,14 @@ export class TerminalSession {
         console.error("Could not copy terminal selection", error);
       });
     }, { signal });
+  }
+
+  handlePasteShortcut(event) {
+    if (!isTerminalPasteShortcut(event)) return false;
+    event.preventDefault?.();
+    return Promise.resolve(this.assistantActions.readClipboardText?.() || "")
+      .then((text) => this.paste(text))
+      .then(() => true);
   }
 
   // Hosted web mirror: instead of starting an own PTY, join the desktop
@@ -1119,6 +1134,14 @@ export class TerminalSession {
     }
     await this.ensureStarted();
     await this.backend.writeTerminal(this.sessionId, encoder.encode(data));
+  }
+
+  async paste(text) {
+    const sequence = encodePasteText(text, this.modes.bracketedPaste);
+    if (!sequence) return false;
+    await this.write(sequence);
+    if (sequence.includes("\r") || sequence.includes("\n")) this.scheduleCwdRefresh();
+    return true;
   }
 
   // Background terminals live as recorded output only: the DOM mirror is
@@ -1185,8 +1208,11 @@ export class TerminalSession {
   }
 
   async run(command) {
-    await this.write(`${command}\r`);
+    const sequence = encodePasteText(command, this.modes.bracketedPaste);
+    if (!sequence) return false;
+    await this.write(`${sequence}\r`);
     this.scheduleCwdRefresh();
+    return true;
   }
 
   // ---- Printed messages and media ----------------------------------------

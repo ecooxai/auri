@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeCommand } from "../src/controllers/command-controller.js";
+import { terminalInputTransportCommand } from "../src/model/commands.js";
 import { activeSubtab, createInitialState, reduceState } from "../src/model/state.js";
 
 function harness() {
@@ -12,6 +13,33 @@ function harness() {
     state: () => state
   };
 }
+
+test("terminal run can route through the GUI live-terminal action", async () => {
+  const h = harness();
+  const runs = [];
+  h.actions = {
+    runTerminalCommand: async (command) => {
+      runs.push(command);
+      return { live: true };
+    }
+  };
+
+  const result = await executeCommand("terminal run printf '%s' hello", h);
+
+  assert.deepEqual(runs, ["printf '%s' hello"]);
+  assert.deepEqual(result, { live: true });
+});
+
+test("hosted terminal transport preserves multiline Unicode shell input", async () => {
+  const h = harness();
+  const runs = [];
+  h.actions = { runTerminalCommand: async (command) => runs.push(command) };
+  const command = "printf 'snowman ☃'\nprintf \\\"done\\\"";
+
+  await executeCommand(terminalInputTransportCommand(command), h);
+
+  assert.deepEqual(runs, [command]);
+});
 
 test("system priority command applies and persists a stable process preference", async () => {
   const h = harness();

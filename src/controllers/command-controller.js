@@ -1,4 +1,10 @@
-import { commandHelp, parseCommand, extractCommandTail, extractActionTail } from "../model/commands.js";
+import {
+  commandHelp,
+  parseCommand,
+  extractCommandTail,
+  extractActionTail,
+  terminalInputFromTransportCommand
+} from "../model/commands.js";
 import { shellQuote } from "../model/path.js";
 import { activeWorkspace, activeSubtab, serializeWorkspaceSession } from "../model/state.js";
 import { normalizeSystemSnapshot, normalizeSystemSort, processPriorityIdentity } from "../model/system.js";
@@ -87,6 +93,9 @@ function appendOutput(dispatch, output) {
 async function runTerminalCommand(command, context, cwdOverride = null) {
   const { getState, dispatch, backend } = context;
   if (!command) throw new Error("Enter a shell command.");
+  if (cwdOverride === null && context.actions?.runTerminalCommand) {
+    return context.actions.runTerminalCommand(command);
+  }
   const workspace = activeWorkspace(getState());
   const cwd = cwdOverride || workspace.terminal.cwd;
   dispatch({ type: "TERMINAL_RUNNING_SET", payload: { value: true } });
@@ -310,7 +319,9 @@ export async function executeCommand(input, context) {
     }
 
     if (domain === "terminal" && action === "run") {
-      const command = extractCommandTail(input) || args.join(" ");
+      const command = context.terminalCommand
+        ?? terminalInputFromTransportCommand(input)
+        ?? (extractCommandTail(input) || args.join(" "));
       return runTerminalCommand(command, context);
     }
 
