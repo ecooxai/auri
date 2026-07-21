@@ -2,7 +2,7 @@
 autobins = false
 default-run = "auri-desktop"
 name = "auri"
-version = "0.83.0"
+version = "0.84.0"
 description = "A terminal-centered assistant workspace"
 authors = ["Auri contributors"]
 edition = "2021"
@@ -45,6 +45,12 @@ debug = 1
 incremental = true
 lto = false
 strip = "symbols"
+
+# Dependencies stay fully optimized, while frequently edited Auri code favors
+# parallel incremental code generation for substantially shorter rebuilds.
+[profile.release.package.auri]
+opt-level = 1
+codegen-units = 256
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -93,6 +93,8 @@ test("native profiles retain incremental artifacts for repeated app and dev buil
   assert.match(cargo, /\[profile\.dev\][\s\S]*?debug\s*=\s*1/);
   assert.match(cargo, /\[profile\.release\][\s\S]*?incremental\s*=\s*true/);
   assert.match(cargo, /\[profile\.release\][\s\S]*?lto\s*=\s*false/);
+  assert.match(cargo, /\[profile\.release\.package\.auri\][\s\S]*?opt-level\s*=\s*1/);
+  assert.match(cargo, /\[profile\.release\.package\.auri\][\s\S]*?codegen-units\s*=\s*256/);
 });
 
 test("non-desktop binaries require opt-in features so Tauri --bins skips them", async () => {
