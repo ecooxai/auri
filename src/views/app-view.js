@@ -217,6 +217,38 @@ export class AppView {
     });
   }
 
+  // Folder-only state changes must not rebuild the content pane. In
+  // particular, a terminal beside the folder pane keeps its exact DOM,
+  // renderer, selection, and scroll position while navigation updates.
+  patchFolderPane(state) {
+    const current = this.root?.querySelector?.(".folder-pane");
+    if (!current) return false;
+    const nextPath = activeWorkspace(state).folder.path;
+    const list = current.querySelector?.(".folder-list");
+    const scrollTop = list?.dataset?.folderPath === nextPath ? list.scrollTop : 0;
+    current.outerHTML = renderFolder(state);
+    const nextList = this.root?.querySelector?.(".folder-list");
+    if (nextList) nextList.scrollTop = scrollTop;
+    if (state.ui.folderCreateKind) {
+      const input = this.root?.querySelector?.("#folder-create-input");
+      input?.focus?.();
+      input?.select?.();
+    }
+    return true;
+  }
+
+  // Opening a tab action menu is chrome-only. Patch the tab strip without
+  // touching the active panel (especially a live terminal renderer).
+  patchSubtabs(state, { native = false } = {}) {
+    const current = this.root?.querySelector?.(".subtab-bar");
+    if (!current) return false;
+    const scrollLeft = current.querySelector?.(".subtab-scroll")?.scrollLeft || 0;
+    current.outerHTML = renderSubtabs(state, { native });
+    const nextScroll = this.root?.querySelector?.(".subtab-scroll");
+    if (nextScroll) nextScroll.scrollLeft = scrollLeft;
+    return true;
+  }
+
   // Folder polling is intentionally isolated from the app-wide render path:
   // existing rows and the terminal DOM stay mounted while new rows are
   // prepended, removed rows disappear, and the short-lived new marker fades.

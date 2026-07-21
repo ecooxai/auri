@@ -9,7 +9,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { createTauriLaunchOverride } from "./launch-config.mjs";
-import { isNativeWatchPath, normalizeWatchDelay } from "./native-watch-utils.mjs";
+import {
+  isNativeWatchPath,
+  nativeWatchChangeRequiresBuild,
+  normalizeWatchDelay
+} from "./native-watch-utils.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -23,6 +27,7 @@ let frontend = null;
 let nativeApp = null;
 let restartTimer = null;
 let restartQueue = Promise.resolve();
+let pendingNativeBuild = false;
 let shuttingDown = false;
 const watchers = [];
 
@@ -110,20 +115,31 @@ function spawnOwned(command, args, options = {}) {
   });
 }
 
-async function restartNativeApp(reason, environment) {
+function nativeDebugExecutable() {
+  const filename = process.platform === "win32" ? "auri-dev.exe" : "auri-dev";
+  return path.join(projectRoot, "src-tauri", "target", "debug", filename);
+}
+
+async function restartNativeApp(reason, environment, rebuild = true) {
   if (shuttingDown) return;
   if (nativeApp) {
     console.log(`Restarting Auri development after ${reason}; stopping PID ${nativeApp.pid} first...`);
     await killOwnedProcessGroup(nativeApp);
-  } else {
+  } else if (rebuild) {
     console.log("Building and starting Auri development...");
   }
   if (shuttingDown) return;
-  nativeApp = spawnOwned("cargo", [
-    "run",
-    "--manifest-path", "src-tauri/Cargo.toml",
-    "--bin", "auri-dev"
-  ], { env: environment });
+  if (rebuild) {
+    nativeApp = spawnOwned("cargo", [
+      "run",
+      "--manifest-path", "src-tauri/Cargo.toml",
+      "--features", "dev-bin",
+      "--bin", "auri-dev"
+    ], { env: environment });
+  } else {
+    console.log("Starting the existing debug executable; frontend-only changes need no Rust build.");
+    nativeApp = spawnOwned(nativeDebugExecutable(), [], { env: environment });
+  }
   const launched = nativeApp;
   launched.once("exit", (code, signal) => {
     if (nativeApp === launched) nativeApp = null;
@@ -135,11 +151,14 @@ async function restartNativeApp(reason, environment) {
 
 function scheduleRestart(filename, environment) {
   if (!isNativeWatchPath(filename) || shuttingDown) return;
+  pendingNativeBuild ||= nativeWatchChangeRequiresBuild(filename);
   if (restartTimer) clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
     restartTimer = null;
+    const rebuild = pendingNativeBuild;
+    pendingNativeBuild = false;
     restartQueue = restartQueue
-      .then(() => restartNativeApp(`a change to ${filename}`, environment))
+      .then(() => restartNativeApp(`a change to ${filename}`, environment, rebuild))
       .catch((error) => console.error("Could not restart Auri development:", error));
   }, watchDelayMs);
 }

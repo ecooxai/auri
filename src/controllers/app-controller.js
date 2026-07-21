@@ -114,6 +114,22 @@ const WORKSPACE_PERSIST_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", 
 // heavy process list from state until the monitor is refocused.
 const SUBTAB_SWITCH_EVENTS = new Set(["TAB_NEW", "TAB_SELECT", "TAB_CLOSE", "SUBTAB_NEW", "SUBTAB_SELECT", "SUBTAB_CLOSE"]);
 
+// These state changes affect the folder pane while leaving the active
+// terminal session untouched. Patch that pane in place so the terminal DOM
+// and scroll viewport are never remounted as collateral work.
+const TERMINAL_FOLDER_PATCH_EVENTS = new Set([
+  "WORKDIR_SET",
+  "FOLDER_PATH_SET",
+  "FOLDER_ENTRIES_SET",
+  "FOLDER_SORT_SET",
+  "FOLDER_EXPANDED_SET",
+  "FOLDER_EXPANDED_REMOVE",
+  "FOLDER_ENTRY_SELECT",
+  "FILE_SELECT",
+  "TERMINAL_CWD_SET"
+]);
+const TERMINAL_STATE_ONLY_EVENTS = new Set(["TERMINAL_COMMAND_REMEMBER"]);
+
 function attachmentPreviewUrl(file, kind) {
   if (kind === "file" || typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
   try {
@@ -510,6 +526,7 @@ export class AppController {
       const draft = this.view.getTerminalInputValue?.() || "";
       this.state = reduceState(this.state, { type: "TERMINAL_DRAFT_SET", payload: { value: draft } });
     }
+    const previousActiveSubtab = activeSubtab(this.state);
     const previousTerminals = new Set(this.terminalSubtabs().map(({ subtab }) => subtab.id));
     const previousWebviews = new Set(this.state.tabs.flatMap((tab) => tab.subtabs.filter((item) => item.type === "webview").map((item) => item.id)));
     this.state = reduceState(this.state, event);
@@ -539,7 +556,18 @@ export class AppController {
       || (event.type === "WORKDIR_SET" && targetWorkspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal")
     );
     const renderOptions = { ...options, focusTerminal: shouldFocusTerminal };
-    if (options.render !== false) {
+    const nextActiveSubtab = activeSubtab(this.state);
+    const terminalStayedActive = previousActiveSubtab?.type === "terminal"
+      && nextActiveSubtab?.type === "terminal"
+      && previousActiveSubtab.id === nextActiveSubtab.id;
+    let patchedWithoutFullRender = false;
+    if (options.render !== false && terminalStayedActive && TERMINAL_FOLDER_PATCH_EVENTS.has(event.type)) {
+      this.view.patchFolderPane?.(this.state);
+      patchedWithoutFullRender = true;
+    } else if (options.render !== false && terminalStayedActive && TERMINAL_STATE_ONLY_EVENTS.has(event.type)) {
+      patchedWithoutFullRender = true;
+    }
+    if (options.render !== false && !patchedWithoutFullRender) {
       this.render(changesWorkspace ? { ...renderOptions, preserveInput: false } : renderOptions);
     }
     if (this.configurationReady && WORKSPACE_PERSIST_EVENTS.has(event.type)) {
@@ -1086,7 +1114,7 @@ export class AppController {
   }
 
   setSubtabActionMenu(id, placement = 148) {
-    this.dispatch({
+    this.patchSubtabState({
       type: "UI_SET",
       payload: {
         subtabActionMenuId: id,
@@ -1097,6 +1125,16 @@ export class AppController {
         webDialog: null
       }
     });
+  }
+
+  patchSubtabState(event) {
+    this.dispatch(event, { preserveInput: true, render: false });
+    this.view.patchSubtabs?.(this.state, { native: this.native });
+  }
+
+  patchFolderState(event) {
+    this.dispatch(event, { preserveInput: true, render: false });
+    this.view.patchFolderPane?.(this.state);
   }
 
   trackSubtabClick(id) {
@@ -1371,10 +1409,10 @@ export class AppController {
       this.dispatch({ type: "UI_SET", payload: { tunnelUrlMenuPort: null } }, { preserveInput: true });
     }
     if (this.state.ui.commandMenuOpen && !insideCommandMenu) {
-      this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } }, { preserveInput: true });
+      this.patchSubtabState({ type: "UI_SET", payload: { commandMenuOpen: false } });
     }
     if (this.state.ui.subtabActionMenuId && !insideSubtabActionMenu) {
-      this.dispatch({ type: "UI_SET", payload: { subtabActionMenuId: null } }, { preserveInput: true });
+      this.patchSubtabState({ type: "UI_SET", payload: { subtabActionMenuId: null } });
     }
     const insideClipboardInfo = event.target?.closest?.(".clipboard-info-popup");
     const clipboardInfoTrigger = event.target?.closest?.('[data-action="clipboard-info"], [data-action="clipboard-menu"]');
@@ -1436,7 +1474,7 @@ export class AppController {
           const rect = target.getBoundingClientRect?.();
           const wasOpen = this.state.ui.subtabActionMenuId === target.dataset.id;
           await this.selectSubtabFromClick(target.dataset.id);
-          this.dispatch({
+          this.patchSubtabState({
             type: "UI_SET",
             payload: {
               subtabActionMenuId: wasOpen ? null : target.dataset.id,
@@ -1466,7 +1504,7 @@ export class AppController {
           await this.runInternal(`subtab move-main ${target.dataset.id}`);
           break;
         case "subtab-menu":
-          this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, commandMenuOpen: false, webMenuOpen: false, webDialog: null } });
+          this.patchSubtabState({ type: "UI_SET", payload: { addSubtabMenuOpen: !this.state.ui.addSubtabMenuOpen, commandMenuOpen: false, webMenuOpen: false, webDialog: null } });
           break;
         case "subtab-new":
           this.dispatch({ type: "UI_SET", payload: { addSubtabMenuOpen: false, webMenuOpen: false } });
@@ -1474,7 +1512,7 @@ export class AppController {
           if (["system", "disk", "net"].includes(activeSubtab(this.state).type)) await this.runInternal("system refresh");
           break;
         case "command-menu":
-          this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: !this.state.ui.commandMenuOpen, addSubtabMenuOpen: false, webMenuOpen: false, webDialog: null } });
+          this.patchSubtabState({ type: "UI_SET", payload: { commandMenuOpen: !this.state.ui.commandMenuOpen, addSubtabMenuOpen: false, webMenuOpen: false, webDialog: null } });
           break;
         case "command-menu-tab":
           this.dispatch({ type: "UI_SET", payload: { commandMenuOpen: false } });
@@ -1647,25 +1685,25 @@ export class AppController {
           await this.runInternal("folder list");
           break;
         case "folder-more":
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: !this.state.ui.folderMenuOpen } }, { preserveInput: true });
+          this.patchFolderState({ type: "UI_SET", payload: { folderMenuOpen: !this.state.ui.folderMenuOpen } });
           break;
         case "folder-sort":
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
+          this.patchFolderState({ type: "UI_SET", payload: { folderMenuOpen: false } });
           await this.runInternal(`folder sort ${target.dataset.sort}`);
           break;
         case "folder-new-file":
           this.cancelFolderPathNavigation();
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false, folderCreateKind: "file" } }, { preserveInput: true });
+          this.patchFolderState({ type: "UI_SET", payload: { folderMenuOpen: false, folderCreateKind: "file" } });
           break;
         case "folder-new-folder":
           this.cancelFolderPathNavigation();
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false, folderCreateKind: "folder" } }, { preserveInput: true });
+          this.patchFolderState({ type: "UI_SET", payload: { folderMenuOpen: false, folderCreateKind: "folder" } });
           break;
         case "folder-create-confirm":
           await this.submitFolderCreate();
           break;
         case "folder-info":
-          this.dispatch({ type: "UI_SET", payload: { folderMenuOpen: false } }, { preserveInput: true });
+          this.patchFolderState({ type: "UI_SET", payload: { folderMenuOpen: false } });
           await this.runInternal("folder info");
           break;
         case "folder-toggle":
@@ -2007,7 +2045,7 @@ export class AppController {
     }
     try {
       await this.runInternal(`folder create-${kind} ${quoteArg(name)}`);
-      this.dispatch({ type: "UI_SET", payload: { folderCreateKind: null } }, { preserveInput: true });
+      this.patchFolderState({ type: "UI_SET", payload: { folderCreateKind: null } });
       this.view.showToast(`Created ${name}`, "success");
       return true;
     } catch (error) {
@@ -2073,7 +2111,7 @@ export class AppController {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        this.dispatch({ type: "UI_SET", payload: { folderCreateKind: null } }, { preserveInput: true });
+        this.patchFolderState({ type: "UI_SET", payload: { folderCreateKind: null } });
         return;
       }
     }
@@ -2799,6 +2837,7 @@ export class AppController {
   }
 
   async selectSubtab(id) {
+    if (activeWorkspace(this.state).activeSubtabId === id) return false;
     const request = ++this.terminalSelectionRequest;
     const previousWorkspace = activeWorkspace(this.state);
     const previousTerminal = activeSubtab(this.state);
@@ -2890,13 +2929,14 @@ export class AppController {
       : terminalId;
     const entries = await this.backend.listDirectory(path);
     const focusTerminal = workspaceId === this.state.activeTabId && activeSubtab(this.state)?.type === "terminal";
-    // Apply both events in one pass so a directory change costs one render
-    // (and one workspace persist) instead of two full DOM rebuilds.
+    // Apply all state first, then patch only the folder pane once. The live
+    // terminal DOM and its scroll position stay completely untouched.
     this.dispatch({ type: "FOLDER_PATH_SET", payload: { workspaceId, path } }, { preserveInput: true, focusTerminal, render: false });
     if (resolvedTerminalId) {
       this.dispatch({ type: "TERMINAL_CWD_SET", payload: { workspaceId, terminalId: resolvedTerminalId, path, mirrorWorkspace: true } }, { preserveInput: true, focusTerminal, render: false });
     }
-    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } }, { preserveInput: true, focusTerminal });
+    this.dispatch({ type: "FOLDER_ENTRIES_SET", payload: { workspaceId, entries } }, { preserveInput: true, focusTerminal, render: false });
+    if (workspaceId === this.state.activeTabId) this.view.patchFolderPane?.(this.state);
   }
 
   async synchronizeActiveTerminalToFolder() {

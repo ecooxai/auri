@@ -6,7 +6,11 @@ import test from "node:test";
 
 import { releaseBuildEnvironment, releaseBuildId } from "../scripts/app.mjs";
 import { writeFileIfChanged } from "../scripts/build-files.mjs";
-import { hasBundleOverride, nativeBuildArgs, shouldCreateMacDmg } from "../scripts/native-build.mjs";
+import {
+  hasBundleOverride,
+  nativeBuildArgs,
+  shouldCreateMacDmg
+} from "../scripts/native-build.mjs";
 
 test("native npm build builds a macOS app before creating a DMG on macOS", () => {
   assert.deepEqual(nativeBuildArgs({ platform: "darwin" }), ["--bundles", "app"]);
@@ -47,6 +51,8 @@ test("package scripts keep frontend build separate to avoid Tauri recursion", as
   assert.equal(pkg.scripts.build, "node scripts/native-build.mjs");
   assert.equal(pkg.scripts["build:web"], "node scripts/build.mjs");
   assert.equal(tauri.build.beforeBuildCommand, "npm run build:web");
+  assert.match(pkg.scripts["cli:build"], /--features cli-bin/);
+  assert.match(pkg.scripts["cli:install"], /--features cli-bin/);
 });
 
 test("app builds use a stable identity for each project checkout", () => {
@@ -79,4 +85,24 @@ test("generated build files keep their timestamp when content is unchanged", asy
   assert.equal(await writeFileIfChanged(filename, "changed output\n"), true);
   assert.equal(await readFile(filename, "utf8"), "changed output\n");
   assert.ok((await stat(filename)).mtimeMs > first.mtimeMs);
+});
+
+test("native profiles retain incremental artifacts for repeated app and dev builds", async () => {
+  const cargo = await readFile("src-tauri/Cargo.toml", "utf8");
+  assert.match(cargo, /\[profile\.dev\][\s\S]*?incremental\s*=\s*true/);
+  assert.match(cargo, /\[profile\.dev\][\s\S]*?debug\s*=\s*1/);
+  assert.match(cargo, /\[profile\.release\][\s\S]*?incremental\s*=\s*true/);
+  assert.match(cargo, /\[profile\.release\][\s\S]*?lto\s*=\s*false/);
+});
+
+test("non-desktop binaries require opt-in features so Tauri --bins skips them", async () => {
+  const cargo = await readFile("src-tauri/Cargo.toml", "utf8");
+  assert.match(cargo, /name = "auri-dev"[\s\S]*?required-features = \["dev-bin"\]/);
+  assert.match(cargo, /name = "auri"[\s\S]*?required-features = \["cli-bin"\]/);
+});
+
+test("desktop builds do not link unused mobile library artifact types", async () => {
+  const cargo = await readFile("src-tauri/Cargo.toml", "utf8");
+  assert.match(cargo, /crate-type = \["rlib"\]/);
+  assert.doesNotMatch(cargo, /crate-type = \[[^\]]*"(?:staticlib|cdylib)"/);
 });

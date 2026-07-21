@@ -8,6 +8,7 @@ import {
 } from "../scripts/native-dev-utils.mjs";
 import {
   isNativeWatchPath,
+  nativeWatchChangeRequiresBuild,
   normalizeWatchDelay
 } from "../scripts/native-watch-utils.mjs";
 
@@ -27,6 +28,7 @@ test("default development commands use the guarded native watcher", async () => 
   assert.match(nativeDev, /native-watch\.sh/);
   assert.match(nativeWatch, /node scripts\/native-watch\.mjs/);
   assert.doesNotMatch(nativeWatch, /cargo watch/);
+  assert.match(await readFile("scripts/native-watch.mjs", "utf8"), /"--features", "dev-bin"/);
   assert.match(webDev, /watchFileSystem\(root/);
   assert.match(webDev, /STATIC_FILES/);
   assert.match(webDev, /scheduleStaticCopy/);
@@ -44,6 +46,15 @@ test("native watcher validates debounce and ignores generated build output", () 
   assert.equal(isNativeWatchPath("src-tauri/target/debug/auri-dev"), false);
   assert.equal(isNativeWatchPath("dist/app.js"), false);
   assert.equal(isNativeWatchPath("node_modules/esbuild/lib/main.js"), false);
+});
+
+test("native watcher rebuilds only for native inputs", () => {
+  assert.equal(nativeWatchChangeRequiresBuild("src/controllers/app-controller.js"), false);
+  assert.equal(nativeWatchChangeRequiresBuild("styles.css"), false);
+  assert.equal(nativeWatchChangeRequiresBuild("src-tauri/src/lib.rs"), true);
+  assert.equal(nativeWatchChangeRequiresBuild("src-tauri/Cargo.toml"), true);
+  assert.equal(nativeWatchChangeRequiresBuild("src-tauri/tauri.conf.json"), true);
+  assert.equal(nativeWatchChangeRequiresBuild("src-tauri/Info.plist"), true);
 });
 
 test("development process detection finds debug apps and ignores release apps", () => {

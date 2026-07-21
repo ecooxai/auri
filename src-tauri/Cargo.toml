@@ -14,19 +14,36 @@ path = "src/main.rs"
 [[bin]]
 name = "auri-dev"
 path = "src/bin/auri-dev.rs"
+required-features = ["dev-bin"]
 
 [[bin]]
 name = "auri"
 path = "src/bin/auri.rs"
+required-features = ["cli-bin"]
+
+[features]
+default = []
+cli-bin = []
+dev-bin = []
 
 [lib]
 name = "auri_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Auri currently targets macOS/Linux desktop. The desktop executables link the
+# Rust library directly; staticlib/cdylib would add two unused full link jobs.
+crate-type = ["rlib"]
 
-# Thin LTO and symbol stripping shrink the shipped binaries, which lowers the
-# dirty and mapped memory each Auri process carries at runtime.
+# Keep iterative native builds incremental and inexpensive to link. Release
+# binaries remain optimized and stripped, but avoid whole-program LTO because
+# it turns every small source edit into a long final link.
+[profile.dev]
+incremental = true
+# Line tables retain useful panic locations while avoiding the much larger
+# full debug-info link on each native development edit.
+debug = 1
+
 [profile.release]
-lto = "thin"
+incremental = true
+lto = false
 strip = "symbols"
 
 [build-dependencies]

@@ -31,3 +31,16 @@ export function isNativeWatchPath(value) {
     filename.startsWith("src-tauri/src/")
   );
 }
+
+export function nativeWatchChangeRequiresBuild(value) {
+  const filename = String(value ?? "")
+    .replaceAll("\\", "/")
+    .replace(/^\.\//u, "");
+  return (
+    filename === "src-tauri/Cargo.toml" ||
+    filename === "src-tauri/tauri.conf.json" ||
+    filename === "src-tauri/Info.plist" ||
+    filename === "src-tauri/build.rs" ||
+    filename.startsWith("src-tauri/src/")
+  );
+}

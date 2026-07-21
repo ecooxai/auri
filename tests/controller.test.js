@@ -833,7 +833,7 @@ test("cancelling the kill confirmation dismisses it without killing", async () =
   assert.equal(controller.state.system.selectedProcessPid, 42);
 });
 
-test("workspace and cwd renders refocus the active terminal session", async () => {
+test("workspace renders refocus the terminal while cwd patches leave it untouched", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   const previousAnimationFrame = globalThis.requestAnimationFrame;
   globalThis.requestAnimationFrame = (callback) => callback();
@@ -875,7 +875,7 @@ test("workspace and cwd renders refocus the active terminal session", async () =
     controller.dispatch({ type: "WORKDIR_SET", payload: { path: "/tmp/build" } });
     await Promise.resolve();
     await Promise.resolve();
-    assert.equal(sessions.at(-1).focusCount, 1);
+    assert.equal(sessions.at(-1).focusCount, 0);
   } finally {
     globalThis.requestAnimationFrame = previousAnimationFrame;
   }
@@ -1675,6 +1675,7 @@ test("new terminal subtabs create independent sessions at the workspace cwd", as
   try {
     const controller = new AppController({ view, backend, terminalSessionFactory });
     controller.dispatch({ type: "WORKDIR_SET", payload: { path: "/tmp/auri-space" } });
+    controller.render();
 
     await controller.runInternal("subtab new terminal");
 
@@ -3057,12 +3058,14 @@ test("the dedicated open button opens the tunnel URL directly without requiring 
   assert.deepEqual(opened, ["https://miniswetagentmcpmacneo.22222233.xyz"]);
 });
 
-test("syncDirectory applies the working directory and folder entries with a single render", async () => {
+test("syncDirectory patches the folder pane without re-rendering the terminal", async () => {
   const { AppController } = await import("../src/controllers/app-controller.js");
   let renderCount = 0;
+  let folderPatchCount = 0;
   const view = {
     root: { querySelector: () => null },
     render() { renderCount += 1; },
+    patchFolderPane() { folderPatchCount += 1; return true; },
     getTerminalInputValue: () => "",
     showToast() {}
   };
@@ -3077,11 +3080,103 @@ test("syncDirectory applies the working directory and folder entries with a sing
 
   await controller.syncDirectory("/tmp/project");
 
-  assert.equal(renderCount, 1);
+  assert.equal(renderCount, 0);
+  assert.equal(folderPatchCount, 1);
   const workspace = controller.state.tabs.find((tab) => tab.id === controller.state.activeTabId);
   assert.equal(workspace.terminal.cwd, "/tmp/project");
   assert.equal(workspace.folder.path, "/tmp/project");
   assert.deepEqual(workspace.folder.entries.map((entry) => entry.name), ["a.txt"]);
+});
+
+test("running a composer command records history without re-rendering the terminal", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  let inputValue = "printf hello";
+  const runs = [];
+  const controller = new AppController({
+    view: {
+      root: { querySelector: () => null },
+      render() { renderCount += 1; },
+      getTerminalInputValue: () => inputValue,
+      setTerminalInput(value) { inputValue = value; },
+      setTerminalCompletions() {},
+      showToast() {}
+    },
+    backend: { isNative: true },
+    terminalSessionFactory: () => ({ initialize: async () => {}, run: async (command) => runs.push(command) })
+  });
+
+  await controller.submitTerminal("run");
+
+  assert.deepEqual(runs, ["printf hello"]);
+  assert.equal(renderCount, 0);
+});
+
+test("folder file inspection patches selection without re-rendering the terminal", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  let folderPatchCount = 0;
+  const session = {
+    initialize: async () => {},
+    showPreview() {},
+    dismissPreview() {}
+  };
+  const controller = new AppController({
+    view: {
+      root: { querySelector: () => null },
+      render() { renderCount += 1; },
+      patchFolderPane() { folderPatchCount += 1; return true; },
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
+    backend: {
+      isNative: true,
+      inspectFile: async (path) => ({ path, name: "notes.txt", kind: "text" })
+    },
+    terminalSessionFactory: () => session
+  });
+
+  await controller.openFolderEntry("/tmp/notes.txt", "text");
+
+  assert.equal(renderCount, 0);
+  assert.equal(folderPatchCount, 1);
+  assert.equal(controller.state.tabs[0].folder.selectedPath, "/tmp/notes.txt");
+});
+
+test("active terminal tab clicks and outside menu dismissal never re-render it", async () => {
+  const { AppController } = await import("../src/controllers/app-controller.js");
+  let renderCount = 0;
+  let subtabPatchCount = 0;
+  let cwdRefreshCount = 0;
+  const session = {
+    initialize: async () => {},
+    refreshCwd: async () => { cwdRefreshCount += 1; }
+  };
+  const controller = new AppController({
+    view: {
+      root: { querySelector: () => null },
+      render() { renderCount += 1; },
+      patchSubtabs() { subtabPatchCount += 1; return true; },
+      getTerminalInputValue: () => "",
+      showToast() {}
+    },
+    backend: { isNative: true },
+    terminalSessionFactory: () => session
+  });
+  const terminalId = controller.state.tabs[0].activeSubtabId;
+  controller.terminalSessionFor(terminalId);
+
+  await controller.selectSubtabFromClick(terminalId);
+  controller.setSubtabActionMenu(terminalId, 42);
+  await controller.handleClick({
+    target: { closest: () => null },
+    preventDefault() {}
+  });
+
+  assert.equal(cwdRefreshCount, 0);
+  assert.equal(renderCount, 0);
+  assert.equal(subtabPatchCount, 2);
+  assert.equal(controller.state.ui.subtabActionMenuId, null);
 });
 
 test("clipboard polling updates state without re-rendering while the clipboard subtab is inactive", async () => {
